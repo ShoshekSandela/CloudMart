@@ -1,38 +1,113 @@
-name: Test AWS Access
+name: CloudMart Infrastructure Deployment
 
- 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'cloudformation/**'
+      - '.github/workflows/deploy.yaml'
 
   workflow_dispatch:
 
- 
 permissions:
-
   id-token: write
-
   contents: read
 
- 
+env:
+  AWS_REGION: ap-south-1
+  ENVIRONMENT: dev
+  NETWORK_STACK_NAME: cloudmart-network-dev
+
 jobs:
 
-  test:
-
+  deploy-network:
+    name: Deploy Network Stack
     runs-on: ubuntu-latest
 
- 
     steps:
 
-      - uses: actions/checkout@v4
+      # --------------------------------------------------
+      # Checkout
+      # --------------------------------------------------
 
- 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
+      # --------------------------------------------------
+      # Configure AWS using GitHub OIDC
+      # --------------------------------------------------
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-          aws-region: ap-south-1
+      # --------------------------------------------------
+      # Verify AWS identity
+      # --------------------------------------------------
 
- 
-      - run: aws sts get-caller-identity
- 
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      # --------------------------------------------------
+      # Validate CloudFormation
+      # --------------------------------------------------
+
+      - name: Validate Network CloudFormation template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/network-stack.yaml
+
+      # --------------------------------------------------
+      # Deploy Network Stack
+      # --------------------------------------------------
+
+      - name: Deploy Network Stack
+        run: |
+          aws cloudformation deploy \
+            --template-file cloudformation/network-stack.yaml \
+            --stack-name "$NETWORK_STACK_NAME" \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              AvailabilityZone="ap-south-1a" \
+              VpcCidr="10.0.0.0/16" \
+              PublicSubnetCidr="10.0.1.0/24" \
+              PrivateSubnetCidr="10.0.2.0/24" \
+              AdminCidr="${{ secrets.ADMIN_CIDR }}" \
+            --capabilities CAPABILITY_NAMED_IAM
+
+      # --------------------------------------------------
+      # Wait for deployment
+      # --------------------------------------------------
+
+      - name: Wait for Network Stack
+        run: |
+          aws cloudformation wait stack-create-complete \
+            --stack-name "$NETWORK_STACK_NAME" || \
+          aws cloudformation wait stack-update-complete \
+            --stack-name "$NETWORK_STACK_NAME"
+
+      # --------------------------------------------------
+      # Show stack status
+      # --------------------------------------------------
+
+      - name: Show Network Stack
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$NETWORK_STACK_NAME" \
+            --query 'Stacks[0].[StackName,StackStatus]' \
+            --output table
+
+      # --------------------------------------------------
+      # Show stack outputs
+      # --------------------------------------------------
+
+      - name: Show Network Outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$NETWORK_STACK_NAME" \
+            --query 'Stacks[0].Outputs' \
+            --output table
