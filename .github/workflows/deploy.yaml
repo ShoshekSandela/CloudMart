@@ -129,14 +129,9 @@ jobs:
               Environment=dev \
               DBInstanceClass=db.t3.micro \
               DBName=cloudmart \
-              DBPort=3306 \
               AllocatedStorage=20 \
-              MaxAllocatedStorage=100 \
-              StorageType=gp3 \
-              MultiAZ=true \
-              BackupRetentionPeriod=7 \
-              MasterUsername="${{ secrets.CLOUDMART_DB_USERNAME }}" \
-              MasterPassword="${{ secrets.CLOUDMART_DB_PASSWORD }}" \
+              DBUsername="${{ secrets.CLOUDMART_DB_USERNAME }}" \
+              DBPassword="${{ secrets.CLOUDMART_DB_PASSWORD }}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -153,6 +148,7 @@ jobs:
             --region us-east-1 \
             --query "Stacks[0].Outputs" \
             --output table
+
       - name: Show Data Stack Failure Events
         if: failure()
         run: |
