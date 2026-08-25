@@ -1,9 +1,6 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
-Description: >
-  CloudMart Data-Storage Stack.
-  Creates RDS MySQL, S3 report bucket, and SSM configuration
-  using networking resources from the Network Stack.
+Description: CloudMart Data Storage Stack
 
 Parameters:
 
@@ -27,32 +24,22 @@ Parameters:
   DBInstanceClass:
     Type: String
     Default: db.t3.micro
-    Description: RDS MySQL instance class
-
 
   DBName:
     Type: String
     Default: cloudmart
-    Description: Initial CloudMart database name
-
 
   DBPort:
     Type: Number
     Default: 3306
-    Description: MySQL database port
-
 
   AllocatedStorage:
     Type: Number
     Default: 20
-    Description: RDS allocated storage in GB
-
 
   MaxAllocatedStorage:
     Type: Number
     Default: 100
-    Description: Maximum RDS storage in GB
-
 
   StorageType:
     Type: String
@@ -61,20 +48,16 @@ Parameters:
       - gp2
       - gp3
 
-
   MultiAZ:
     Type: String
     Default: "true"
     AllowedValues:
       - "true"
       - "false"
-    Description: Enable RDS Multi-AZ deployment
-
 
   BackupRetentionPeriod:
     Type: Number
     Default: 7
-    Description: Number of days for automated backups
 
 
   # =========================================================
@@ -88,30 +71,23 @@ Parameters:
     MinLength: 1
     MaxLength: 16
     AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]*$"
-    Description: RDS MySQL master username
 
 
   # =========================================================
-  # SSM SECURE PASSWORD PARAMETER NAME
+  # RDS PASSWORD
   # =========================================================
 
-  DBPasswordParameterName:
+  MasterPassword:
     Type: String
-    Default: /CloudMart/dev/database/password
-    Description: >
-      Existing SSM Parameter Store SecureString containing
-      the RDS MySQL master password.
+    NoEcho: true
+    MinLength: 8
+    MaxLength: 41
 
 
 Resources:
 
   # =========================================================
   # RDS DB SUBNET GROUP
-  # =========================================================
-  # PrivateSubnet1 -> us-east-1a
-  # PrivateSubnet2 -> us-east-1b
-  #
-  # Both private subnets are used by RDS Multi-AZ.
   # =========================================================
 
   CloudMartDBSubnetGroup:
@@ -187,11 +163,8 @@ Resources:
       MasterUsername:
         !Ref MasterUsername
 
-      # Password is retrieved from SSM SecureString.
-      # The SSM parameter must already exist.
-
       MasterUserPassword:
-        !Sub "{{resolve:ssm-secure:${DBPasswordParameterName}}}"
+        !Ref MasterPassword
 
       DBSubnetGroupName:
         !Ref CloudMartDBSubnetGroup
@@ -286,7 +259,6 @@ Resources:
         CloudMart RDS MySQL endpoint
 
       Tags:
-
         Project: CloudMart
         Environment: !Ref Environment
 
@@ -312,7 +284,6 @@ Resources:
         CloudMart RDS MySQL port
 
       Tags:
-
         Project: CloudMart
         Environment: !Ref Environment
 
@@ -338,7 +309,6 @@ Resources:
         CloudMart database name
 
       Tags:
-
         Project: CloudMart
         Environment: !Ref Environment
 
@@ -364,36 +334,6 @@ Resources:
         CloudMart RDS MySQL username
 
       Tags:
-
-        Project: CloudMart
-        Environment: !Ref Environment
-
-
-  # =========================================================
-  # SSM - DATABASE PASSWORD PARAMETER NAME
-  # =========================================================
-  # We do NOT create SecureString here.
-  # The password SecureString already exists in SSM.
-  # =========================================================
-
-  DatabasePasswordParameterName:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-
-      Name:
-        !Sub /CloudMart/${Environment}/database/password-reference
-
-      Type: String
-
-      Value:
-        !Ref DBPasswordParameterName
-
-      Description:
-        SSM SecureString parameter name containing the RDS password
-
-      Tags:
-
         Project: CloudMart
         Environment: !Ref Environment
 
@@ -419,7 +359,6 @@ Resources:
         CloudMart RDS instance identifier
 
       Tags:
-
         Project: CloudMart
         Environment: !Ref Environment
 
@@ -445,7 +384,6 @@ Resources:
         CloudMart generated reports S3 bucket
 
       Tags:
-
         Project: CloudMart
         Environment: !Ref Environment
 
@@ -455,10 +393,6 @@ Resources:
 # =========================================================
 
 Outputs:
-
-  # =========================================================
-  # RDS OUTPUTS
-  # =========================================================
 
   RDSInstanceId:
     Description: CloudMart RDS MySQL instance identifier
@@ -492,10 +426,6 @@ Outputs:
       Name: !Sub CloudMart-${Environment}-DBSubnetGroupName
 
 
-  # =========================================================
-  # S3 OUTPUTS
-  # =========================================================
-
   ReportBucketName:
     Description: CloudMart generated reports S3 bucket
     Value: !Ref CloudMartReportBucket
@@ -511,10 +441,6 @@ Outputs:
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketArn
 
-
-  # =========================================================
-  # SSM OUTPUTS
-  # =========================================================
 
   DatabaseEndpointParameterName:
     Description: SSM parameter containing RDS endpoint
@@ -546,14 +472,6 @@ Outputs:
 
     Export:
       Name: !Sub CloudMart-${Environment}-DatabaseUsernameParameter
-
-
-  DatabasePasswordParameterName:
-    Description: SSM SecureString password parameter reference
-    Value: !Ref DBPasswordParameterName
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-DatabasePasswordParameter
 
 
   RDSInstanceParameterName:
