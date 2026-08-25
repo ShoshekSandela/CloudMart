@@ -58,9 +58,9 @@ Parameters:
     Description: Initial RDS storage in GB
 
 
-# ============================================================
+# ==========================================================
 # RESOURCES
-# ============================================================
+# ==========================================================
 
 Resources:
 
@@ -117,9 +117,8 @@ Resources:
 
       DBName: !Ref DBName
 
-      MasterUsername: !Ref DBUsername
-
-      MasterUserPassword: !Ref DBPassword
+      DBUsername="${{ secrets.CLOUDMART_DB_USERNAME }}" \
+      DBPassword="${{ secrets.CLOUDMART_DB_PASSWORD }}" \
 
       DBInstanceClass: !Ref DBInstanceClass
 
@@ -200,9 +199,9 @@ Resources:
           Value: !Ref Environment
 
 
-# ============================================================
+# ==========================================================
 # OUTPUTS
-# ============================================================
+# ==========================================================
 
 Outputs:
 
