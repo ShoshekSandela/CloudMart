@@ -47,13 +47,6 @@ jobs:
             --template-body file://$TEMPLATE_FILE \
             --region us-east-1
 
-      - name: Check Network Stack
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name $STACK_NAME \
-            --region us-east-1 \
-            >/dev/null 2>&1 || true
-
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
