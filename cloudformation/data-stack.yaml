@@ -1,12 +1,11 @@
-AWSTemplateFormatVersion: "2010-09-09"
+AWSTemplateFormatVersion: '2010-09-09'
 
-Description: CloudMart Data Storage Stack
+Description: >
+  CloudMart Data-Storage Stack.
+  Creates the private RDS MySQL database and
+  S3 bucket used for generated reports.
 
 Parameters:
-
-  # =========================================================
-  # ENVIRONMENT
-  # =========================================================
 
   Environment:
     Type: String
@@ -15,101 +14,70 @@ Parameters:
       - dev
       - test
       - prod
-
-
-  # =========================================================
-  # RDS CONFIGURATION
-  # =========================================================
-
-  DBInstanceClass:
-    Type: String
-    Default: db.t3.micro
+    Description: Deployment environment
 
   DBName:
     Type: String
     Default: cloudmart
+    Description: CloudMart database name
 
-  DBPort:
-    Type: Number
-    Default: 3306
-
-  AllocatedStorage:
-    Type: Number
-    Default: 20
-
-  MaxAllocatedStorage:
-    Type: Number
-    Default: 100
-
-  StorageType:
-    Type: String
-    Default: gp3
-    AllowedValues:
-      - gp2
-      - gp3
-
-  MultiAZ:
-    Type: String
-    Default: "false"
-    AllowedValues:
-      - "true"
-      - "false"
-
-  BackupRetentionPeriod:
-    Type: Number
-    Default: 0
-
-
-  # =========================================================
-  # RDS USERNAME
-  # =========================================================
-
-  MasterUsername:
+  DBUsername:
     Type: String
     Default: cloudmartadmin
     NoEcho: true
     MinLength: 1
     MaxLength: 16
     AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]*$"
+    Description: RDS master username
 
-
-  # =========================================================
-  # RDS PASSWORD
-  # =========================================================
-
-  MasterPassword:
+  DBPassword:
     Type: String
     NoEcho: true
-    MinLength: 8
+    MinLength: 12
     MaxLength: 41
+    Description: RDS master password
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS instance class
+
+  AllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: Initial RDS storage in GB
 
 
 Resources:
 
-  # =========================================================
-  # RDS DB SUBNET GROUP
-  # =========================================================
+  # ==========================================================
+  # RDS SUBNET GROUP
+  # ==========================================================
 
   CloudMartDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
 
     Properties:
 
-      DBSubnetGroupDescription:
-        CloudMart RDS MySQL private subnet group
+      DBSubnetGroupDescription: !Sub
+        CloudMart ${Environment} RDS private subnet group
 
       SubnetIds:
 
+        # Network Stack:
+        # CloudMart-${Environment}-PrivateSubnet1Id
         - Fn::ImportValue:
-            !Sub CloudMart-${Environment}-PrivateSubnet1Id
+            Fn::Sub: CloudMart-${Environment}-PrivateSubnet1Id
 
+        # Network Stack:
+        # CloudMart-${Environment}-PrivateSubnet2Id
         - Fn::ImportValue:
-            !Sub CloudMart-${Environment}-PrivateSubnet2Id
+            Fn::Sub: CloudMart-${Environment}-PrivateSubnet2Id
 
       Tags:
 
         - Key: Name
-          Value: !Sub cloudmart-${Environment}-db-subnet-group
+          Value: !Sub cloudmart-${Environment}-rds-subnet-group
 
         - Key: Project
           Value: CloudMart
@@ -118,9 +86,9 @@ Resources:
           Value: !Ref Environment
 
 
-  # =========================================================
-  # RDS MYSQL
-  # =========================================================
+  # ==========================================================
+  # RDS MYSQL DATABASE
+  # ==========================================================
 
   CloudMartRDS:
     Type: AWS::RDS::DBInstance
@@ -130,12 +98,21 @@ Resources:
 
     Properties:
 
-      DBInstanceIdentifier:
-        !Sub cloudmart-${Environment}-mysql
+      DBInstanceIdentifier: !Sub
+        cloudmart-${Environment}-mysql
 
       Engine: mysql
 
       EngineVersion: "8.0"
+
+      DBName:
+        !Ref DBName
+
+      MasterUsername:
+        !Ref DBUsername
+
+      MasterUserPassword:
+        !Ref DBPassword
 
       DBInstanceClass:
         !Ref DBInstanceClass
@@ -143,52 +120,34 @@ Resources:
       AllocatedStorage:
         !Ref AllocatedStorage
 
-      MaxAllocatedStorage:
-        !Ref MaxAllocatedStorage
+      StorageType: gp3
 
-      StorageType:
-        !Ref StorageType
+      Port: 3306
 
       StorageEncrypted: true
 
-      MultiAZ:
-        !Ref MultiAZ
+      PubliclyAccessible: false
 
-      DBName:
-        !Ref DBName
+      MultiAZ: false
 
-      Port:
-        !Ref DBPort
+      BackupRetentionPeriod: 0
 
-      MasterUsername:
-        !Ref MasterUsername
-
-      MasterUserPassword:
-        !Ref MasterPassword
+      CopyTagsToSnapshot: true
 
       DBSubnetGroupName:
         !Ref CloudMartDBSubnetGroup
 
       VPCSecurityGroups:
 
+        # Network Stack:
+        # CloudMart-${Environment}-RDSSecurityGroupId
         - Fn::ImportValue:
-            !Sub CloudMart-${Environment}-RDSSecurityGroupId
-
-      BackupRetentionPeriod:
-        !Ref BackupRetentionPeriod
-
-      CopyTagsToSnapshot: true
-
-      PubliclyAccessible: false
-
-      AutoMinorVersionUpgrade: true
-
-      DeletionProtection: false
+            Fn::Sub: CloudMart-${Environment}-RDSSecurityGroupId
 
       Tags:
 
         - Key: Name
-          Value: !Sub cloudmart-${Environment}-mysql
+          Value: !Sub cloudmart-${Environment}-rds
 
         - Key: Project
           Value: CloudMart
@@ -197,9 +156,9 @@ Resources:
           Value: !Ref Environment
 
 
-  # =========================================================
+  # ==========================================================
   # S3 REPORT BUCKET
-  # =========================================================
+  # ==========================================================
 
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
@@ -238,46 +197,46 @@ Resources:
           Value: !Ref Environment
 
 
-# =========================================================
+# ==========================================================
 # OUTPUTS
-# =========================================================
+# ==========================================================
 
 Outputs:
 
-  RDSInstanceId:
-    Description: CloudMart RDS MySQL instance identifier
-    Value: !Ref CloudMartRDS
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-RDSInstanceId
-
-
-  RDSEndpoint:
-    Description: CloudMart RDS MySQL endpoint
+  DBEndpoint:
+    Description: RDS MySQL endpoint
     Value: !GetAtt CloudMartRDS.Endpoint.Address
 
     Export:
-      Name: !Sub CloudMart-${Environment}-RDSEndpoint
+      Name: !Sub CloudMart-${Environment}-DBEndpoint
 
 
-  RDSPort:
-    Description: CloudMart RDS MySQL port
+  DBPort:
+    Description: RDS MySQL port
     Value: !GetAtt CloudMartRDS.Endpoint.Port
 
     Export:
-      Name: !Sub CloudMart-${Environment}-RDSPort
+      Name: !Sub CloudMart-${Environment}-DBPort
 
 
-  DBSubnetGroupName:
-    Description: CloudMart RDS DB subnet group
-    Value: !Ref CloudMartDBSubnetGroup
+  DBName:
+    Description: CloudMart database name
+    Value: !Ref DBName
 
     Export:
-      Name: !Sub CloudMart-${Environment}-DBSubnetGroupName
+      Name: !Sub CloudMart-${Environment}-DBName
+
+
+  DBInstanceIdentifier:
+    Description: RDS instance identifier
+    Value: !Ref CloudMartRDS
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
 
 
   ReportBucketName:
-    Description: CloudMart generated reports bucket
+    Description: CloudMart generated reports S3 bucket
     Value: !Ref CloudMartReportBucket
 
     Export:
@@ -285,7 +244,7 @@ Outputs:
 
 
   ReportBucketArn:
-    Description: CloudMart generated reports bucket ARN
+    Description: CloudMart generated reports S3 bucket ARN
     Value: !GetAtt CloudMartReportBucket.Arn
 
     Export:
