@@ -50,7 +50,7 @@ Parameters:
 
   MultiAZ:
     Type: String
-    Default: "true"
+    Default: "false"
     AllowedValues:
       - "true"
       - "false"
@@ -277,7 +277,7 @@ Outputs:
 
 
   ReportBucketName:
-    Description: CloudMart generated reports S3 bucket
+    Description: CloudMart generated reports bucket
     Value: !Ref CloudMartReportBucket
 
     Export:
@@ -285,7 +285,7 @@ Outputs:
 
 
   ReportBucketArn:
-    Description: CloudMart generated reports S3 bucket ARN
+    Description: CloudMart generated reports bucket ARN
     Value: !GetAtt CloudMartReportBucket.Arn
 
     Export:
