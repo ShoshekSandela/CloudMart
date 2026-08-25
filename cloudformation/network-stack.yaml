@@ -2,9 +2,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   CloudMart Network-Security Stack.
-  Creates the VPC, public and private subnets, route tables,
-  Internet Gateway, Security Groups, and VPC Endpoints required
-  by the CloudMart application.
+  Creates the VPC, one public subnet, two private subnets
+  across two Availability Zones, route tables, Internet Gateway,
+  Security Groups, and VPC Endpoints.
 
 Parameters:
 
@@ -20,13 +20,9 @@ Parameters:
     Type: String
     Default: 10.0.0.0/16
 
-  PublicSubnet1Cidr:
+  PublicSubnetCidr:
     Type: String
     Default: 10.0.1.0/24
-
-  PublicSubnet2Cidr:
-    Type: String
-    Default: 10.0.2.0/24
 
   PrivateSubnet1Cidr:
     Type: String
@@ -80,39 +76,20 @@ Resources:
 
 
   # =========================================================
-  # PUBLIC SUBNET 1
+  # PUBLIC SUBNET
+  # AZ: us-east-1a
   # =========================================================
 
-  PublicSubnet1:
+  PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref CloudMartVPC
-      CidrBlock: !Ref PublicSubnet1Cidr
+      CidrBlock: !Ref PublicSubnetCidr
       AvailabilityZone: us-east-1a
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub cloudmart-${Environment}-public-subnet-1
-        - Key: Tier
-          Value: Public
-        - Key: Project
-          Value: CloudMart
-
-
-  # =========================================================
-  # PUBLIC SUBNET 2
-  # =========================================================
-
-  PublicSubnet2:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref CloudMartVPC
-      CidrBlock: !Ref PublicSubnet2Cidr
-      AvailabilityZone: us-east-1b
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: !Sub cloudmart-${Environment}-public-subnet-2
+          Value: !Sub cloudmart-${Environment}-public-subnet
         - Key: Tier
           Value: Public
         - Key: Project
@@ -121,6 +98,8 @@ Resources:
 
   # =========================================================
   # PRIVATE SUBNET 1
+  # AZ: us-east-1a
+  # RDS
   # =========================================================
 
   PrivateSubnet1:
@@ -135,12 +114,16 @@ Resources:
           Value: !Sub cloudmart-${Environment}-private-subnet-1
         - Key: Tier
           Value: Private
+        - Key: Purpose
+          Value: RDS
         - Key: Project
           Value: CloudMart
 
 
   # =========================================================
   # PRIVATE SUBNET 2
+  # AZ: us-east-1b
+  # RDS HIGH AVAILABILITY / FAILOVER
   # =========================================================
 
   PrivateSubnet2:
@@ -155,6 +138,8 @@ Resources:
           Value: !Sub cloudmart-${Environment}-private-subnet-2
         - Key: Tier
           Value: Private
+        - Key: Purpose
+          Value: RDS
         - Key: Project
           Value: CloudMart
 
@@ -183,17 +168,10 @@ Resources:
       GatewayId: !Ref InternetGateway
 
 
-  PublicSubnet1RouteTableAssociation:
+  PublicSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref PublicRouteTable
-
-
-  PublicSubnet2RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet2
+      SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
 
@@ -235,9 +213,11 @@ Resources:
     Properties:
       GroupDescription: Security group for CloudMart Lambda functions
       VpcId: !Ref CloudMartVPC
+
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
+
       Tags:
         - Key: Name
           Value: !Sub cloudmart-${Environment}-lambda-sg
@@ -432,29 +412,22 @@ Outputs:
       Name: !Sub CloudMart-${Environment}-VpcId
 
 
-  PublicSubnet1Id:
-    Description: CloudMart Public Subnet 1 ID
-    Value: !Ref PublicSubnet1
+  PublicSubnetId:
+    Description: CloudMart Public Subnet ID
+    Value: !Ref PublicSubnet
     Export:
-      Name: !Sub CloudMart-${Environment}-PublicSubnet1Id
-
-
-  PublicSubnet2Id:
-    Description: CloudMart Public Subnet 2 ID
-    Value: !Ref PublicSubnet2
-    Export:
-      Name: !Sub CloudMart-${Environment}-PublicSubnet2Id
+      Name: !Sub CloudMart-${Environment}-PublicSubnetId
 
 
   PrivateSubnet1Id:
-    Description: CloudMart Private Subnet 1 ID
+    Description: CloudMart Private Subnet 1 ID for RDS
     Value: !Ref PrivateSubnet1
     Export:
       Name: !Sub CloudMart-${Environment}-PrivateSubnet1Id
 
 
   PrivateSubnet2Id:
-    Description: CloudMart Private Subnet 2 ID
+    Description: CloudMart Private Subnet 2 ID for RDS high availability
     Value: !Ref PrivateSubnet2
     Export:
       Name: !Sub CloudMart-${Environment}-PrivateSubnet2Id
