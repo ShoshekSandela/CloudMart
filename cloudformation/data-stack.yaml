@@ -7,6 +7,10 @@ Description: >
 
 Parameters:
 
+  # ==========================================================
+  # ENVIRONMENT
+  # ==========================================================
+
   Environment:
     Type: String
     Default: dev
@@ -15,6 +19,11 @@ Parameters:
       - test
       - prod
     Description: Deployment environment
+
+
+  # ==========================================================
+  # DATABASE CONFIGURATION
+  # ==========================================================
 
   DBName:
     Type: String
@@ -48,6 +57,10 @@ Parameters:
     Description: Initial RDS storage in GB
 
 
+# ============================================================
+# RESOURCES
+# ============================================================
+
 Resources:
 
   # ==========================================================
@@ -60,17 +73,14 @@ Resources:
     Properties:
 
       DBSubnetGroupDescription: !Sub
-        CloudMart ${Environment} RDS private subnet group
+        "CloudMart ${Environment} RDS private subnet group"
 
       SubnetIds:
 
-        # Network Stack:
-        # CloudMart-${Environment}-PrivateSubnet1Id
+        # Imported from Network Stack
         - Fn::ImportValue:
             Fn::Sub: CloudMart-${Environment}-PrivateSubnet1Id
 
-        # Network Stack:
-        # CloudMart-${Environment}-PrivateSubnet2Id
         - Fn::ImportValue:
             Fn::Sub: CloudMart-${Environment}-PrivateSubnet2Id
 
@@ -105,20 +115,15 @@ Resources:
 
       EngineVersion: "8.0"
 
-      DBName:
-        !Ref DBName
+      DBName: !Ref DBName
 
-      MasterUsername:
-        !Ref DBUsername
+      MasterUsername: !Ref DBUsername
 
-      MasterUserPassword:
-        !Ref DBPassword
+      MasterUserPassword: !Ref DBPassword
 
-      DBInstanceClass:
-        !Ref DBInstanceClass
+      DBInstanceClass: !Ref DBInstanceClass
 
-      AllocatedStorage:
-        !Ref AllocatedStorage
+      AllocatedStorage: !Ref AllocatedStorage
 
       StorageType: gp3
 
@@ -139,8 +144,7 @@ Resources:
 
       VPCSecurityGroups:
 
-        # Network Stack:
-        # CloudMart-${Environment}-RDSSecurityGroupId
+        # Imported from Network Stack
         - Fn::ImportValue:
             Fn::Sub: CloudMart-${Environment}-RDSSecurityGroupId
 
@@ -197,11 +201,15 @@ Resources:
           Value: !Ref Environment
 
 
-# ==========================================================
+# ============================================================
 # OUTPUTS
-# ==========================================================
+# ============================================================
 
 Outputs:
+
+  # ==========================================================
+  # DATABASE ENDPOINT
+  # ==========================================================
 
   DBEndpoint:
     Description: RDS MySQL endpoint
@@ -211,6 +219,10 @@ Outputs:
       Name: !Sub CloudMart-${Environment}-DBEndpoint
 
 
+  # ==========================================================
+  # DATABASE PORT
+  # ==========================================================
+
   DBPort:
     Description: RDS MySQL port
     Value: !GetAtt CloudMartRDS.Endpoint.Port
@@ -218,6 +230,10 @@ Outputs:
     Export:
       Name: !Sub CloudMart-${Environment}-DBPort
 
+
+  # ==========================================================
+  # DATABASE NAME
+  # ==========================================================
 
   DBName:
     Description: CloudMart database name
@@ -227,13 +243,21 @@ Outputs:
       Name: !Sub CloudMart-${Environment}-DBName
 
 
+  # ==========================================================
+  # DATABASE INSTANCE IDENTIFIER
+  # ==========================================================
+
   DBInstanceIdentifier:
-    Description: RDS instance identifier
+    Description: RDS MySQL instance identifier
     Value: !Ref CloudMartRDS
 
     Export:
       Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
 
+
+  # ==========================================================
+  # REPORT BUCKET NAME
+  # ==========================================================
 
   ReportBucketName:
     Description: CloudMart generated reports S3 bucket
@@ -242,6 +266,10 @@ Outputs:
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketName
 
+
+  # ==========================================================
+  # REPORT BUCKET ARN
+  # ==========================================================
 
   ReportBucketArn:
     Description: CloudMart generated reports S3 bucket ARN
