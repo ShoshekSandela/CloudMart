@@ -1,1 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
 
+Description: >
+  CloudMart Data Storage Stack.
+  Creates the RDS MySQL database and S3 report bucket.
+
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - prod
+    Description: CloudMart deployment environment
+
+  VPCStackName:
+    Type: String
+    Default: cloudmart-network-dev
+    Description: Name of the CloudMart Network Stack
+
+  DBName:
+    Type: String
+    Default: cloudmart
+    Description: RDS MySQL database name
+
+  DBUsername:
+    Type: String
+    Default: cloudmartadmin
+    NoEcho: true
+    Description: RDS MySQL administrator username
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 8
+    Description: RDS MySQL administrator password
+
+  DBInstanceClass:
+    Type: String
+    Default: db.t3.micro
+    Description: RDS MySQL instance class
+
+  DBAllocatedStorage:
+    Type: Number
+    Default: 20
+    Description: RDS allocated storage in GB
+
+  DBEngineVersion:
+    Type: String
+    Default: '8.0'
+    Description: MySQL engine version
+
+Resources:
+
+  # ------------------------------------------------------------
+  # RDS Subnet Group
+  # ------------------------------------------------------------
+
+  CloudMartDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: CloudMart private RDS subnet group
+      SubnetIds:
+        - Fn::ImportValue:
+            !Sub '${VPCStackName}-PrivateSubnetId'
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-rds-subnet-group
+
+  # ------------------------------------------------------------
+  # RDS MySQL
+  # ------------------------------------------------------------
+
+  CloudMartRDS:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+
+    Properties:
+      DBInstanceIdentifier: !Sub cloudmart-${Environment}-mysql
+
+      Engine: mysql
+      EngineVersion: !Ref DBEngineVersion
+
+      DBInstanceClass: !Ref DBInstanceClass
+      AllocatedStorage: !Ref DBAllocatedStorage
+      StorageType: gp3
+      StorageEncrypted: true
+
+      DBName: !Ref DBName
+      MasterUsername: !Ref DBUsername
+      MasterUserPassword: !Ref DBPassword
+
+      DBSubnetGroupName: !Ref CloudMartDBSubnetGroup
+
+      VPCSecurityGroups:
+        - Fn::ImportValue:
+            !Sub '${VPCStackName}-RDSSecurityGroupId'
+
+      PubliclyAccessible: false
+
+      BackupRetentionPeriod: 1
+      MultiAZ: false
+
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-rds
+
+  # ------------------------------------------------------------
+  # S3 Report Bucket
+  # ------------------------------------------------------------
+
+  CloudMartReportBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+    Properties:
+
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+      VersioningConfiguration:
+        Status: Enabled
+
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-report-bucket
+
+Outputs:
+
+  RDSInstanceIdentifier:
+    Description: CloudMart RDS instance identifier
+    Value: !Ref CloudMartRDS
+
+  RDSEndpoint:
+    Description: CloudMart RDS MySQL endpoint
+    Value: !GetAtt CloudMartRDS.Endpoint.Address
+
+  RDSPort:
+    Description: CloudMart RDS MySQL port
+    Value: !GetAtt CloudMartRDS.Endpoint.Port
+
+  RDSDatabaseName:
+    Description: CloudMart RDS database name
+    Value: !Ref DBName
+
+  RDSSubnetGroup:
+    Description: CloudMart RDS subnet group
+    Value: !Ref CloudMartDBSubnetGroup
+
+  ReportBucketName:
+    Description: CloudMart S3 report bucket
+    Value: !Ref CloudMartReportBucket
+
+  ReportBucketArn:
+    Description: CloudMart S3 report bucket ARN
+    Value: !GetAtt CloudMartReportBucket.Arn
