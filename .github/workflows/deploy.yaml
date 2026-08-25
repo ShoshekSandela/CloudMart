@@ -1,113 +1,79 @@
-name: CloudMart Infrastructure Deployment
+name: Deploy Network Stack
 
 on:
+  workflow_dispatch:
+
   push:
     branches:
       - main
     paths:
-      - 'cloudformation/**'
-      - '.github/workflows/deploy.yaml'
-
-  workflow_dispatch:
+      - "cloudformation/network-stack.yaml"
+      - ".github/workflows/deploy.yaml"
 
 permissions:
   id-token: write
   contents: read
 
 env:
-  AWS_REGION: ap-south-1
-  ENVIRONMENT: dev
-  NETWORK_STACK_NAME: cloudmart-network-dev
+  AWS_REGION: us-east-1
+  STACK_NAME: cloudmart-network-dev
+  TEMPLATE_FILE: cloudformation/network-stack.yaml
 
 jobs:
-
   deploy-network:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
 
     steps:
 
-      # --------------------------------------------------
-      # Checkout
-      # --------------------------------------------------
-
       - name: Checkout repository
-        uses: actions/checkout@v4
-
-      # --------------------------------------------------
-      # Configure AWS using GitHub OIDC
-      # --------------------------------------------------
+        uses: actions/checkout@v5
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-east-1
 
-      # --------------------------------------------------
-      # Verify AWS identity
-      # --------------------------------------------------
-
-      - name: Verify AWS identity
+      - name: Verify AWS identity and region
         run: |
+          echo "AWS_REGION=$AWS_REGION"
           aws sts get-caller-identity
-
-      # --------------------------------------------------
-      # Validate CloudFormation
-      # --------------------------------------------------
+          aws configure get region || true
 
       - name: Validate Network CloudFormation template
         run: |
           aws cloudformation validate-template \
-            --template-body file://cloudformation/network-stack.yaml
+            --template-body file://$TEMPLATE_FILE \
+            --region us-east-1
 
-      # --------------------------------------------------
-      # Deploy Network Stack
-      # --------------------------------------------------
+      - name: Check Network Stack
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name $STACK_NAME \
+            --region us-east-1 \
+            >/dev/null 2>&1 || true
 
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
-            --template-file cloudformation/network-stack.yaml \
-            --stack-name "$NETWORK_STACK_NAME" \
+            --template-file $TEMPLATE_FILE \
+            --stack-name $STACK_NAME \
+            --region us-east-1 \
             --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              AvailabilityZone="ap-south-1a" \
-              VpcCidr="10.0.0.0/16" \
-              PublicSubnetCidr="10.0.1.0/24" \
-              PrivateSubnetCidr="10.0.2.0/24" \
-              AdminCidr="${{ secrets.ADMIN_CIDR }}" \
-            --capabilities CAPABILITY_NAMED_IAM
-
-      # --------------------------------------------------
-      # Wait for deployment
-      # --------------------------------------------------
-
-      - name: Wait for Network Stack
-        run: |
-          aws cloudformation wait stack-create-complete \
-            --stack-name "$NETWORK_STACK_NAME" || \
-          aws cloudformation wait stack-update-complete \
-            --stack-name "$NETWORK_STACK_NAME"
-
-      # --------------------------------------------------
-      # Show stack status
-      # --------------------------------------------------
+              Environment=dev \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
 
       - name: Show Network Stack
         run: |
           aws cloudformation describe-stacks \
-            --stack-name "$NETWORK_STACK_NAME" \
-            --query 'Stacks[0].[StackName,StackStatus]' \
-            --output table
-
-      # --------------------------------------------------
-      # Show stack outputs
-      # --------------------------------------------------
+            --stack-name $STACK_NAME \
+            --region us-east-1
 
       - name: Show Network Outputs
         run: |
           aws cloudformation describe-stacks \
-            --stack-name "$NETWORK_STACK_NAME" \
-            --query 'Stacks[0].Outputs' \
-            --output table
+            --stack-name $STACK_NAME \
+            --region us-east-1 \
+            --query "Stacks[0].Outputs"
