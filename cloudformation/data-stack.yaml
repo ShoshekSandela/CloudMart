@@ -71,13 +71,10 @@ Resources:
     Type: AWS::RDS::DBSubnetGroup
 
     Properties:
-
       DBSubnetGroupDescription: !Sub
         "CloudMart ${Environment} RDS private subnet group"
 
       SubnetIds:
-
-        # Imported from Network Stack
         - Fn::ImportValue:
             Fn::Sub: CloudMart-${Environment}-PrivateSubnet1Id
 
@@ -85,7 +82,6 @@ Resources:
             Fn::Sub: CloudMart-${Environment}-PrivateSubnet2Id
 
       Tags:
-
         - Key: Name
           Value: !Sub cloudmart-${Environment}-rds-subnet-group
 
@@ -107,7 +103,6 @@ Resources:
     UpdateReplacePolicy: Snapshot
 
     Properties:
-
       DBInstanceIdentifier: !Sub
         cloudmart-${Environment}-mysql
 
@@ -143,13 +138,10 @@ Resources:
         !Ref CloudMartDBSubnetGroup
 
       VPCSecurityGroups:
-
-        # Imported from Network Stack
         - Fn::ImportValue:
             Fn::Sub: CloudMart-${Environment}-RDSSecurityGroupId
 
       Tags:
-
         - Key: Name
           Value: !Sub cloudmart-${Environment}-rds
 
@@ -171,16 +163,12 @@ Resources:
     UpdateReplacePolicy: Retain
 
     Properties:
-
       BucketEncryption:
-
         ServerSideEncryptionConfiguration:
-
           - ServerSideEncryptionByDefault:
               SSEAlgorithm: AES256
 
       PublicAccessBlockConfiguration:
-
         BlockPublicAcls: true
         BlockPublicPolicy: true
         IgnorePublicAcls: true
@@ -190,7 +178,6 @@ Resources:
         Status: Enabled
 
       Tags:
-
         - Key: Name
           Value: !Sub cloudmart-${Environment}-reports
 
@@ -207,73 +194,43 @@ Resources:
 
 Outputs:
 
-  # ==========================================================
-  # DATABASE ENDPOINT
-  # ==========================================================
-
   DBEndpoint:
     Description: RDS MySQL endpoint
     Value: !GetAtt CloudMartRDS.Endpoint.Address
-
     Export:
       Name: !Sub CloudMart-${Environment}-DBEndpoint
 
 
-  # ==========================================================
-  # DATABASE PORT
-  # ==========================================================
-
   DBPort:
     Description: RDS MySQL port
     Value: !GetAtt CloudMartRDS.Endpoint.Port
-
     Export:
       Name: !Sub CloudMart-${Environment}-DBPort
 
 
-  # ==========================================================
-  # DATABASE NAME
-  # ==========================================================
-
   DBName:
     Description: CloudMart database name
     Value: !Ref DBName
-
     Export:
       Name: !Sub CloudMart-${Environment}-DBName
 
 
-  # ==========================================================
-  # DATABASE INSTANCE IDENTIFIER
-  # ==========================================================
-
   DBInstanceIdentifier:
     Description: RDS MySQL instance identifier
     Value: !Ref CloudMartRDS
-
     Export:
       Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
 
 
-  # ==========================================================
-  # REPORT BUCKET NAME
-  # ==========================================================
-
   ReportBucketName:
     Description: CloudMart generated reports S3 bucket
     Value: !Ref CloudMartReportBucket
-
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketName
 
 
-  # ==========================================================
-  # REPORT BUCKET ARN
-  # ==========================================================
-
   ReportBucketArn:
     Description: CloudMart generated reports S3 bucket ARN
     Value: !GetAtt CloudMartReportBucket.Arn
-
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketArn
