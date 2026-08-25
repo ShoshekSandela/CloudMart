@@ -1,0 +1,393 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  CloudMart IAM Stack.
+  Creates execution roles for CloudMart Lambda functions
+  with least-privilege access to CloudWatch Logs, VPC,
+  SSM Parameter Store, RDS-related application configuration,
+  S3 reports, EventBridge, and SNS.
+
+Parameters:
+
+  # ==========================================================
+  # ENVIRONMENT
+  # ==========================================================
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment
+
+
+Resources:
+
+  # ==========================================================
+  # COMMON LAMBDA BASIC EXECUTION ROLE
+  # ==========================================================
+
+  LambdaAuthorizerRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: !Sub cloudmart-${Environment}-authorizer-ssm-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: ReadAuthenticationParameters
+                Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-lambda-authorizer-role
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # ==========================================================
+  # PRODUCT LAMBDA ROLE
+  # ==========================================================
+
+  ProductLambdaRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-product-role
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: !Sub cloudmart-${Environment}-product-ssm-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+
+      Tags:
+
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-lambda-product-role
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # ==========================================================
+  # ORDER LAMBDA ROLE
+  # ==========================================================
+
+  OrderLambdaRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-order-role
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        # ------------------------------------------------------
+        # SSM
+        # ------------------------------------------------------
+
+        - PolicyName: !Sub cloudmart-${Environment}-order-ssm-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+
+
+        # ------------------------------------------------------
+        # EVENTBRIDGE
+        # ------------------------------------------------------
+
+        - PolicyName: !Sub cloudmart-${Environment}-order-eventbridge-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: PublishOrderEvents
+                Effect: Allow
+
+                Action:
+                  - events:PutEvents
+
+                Resource:
+                  - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
+
+
+        # ------------------------------------------------------
+        # SNS
+        # ------------------------------------------------------
+
+        - PolicyName: !Sub cloudmart-${Environment}-order-sns-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: PublishNotifications
+                Effect: Allow
+
+                Action:
+                  - sns:Publish
+
+                Resource:
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-*
+
+      Tags:
+
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-lambda-order-role
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # ==========================================================
+  # REPORT LAMBDA ROLE
+  # ==========================================================
+
+  ReportLambdaRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-report-role
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        # ------------------------------------------------------
+        # SSM
+        # ------------------------------------------------------
+
+        - PolicyName: !Sub cloudmart-${Environment}-report-ssm-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+
+
+        # ------------------------------------------------------
+        # S3 REPORT BUCKET
+        # ------------------------------------------------------
+
+        - PolicyName: !Sub cloudmart-${Environment}-report-s3-policy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              - Sid: ListReportBucket
+                Effect: Allow
+
+                Action:
+                  - s3:ListBucket
+
+                Resource:
+                  - Fn::ImportValue:
+                      Fn::Sub: CloudMart-${Environment}-ReportBucketArn
+
+              - Sid: ReadWriteReports
+                Effect: Allow
+
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+
+                Resource:
+                  - Fn::Sub:
+                      - "${BucketArn}/*"
+                      - BucketArn:
+                          Fn::ImportValue:
+                            Fn::Sub: CloudMart-${Environment}-ReportBucketArn
+
+      Tags:
+
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-lambda-report-role
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+# ============================================================
+# OUTPUTS
+# ============================================================
+
+Outputs:
+
+  # ==========================================================
+  # AUTHORIZER ROLE
+  # ==========================================================
+
+  LambdaAuthorizerRoleArn:
+    Description: Lambda Authorizer execution role ARN
+    Value: !GetAtt LambdaAuthorizerRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleArn
+
+
+  # ==========================================================
+  # PRODUCT ROLE
+  # ==========================================================
+
+  ProductLambdaRoleArn:
+    Description: Product Lambda execution role ARN
+    Value: !GetAtt ProductLambdaRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleArn
+
+
+  # ==========================================================
+  # ORDER ROLE
+  # ==========================================================
+
+  OrderLambdaRoleArn:
+    Description: Order Lambda execution role ARN
+    Value: !GetAtt OrderLambdaRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleArn
+
+
+  # ==========================================================
+  # REPORT ROLE
+  # ==========================================================
+
+  ReportLambdaRoleArn:
+    Description: Report Lambda execution role ARN
+    Value: !GetAtt ReportLambdaRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleArn
