@@ -77,7 +77,6 @@ Resources:
 
   # =========================================================
   # PUBLIC SUBNET
-  # AZ: us-east-1a
   # =========================================================
 
   PublicSubnet:
@@ -98,8 +97,7 @@ Resources:
 
   # =========================================================
   # PRIVATE SUBNET 1
-  # AZ: us-east-1a
-  # RDS
+  # RDS - us-east-1a
   # =========================================================
 
   PrivateSubnet1:
@@ -122,8 +120,7 @@ Resources:
 
   # =========================================================
   # PRIVATE SUBNET 2
-  # AZ: us-east-1b
-  # RDS HIGH AVAILABILITY / FAILOVER
+  # RDS HIGH AVAILABILITY - us-east-1b
   # =========================================================
 
   PrivateSubnet2:
@@ -466,3 +463,31 @@ Outputs:
     Value: !Ref InternetGateway
     Export:
       Name: !Sub CloudMart-${Environment}-InternetGatewayId
+
+
+  S3VPCEndpointId:
+    Description: CloudMart S3 Gateway VPC Endpoint ID
+    Value: !Ref S3VPCEndpoint
+    Export:
+      Name: !Sub CloudMart-${Environment}-S3VPCEndpointId
+
+
+  SSMVPCEndpointId:
+    Description: CloudMart SSM Interface VPC Endpoint ID
+    Value: !Ref SSMVPCEndpoint
+    Export:
+      Name: !Sub CloudMart-${Environment}-SSMVPCEndpointId
+
+
+  EventBridgeVPCEndpointId:
+    Description: CloudMart EventBridge Interface VPC Endpoint ID
+    Value: !Ref EventBridgeVPCEndpoint
+    Export:
+      Name: !Sub CloudMart-${Environment}-EventBridgeVPCEndpointId
+
+
+  SNSVPCEndpointId:
+    Description: CloudMart SNS Interface VPC Endpoint ID
+    Value: !Ref SNSVPCEndpoint
+    Export:
+      Name: !Sub CloudMart-${Environment}-SNSVPCEndpointId
