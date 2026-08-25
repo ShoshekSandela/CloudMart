@@ -135,8 +135,8 @@ jobs:
               StorageType=gp3 \
               MultiAZ=true \
               BackupRetentionPeriod=7 \
-              MasterUsername="${{ secrets.CLOUDMART_DB_USERNAME }}" \
-              MasterPassword="${{ secrets.CLOUDMART_DB_PASSWORD }}" \
+              MasterUsername=cloudmartadmin \
+              DBPasswordParameterName=/CloudMart/dev/database/password \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 

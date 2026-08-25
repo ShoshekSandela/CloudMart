@@ -2,8 +2,8 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   CloudMart Data-Storage Stack.
-  Creates RDS MySQL, S3 report bucket, and SSM Parameter Store
-  configuration using networking resources from the Network Stack.
+  Creates RDS MySQL, S3 report bucket, and SSM configuration
+  using networking resources from the Network Stack.
 
 Parameters:
 
@@ -68,7 +68,7 @@ Parameters:
     AllowedValues:
       - "true"
       - "false"
-    Description: Enable RDS Multi-AZ
+    Description: Enable RDS Multi-AZ deployment
 
 
   BackupRetentionPeriod:
@@ -78,12 +78,12 @@ Parameters:
 
 
   # =========================================================
-  # RDS CREDENTIALS
+  # RDS USERNAME
   # =========================================================
 
   MasterUsername:
     Type: String
-    Default: admin
+    Default: cloudmartadmin
     NoEcho: true
     MinLength: 1
     MaxLength: 16
@@ -91,12 +91,16 @@ Parameters:
     Description: RDS MySQL master username
 
 
-  MasterPassword:
+  # =========================================================
+  # SSM SECURE PASSWORD PARAMETER NAME
+  # =========================================================
+
+  DBPasswordParameterName:
     Type: String
-    NoEcho: true
-    MinLength: 8
-    MaxLength: 41
-    Description: RDS MySQL master password
+    Default: /CloudMart/dev/database/password
+    Description: >
+      Existing SSM Parameter Store SecureString containing
+      the RDS MySQL master password.
 
 
 Resources:
@@ -104,13 +108,10 @@ Resources:
   # =========================================================
   # RDS DB SUBNET GROUP
   # =========================================================
-  # Uses both private subnets from Network Stack:
-  #
   # PrivateSubnet1 -> us-east-1a
   # PrivateSubnet2 -> us-east-1b
   #
-  # This provides the subnet placement required for
-  # RDS Multi-AZ.
+  # Both private subnets are used by RDS Multi-AZ.
   # =========================================================
 
   CloudMartDBSubnetGroup:
@@ -186,8 +187,11 @@ Resources:
       MasterUsername:
         !Ref MasterUsername
 
+      # Password is retrieved from SSM SecureString.
+      # The SSM parameter must already exist.
+
       MasterUserPassword:
-        !Ref MasterPassword
+        !Sub "{{resolve:ssm-secure:${DBPasswordParameterName}}}"
 
       DBSubnetGroupName:
         !Ref CloudMartDBSubnetGroup
@@ -262,7 +266,7 @@ Resources:
 
 
   # =========================================================
-  # SSM PARAMETER - DATABASE ENDPOINT
+  # SSM - DATABASE ENDPOINT
   # =========================================================
 
   DatabaseEndpointParameter:
@@ -288,7 +292,7 @@ Resources:
 
 
   # =========================================================
-  # SSM PARAMETER - DATABASE PORT
+  # SSM - DATABASE PORT
   # =========================================================
 
   DatabasePortParameter:
@@ -314,7 +318,7 @@ Resources:
 
 
   # =========================================================
-  # SSM PARAMETER - DATABASE NAME
+  # SSM - DATABASE NAME
   # =========================================================
 
   DatabaseNameParameter:
@@ -340,7 +344,7 @@ Resources:
 
 
   # =========================================================
-  # SSM PARAMETER - DATABASE USERNAME
+  # SSM - DATABASE USERNAME
   # =========================================================
 
   DatabaseUsernameParameter:
@@ -366,50 +370,27 @@ Resources:
 
 
   # =========================================================
-  # SSM SECURE PARAMETER - DATABASE PASSWORD
+  # SSM - DATABASE PASSWORD PARAMETER NAME
+  # =========================================================
+  # We do NOT create SecureString here.
+  # The password SecureString already exists in SSM.
   # =========================================================
 
-  DatabasePasswordParameter:
+  DatabasePasswordParameterName:
     Type: AWS::SSM::Parameter
 
     Properties:
 
       Name:
-        !Sub /CloudMart/${Environment}/database/password
-
-      Type: SecureString
-
-      Value:
-        !Ref MasterPassword
-
-      Description:
-        CloudMart RDS MySQL password
-
-      Tags:
-
-        Project: CloudMart
-        Environment: !Ref Environment
-
-
-  # =========================================================
-  # SSM PARAMETER - S3 REPORT BUCKET
-  # =========================================================
-
-  ReportBucketParameter:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-
-      Name:
-        !Sub /CloudMart/${Environment}/s3/report-bucket
+        !Sub /CloudMart/${Environment}/database/password-reference
 
       Type: String
 
       Value:
-        !Ref CloudMartReportBucket
+        !Ref DBPasswordParameterName
 
       Description:
-        CloudMart generated reports S3 bucket
+        SSM SecureString parameter name containing the RDS password
 
       Tags:
 
@@ -418,7 +399,7 @@ Resources:
 
 
   # =========================================================
-  # SSM PARAMETER - RDS INSTANCE ID
+  # SSM - RDS INSTANCE ID
   # =========================================================
 
   RDSInstanceParameter:
@@ -443,6 +424,32 @@ Resources:
         Environment: !Ref Environment
 
 
+  # =========================================================
+  # SSM - S3 REPORT BUCKET
+  # =========================================================
+
+  ReportBucketParameter:
+    Type: AWS::SSM::Parameter
+
+    Properties:
+
+      Name:
+        !Sub /CloudMart/${Environment}/s3/report-bucket
+
+      Type: String
+
+      Value:
+        !Ref CloudMartReportBucket
+
+      Description:
+        CloudMart generated reports S3 bucket
+
+      Tags:
+
+        Project: CloudMart
+        Environment: !Ref Environment
+
+
 # =========================================================
 # OUTPUTS
 # =========================================================
@@ -458,38 +465,31 @@ Outputs:
     Value: !Ref CloudMartRDS
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-RDSInstanceId
+      Name: !Sub CloudMart-${Environment}-RDSInstanceId
 
 
   RDSEndpoint:
     Description: CloudMart RDS MySQL endpoint
-    Value:
-      !GetAtt CloudMartRDS.Endpoint.Address
+    Value: !GetAtt CloudMartRDS.Endpoint.Address
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-RDSEndpoint
+      Name: !Sub CloudMart-${Environment}-RDSEndpoint
 
 
   RDSPort:
     Description: CloudMart RDS MySQL port
-    Value:
-      !GetAtt CloudMartRDS.Endpoint.Port
+    Value: !GetAtt CloudMartRDS.Endpoint.Port
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-RDSPort
+      Name: !Sub CloudMart-${Environment}-RDSPort
 
 
   DBSubnetGroupName:
     Description: CloudMart RDS DB subnet group
-    Value:
-      !Ref CloudMartDBSubnetGroup
+    Value: !Ref CloudMartDBSubnetGroup
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-DBSubnetGroupName
+      Name: !Sub CloudMart-${Environment}-DBSubnetGroupName
 
 
   # =========================================================
@@ -498,93 +498,75 @@ Outputs:
 
   ReportBucketName:
     Description: CloudMart generated reports S3 bucket
-    Value:
-      !Ref CloudMartReportBucket
+    Value: !Ref CloudMartReportBucket
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-ReportBucketName
+      Name: !Sub CloudMart-${Environment}-ReportBucketName
 
 
   ReportBucketArn:
     Description: CloudMart generated reports S3 bucket ARN
-    Value:
-      !GetAtt CloudMartReportBucket.Arn
+    Value: !GetAtt CloudMartReportBucket.Arn
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-ReportBucketArn
+      Name: !Sub CloudMart-${Environment}-ReportBucketArn
 
 
   # =========================================================
-  # SSM PARAMETER OUTPUTS
+  # SSM OUTPUTS
   # =========================================================
 
   DatabaseEndpointParameterName:
     Description: SSM parameter containing RDS endpoint
-    Value:
-      !Ref DatabaseEndpointParameter
+    Value: !Ref DatabaseEndpointParameter
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-DatabaseEndpointParameter
+      Name: !Sub CloudMart-${Environment}-DatabaseEndpointParameter
 
 
   DatabasePortParameterName:
     Description: SSM parameter containing RDS port
-    Value:
-      !Ref DatabasePortParameter
+    Value: !Ref DatabasePortParameter
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-DatabasePortParameter
+      Name: !Sub CloudMart-${Environment}-DatabasePortParameter
 
 
   DatabaseNameParameterName:
     Description: SSM parameter containing database name
-    Value:
-      !Ref DatabaseNameParameter
+    Value: !Ref DatabaseNameParameter
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-DatabaseNameParameter
+      Name: !Sub CloudMart-${Environment}-DatabaseNameParameter
 
 
   DatabaseUsernameParameterName:
     Description: SSM parameter containing database username
-    Value:
-      !Ref DatabaseUsernameParameter
+    Value: !Ref DatabaseUsernameParameter
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-DatabaseUsernameParameter
+      Name: !Sub CloudMart-${Environment}-DatabaseUsernameParameter
 
 
   DatabasePasswordParameterName:
-    Description: SSM SecureString parameter containing database password
-    Value:
-      !Ref DatabasePasswordParameter
+    Description: SSM SecureString password parameter reference
+    Value: !Ref DBPasswordParameterName
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-DatabasePasswordParameter
-
-
-  ReportBucketParameterName:
-    Description: SSM parameter containing report bucket name
-    Value:
-      !Ref ReportBucketParameter
-
-    Export:
-      Name:
-        !Sub CloudMart-${Environment}-ReportBucketParameter
+      Name: !Sub CloudMart-${Environment}-DatabasePasswordParameter
 
 
   RDSInstanceParameterName:
     Description: SSM parameter containing RDS instance identifier
-    Value:
-      !Ref RDSInstanceParameter
+    Value: !Ref RDSInstanceParameter
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-RDSInstanceParameter
+      Name: !Sub CloudMart-${Environment}-RDSInstanceParameter
+
+
+  ReportBucketParameterName:
+    Description: SSM parameter containing report bucket name
+    Value: !Ref ReportBucketParameter
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-ReportBucketParameter
