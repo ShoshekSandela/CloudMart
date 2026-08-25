@@ -1,18 +1,17 @@
 name: Deploy CloudMart Infrastructure
 
 on:
-  workflow_dispatch:
-
   push:
     branches:
       - main
     paths:
-          paths:
-          paths:
       - "cloudformation/network-stack.yaml"
       - "cloudformation/data-stack.yaml"
       - "cloudformation/iam-stack.yaml"
       - ".github/workflows/deploy.yaml"
+
+  workflow_dispatch:
+
 permissions:
   id-token: write
   contents: read
