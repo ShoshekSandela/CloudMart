@@ -1,738 +1,288 @@
 ```yaml
-AWSTemplateFormatVersion: "2010-09-09"
-
-Description: >
-  CloudMart Application Stack.
-  Deploys Authorizer, Product, Order and Report Lambda functions,
-  EventBridge event processing, SNS low-stock notifications,
-  and Lambda CloudWatch log groups.
-
-# ==============================================================
-# PARAMETERS
-# ==============================================================
-
-Parameters:
-
-  # ------------------------------------------------------------
-  # ENVIRONMENT
-  # ------------------------------------------------------------
-
-  Environment:
-    Type: String
-    Default: dev
-    AllowedValues:
-      - dev
-      - test
-      - prod
-    Description: CloudMart environment
-
-  # ------------------------------------------------------------
-  # LAMBDA DEPLOYMENT ARTIFACTS
-  # ------------------------------------------------------------
-
-  LambdaArtifactBucket:
-    Type: String
-    Description: >
-      S3 bucket containing Lambda deployment ZIP files.
-
-  AuthorizerCodeKey:
-    Type: String
-    Default: dev/lambda/authorizer.zip
-    Description: Authorizer Lambda ZIP key
-
-  ProductCodeKey:
-    Type: String
-    Default: dev/lambda/product.zip
-    Description: Product Lambda ZIP key
-
-  OrderCodeKey:
-    Type: String
-    Default: dev/lambda/order-api.zip
-    Description: Order Lambda ZIP key
-
-  ReportCodeKey:
-    Type: String
-    Default: dev/lambda/report.zip
-    Description: Report Lambda ZIP key
-
-  # ------------------------------------------------------------
-  # NETWORK
-  # ------------------------------------------------------------
-
-  PrivateSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: >
-      Private subnet IDs from the Network-Security stack.
-      Used by Product, Order and Report Lambdas to access RDS.
-
-  LambdaSecurityGroupId:
-    Type: AWS::EC2::SecurityGroup::Id
-    Description: >
-      Lambda security group from the Network-Security stack.
-
-  # ------------------------------------------------------------
-  # IAM ROLES
-  # ------------------------------------------------------------
-
-  AuthorizerRoleArn:
-    Type: String
-    Description: >
-      ARN of the existing CloudMart Authorizer Lambda IAM role.
-
-  ProductRoleArn:
-    Type: String
-    Description: >
-      ARN of the existing CloudMart Product Lambda IAM role.
-
-  OrderRoleArn:
-    Type: String
-    Description: >
-      ARN of the existing CloudMart Order Lambda IAM role.
-
-  ReportRoleArn:
-    Type: String
-    Description: >
-      ARN of the existing CloudMart Report Lambda IAM role.
-
-  # ------------------------------------------------------------
-  # S3 REPORT BUCKET
-  # ------------------------------------------------------------
-
-  ReportBucketName:
-    Type: String
-    Description: >
-      Existing CloudMart S3 bucket used for generated reports.
+name: CloudMart Deployment
 
-  # ------------------------------------------------------------
-  # SNS EMAIL
-  # ------------------------------------------------------------
+on:
+  push:
+    branches:
+      - main
 
-  NotificationEmail:
-    Type: String
-    Description: >
-      Email address that receives low-stock notifications.
+  workflow_dispatch:
 
-  # ------------------------------------------------------------
-  # REPORT SCHEDULE
-  # ------------------------------------------------------------
+permissions:
+  id-token: write
+  contents: read
 
-  ReportScheduleExpression:
-    Type: String
-    Default: "rate(1 day)"
-    Description: >
-      EventBridge schedule used to trigger the Report Lambda.
+env:
+  AWS_REGION: us-east-1
 
+  # GitHub Repository Variables
+  CLOUDMART_NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+  CLOUDMART_LAMBDA_ARTIFACT_BUCKET: ${{ vars.CLOUDMART_LAMBDA_ARTIFACT_BUCKET }}
 
-# ==============================================================
-# RESOURCES
-# ==============================================================
+jobs:
 
-Resources:
+  deploy:
+    name: Deploy CloudMart
+    runs-on: ubuntu-latest
 
-  # ============================================================
-  # CLOUDWATCH LOG GROUPS
-  # ============================================================
+    steps:
 
-  AuthorizerLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/cloudmart-${Environment}-authorizer"
-      RetentionInDays: 30
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
 
-  ProductLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/cloudmart-${Environment}-product"
-      RetentionInDays: 30
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  OrderLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/cloudmart-${Environment}-order-api"
-      RetentionInDays: 30
 
-  ReportLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/cloudmart-${Environment}-report"
-      RetentionInDays: 30
+      # ==========================================================
+      # AWS CREDENTIALS
+      # ==========================================================
 
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-  # ============================================================
-  # AUTHORIZE LAMBDA
-  # ============================================================
 
-  AuthorizerLambda:
-    Type: AWS::Lambda::Function
+      # ==========================================================
+      # VERIFY AWS
+      # ==========================================================
 
-    Properties:
-      FunctionName: !Sub "cloudmart-${Environment}-authorizer"
+      - name: Check AWS identity
+        run: |
+          aws sts get-caller-identity
 
-      Runtime: python3.12
 
-      Handler: index.lambda_handler
+      # ==========================================================
+      # CHECK REQUIRED VARIABLES
+      # ==========================================================
 
-      Role: !Ref AuthorizerRoleArn
+      - name: Check required variables
+        shell: bash
+        run: |
 
-      Timeout: 10
+          if [ -z "$CLOUDMART_NOTIFICATION_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
+            exit 1
+          fi
 
-      MemorySize: 128
+          if [ -z "$CLOUDMART_LAMBDA_ARTIFACT_BUCKET" ]; then
+            echo "ERROR: CLOUDMART_LAMBDA_ARTIFACT_BUCKET is missing."
+            exit 1
+          fi
 
-      Code:
-        S3Bucket: !Ref LambdaArtifactBucket
-        S3Key: !Ref AuthorizerCodeKey
+          echo "Required GitHub variables are available."
 
-      Environment:
-        Variables:
 
-          ENVIRONMENT:
-            Value: !Ref Environment
+      # ==========================================================
+      # VALIDATE NETWORK STACK
+      # ==========================================================
 
-          TOKEN_PARAMETER_NAME:
-            Value: !Sub "/cloudmart/${Environment}/auth/token-secret"
+      - name: Validate network stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/network-stack.yaml
 
-      Tags:
-        - Key: Project
-          Value: CloudMart
 
-        - Key: Environment
-          Value: !Ref Environment
+      # ==========================================================
+      # DEPLOY NETWORK STACK
+      # ==========================================================
 
-        - Key: Component
-          Value: Authorizer
+      - name: Deploy network stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name cloudmart-network-dev \
+            --template-file cloudformation/network-stack.yaml \
+            --parameter-overrides \
+              Environment=dev
 
 
-  # ============================================================
-  # PRODUCT LAMBDA
-  # ============================================================
+      # ==========================================================
+      # VALIDATE IAM STACK
+      # ==========================================================
+
+      - name: Validate IAM stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/iam-stack.yaml
+
+
+      # ==========================================================
+      # DEPLOY IAM STACK
+      # ==========================================================
+
+      - name: Deploy IAM stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name cloudmart-iam-dev \
+            --template-file cloudformation/iam-stack.yaml \
+            --parameter-overrides \
+              Environment=dev \
+            --capabilities CAPABILITY_NAMED_IAM
+
+
+      # ==========================================================
+      # VALIDATE DATA STACK
+      # ==========================================================
 
-  ProductLambda:
-    Type: AWS::Lambda::Function
+      - name: Validate data stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/data-stack.yaml
 
-    Properties:
-      FunctionName: !Sub "cloudmart-${Environment}-product"
-
-      Runtime: python3.12
-
-      Handler: index.lambda_handler
-
-      Role: !Ref ProductRoleArn
-
-      Timeout: 30
-
-      MemorySize: 256
-
-      Code:
-        S3Bucket: !Ref LambdaArtifactBucket
-        S3Key: !Ref ProductCodeKey
-
-      VpcConfig:
-        SubnetIds: !Ref PrivateSubnetIds
-
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-
-      Environment:
-        Variables:
-
-          ENVIRONMENT:
-            Value: !Ref Environment
-
-          DB_HOST_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/host"
-
-          DB_PORT_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/port"
-
-          DB_NAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/name"
-
-          DB_USERNAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/username"
-
-          DB_PASSWORD_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/password"
-
-          EVENT_BUS_NAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/events/event-bus-name"
-
-          EVENT_BUS_ARN_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/events/event-bus-arn"
-
-          SNS_TOPIC_ARN_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/notifications/sns-topic-arn"
-
-      Tags:
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-        - Key: Component
-          Value: Product
-
-
-  # ============================================================
-  # ORDER LAMBDA
-  # ============================================================
-
-  OrderLambda:
-    Type: AWS::Lambda::Function
-
-    Properties:
-      FunctionName: !Sub "cloudmart-${Environment}-order-api"
-
-      Runtime: python3.12
-
-      Handler: index.lambda_handler
-
-      Role: !Ref OrderRoleArn
-
-      Timeout: 60
-
-      MemorySize: 256
-
-      Code:
-        S3Bucket: !Ref LambdaArtifactBucket
-        S3Key: !Ref OrderCodeKey
-
-      VpcConfig:
-        SubnetIds: !Ref PrivateSubnetIds
-
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-
-      Environment:
-        Variables:
-
-          ENVIRONMENT:
-            Value: !Ref Environment
-
-          DB_HOST_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/host"
-
-          DB_PORT_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/port"
-
-          DB_NAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/name"
-
-          DB_USERNAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/username"
-
-          DB_PASSWORD_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/password"
-
-          EVENT_BUS_NAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/events/event-bus-name"
-
-          EVENT_BUS_ARN_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/events/event-bus-arn"
-
-          SNS_TOPIC_ARN_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/notifications/sns-topic-arn"
-
-      Tags:
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-        - Key: Component
-          Value: Order
-
-
-  # ============================================================
-  # REPORT LAMBDA
-  # ============================================================
-
-  ReportLambda:
-    Type: AWS::Lambda::Function
-
-    Properties:
-      FunctionName: !Sub "cloudmart-${Environment}-report"
-
-      Runtime: python3.12
-
-      Handler: index.lambda_handler
-
-      Role: !Ref ReportRoleArn
-
-      Timeout: 120
-
-      MemorySize: 256
-
-      Code:
-        S3Bucket: !Ref LambdaArtifactBucket
-        S3Key: !Ref ReportCodeKey
-
-      VpcConfig:
-        SubnetIds: !Ref PrivateSubnetIds
-
-        SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-
-      Environment:
-        Variables:
-
-          ENVIRONMENT:
-            Value: !Ref Environment
-
-          DB_HOST_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/host"
-
-          DB_PORT_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/port"
-
-          DB_NAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/name"
-
-          DB_USERNAME_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/username"
-
-          DB_PASSWORD_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/database/password"
-
-          REPORT_BUCKET_PARAMETER:
-            Value: !Sub "/cloudmart/${Environment}/storage/report-bucket"
-
-          REPORT_BUCKET_NAME:
-            Value: !Ref ReportBucketName
-
-      Tags:
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-        - Key: Component
-          Value: Report
-
-
-  # ============================================================
-  # EVENTBRIDGE EVENT BUS
-  # ============================================================
-
-  CloudMartEventBus:
-    Type: AWS::Events::EventBus
-
-    Properties:
-      Name: !Sub "cloudmart-${Environment}-event-bus"
-
-
-  # ============================================================
-  # SSM PARAMETER - EVENT BUS NAME
-  # ============================================================
-
-  EventBusNameParameter:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-      Name: !Sub "/cloudmart/${Environment}/events/event-bus-name"
-
-      Type: String
-
-      Value: !Ref CloudMartEventBus
-
-      Description: CloudMart EventBridge event bus name
-
-
-  # ============================================================
-  # SSM PARAMETER - EVENT BUS ARN
-  # ============================================================
-
-  EventBusArnParameter:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-      Name: !Sub "/cloudmart/${Environment}/events/event-bus-arn"
-
-      Type: String
-
-      Value: !GetAtt CloudMartEventBus.Arn
-
-      Description: CloudMart EventBridge event bus ARN
-
-
-  # ============================================================
-  # SNS LOW-STOCK TOPIC
-  # ============================================================
-
-  LowStockTopic:
-    Type: AWS::SNS::Topic
-
-    Properties:
-      TopicName: !Sub "cloudmart-${Environment}-low-stock"
-
-      Tags:
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-        - Key: Component
-          Value: Notifications
-
-
-  # ============================================================
-  # SSM PARAMETER - SNS TOPIC ARN
-  # ============================================================
-
-  SnsTopicArnParameter:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-      Name: !Sub "/cloudmart/${Environment}/notifications/sns-topic-arn"
-
-      Type: String
-
-      Value: !Ref LowStockTopic
-
-      Description: CloudMart low-stock SNS topic ARN
-
-
-  # ============================================================
-  # SNS EMAIL SUBSCRIPTION
-  # ============================================================
-
-  LowStockEmailSubscription:
-    Type: AWS::SNS::Subscription
-
-    Properties:
-      TopicArn: !Ref LowStockTopic
-
-      Protocol: email
-
-      Endpoint: !Ref NotificationEmail
-
-
-  # ============================================================
-  # EVENTBRIDGE LOW-STOCK RULE
-  # ============================================================
-
-  LowStockEventRule:
-    Type: AWS::Events::Rule
-
-    Properties:
-      Name: !Sub "cloudmart-${Environment}-low-stock-rule"
-
-      Description: >
-        Detects CloudMart inventory events where stock
-        falls below the configured threshold.
-
-      EventBusName: !Ref CloudMartEventBus
-
-      State: ENABLED
-
-      EventPattern:
-        source:
-          - cloudmart.inventory
-
-        detail-type:
-          - InventoryChanged
-
-        detail:
-          low_stock:
-            - true
-
-      Targets:
-
-        - Id: LowStockSnsTarget
-
-          Arn: !Ref LowStockTopic
-
-
-  # ============================================================
-  # SNS POLICY FOR EVENTBRIDGE
-  # ============================================================
-
-  LowStockTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-
-    Properties:
-
-      Topics:
-        - !Ref LowStockTopic
-
-      PolicyDocument:
-
-        Version: "2012-10-17"
-
-        Statement:
-
-          - Sid: AllowEventBridgePublish
-
-            Effect: Allow
-
-            Principal:
-              Service: events.amazonaws.com
-
-            Action:
-              - sns:Publish
-
-            Resource: !Ref LowStockTopic
-
-            Condition:
-              ArnEquals:
-                aws:SourceArn:
-                  - !GetAtt LowStockEventRule.Arn
-
-
-  # ============================================================
-  # REPORT SCHEDULE
-  # ============================================================
-
-  ReportScheduleRule:
-    Type: AWS::Events::Rule
-
-    Properties:
-
-      Name: !Sub "cloudmart-${Environment}-report-schedule"
-
-      Description: >
-        Scheduled execution of the CloudMart Report Lambda.
-
-      ScheduleExpression: !Ref ReportScheduleExpression
-
-      State: ENABLED
-
-      Targets:
-
-        - Id: ReportLambdaTarget
-
-          Arn: !GetAtt ReportLambda.Arn
-
-
-  # ============================================================
-  # EVENTBRIDGE PERMISSION TO INVOKE REPORT LAMBDA
-  # ============================================================
-
-  ReportLambdaEventPermission:
-    Type: AWS::Lambda::Permission
-
-    Properties:
-
-      FunctionName: !Ref ReportLambda
-
-      Action: lambda:InvokeFunction
-
-      Principal: events.amazonaws.com
-
-      SourceArn: !GetAtt ReportScheduleRule.Arn
-
-
-  # ============================================================
-  # S3 REPORT BUCKET PARAMETER
-  # ============================================================
-
-  ReportBucketParameter:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-
-      Name: !Sub "/cloudmart/${Environment}/storage/report-bucket"
-
-      Type: String
-
-      Value: !Ref ReportBucketName
-
-      Description: CloudMart report S3 bucket name
-
-
-# ==============================================================
-# OUTPUTS
-# ==============================================================
-
-Outputs:
-
-  # ------------------------------------------------------------
-  # AUTHORIZE
-  # ------------------------------------------------------------
-
-  AuthorizerLambdaArn:
-    Description: CloudMart Authorizer Lambda ARN
-    Value: !GetAtt AuthorizerLambda.Arn
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-AuthorizerLambdaArn"
-
-
-  # ------------------------------------------------------------
-  # PRODUCT
-  # ------------------------------------------------------------
-
-  ProductLambdaArn:
-    Description: CloudMart Product Lambda ARN
-    Value: !GetAtt ProductLambda.Arn
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-ProductLambdaArn"
-
-
-  # ------------------------------------------------------------
-  # ORDER
-  # ------------------------------------------------------------
-
-  OrderLambdaArn:
-    Description: CloudMart Order Lambda ARN
-    Value: !GetAtt OrderLambda.Arn
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-OrderLambdaArn"
-
-
-  # ------------------------------------------------------------
-  # REPORT
-  # ------------------------------------------------------------
-
-  ReportLambdaArn:
-    Description: CloudMart Report Lambda ARN
-    Value: !GetAtt ReportLambda.Arn
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-ReportLambdaArn"
-
-
-  # ------------------------------------------------------------
-  # EVENTBRIDGE
-  # ------------------------------------------------------------
-
-  EventBusName:
-    Description: CloudMart EventBridge event bus name
-    Value: !Ref CloudMartEventBus
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-EventBusName"
-
-
-  EventBusArn:
-    Description: CloudMart EventBridge event bus ARN
-    Value: !GetAtt CloudMartEventBus.Arn
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-EventBusArn"
-
-
-  # ------------------------------------------------------------
-  # SNS
-  # ------------------------------------------------------------
-
-  LowStockTopicArn:
-    Description: CloudMart low-stock SNS topic ARN
-    Value: !Ref LowStockTopic
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-LowStockTopicArn"
-
-
-  LowStockTopicName:
-    Description: CloudMart low-stock SNS topic name
-    Value: !GetAtt LowStockTopic.TopicName
-
-    Export:
-      Name: !Sub "CloudMart-${Environment}-LowStockTopicName"
+
+      # ==========================================================
+      # DEPLOY DATA STACK
+      # ==========================================================
+
+      - name: Deploy data stack
+        env:
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        run: |
+
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
+            exit 1
+          fi
+
+          aws cloudformation deploy \
+            --stack-name cloudmart-data-dev \
+            --template-file cloudformation/data-stack.yaml \
+            --parameter-overrides \
+              Environment=dev \
+              DBName=cloudmart \
+              DBUsername=cloudmartadmin \
+              DBPassword="$DB_PASSWORD" \
+              DBInstanceClass=db.t3.micro \
+              AllocatedStorage=20 \
+              ExistingReportBucketName=cloudmart-dev-reports
+
+
+      # ==========================================================
+      # GET NETWORK VALUES
+      # ==========================================================
+
+      - name: Get network values
+        id: network
+        shell: bash
+        run: |
+
+          PRIVATE_SUBNET_1=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-PrivateSubnet1Id'].Value" \
+            --output text)
+
+          PRIVATE_SUBNET_2=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-PrivateSubnet2Id'].Value" \
+            --output text)
+
+          LAMBDA_SECURITY_GROUP=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-LambdaSecurityGroupId'].Value" \
+            --output text)
+
+          echo "PRIVATE_SUBNET_1=$PRIVATE_SUBNET_1" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET_2=$PRIVATE_SUBNET_2" >> "$GITHUB_ENV"
+          echo "LAMBDA_SECURITY_GROUP=$LAMBDA_SECURITY_GROUP" >> "$GITHUB_ENV"
+
+
+      # ==========================================================
+      # GET IAM ROLE ARNS
+      # ==========================================================
+
+      - name: Get Lambda IAM role ARNs
+        shell: bash
+        run: |
+
+          AUTHORIZE_ROLE=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-AuthorizerLambdaRoleArn'].Value" \
+            --output text)
+
+          PRODUCT_ROLE=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-ProductLambdaRoleArn'].Value" \
+            --output text)
+
+          ORDER_ROLE=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-OrderLambdaRoleArn'].Value" \
+            --output text)
+
+          REPORT_ROLE=$(aws cloudformation list-exports \
+            --query "Exports[?Name=='CloudMart-dev-ReportLambdaRoleArn'].Value" \
+            --output text)
+
+          echo "AUTHORIZE_ROLE=$AUTHORIZE_ROLE" >> "$GITHUB_ENV"
+          echo "PRODUCT_ROLE=$PRODUCT_ROLE" >> "$GITHUB_ENV"
+          echo "ORDER_ROLE=$ORDER_ROLE" >> "$GITHUB_ENV"
+          echo "REPORT_ROLE=$REPORT_ROLE" >> "$GITHUB_ENV"
+
+
+      # ==========================================================
+      # VALIDATE APPLICATION STACK
+      # ==========================================================
+
+      - name: Validate application stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/application-stack.yaml
+
+
+      # ==========================================================
+      # DEPLOY APPLICATION STACK
+      # ==========================================================
+
+      - name: Deploy application stack
+        run: |
+
+          aws cloudformation deploy \
+            --stack-name cloudmart-application-dev \
+            --template-file cloudformation/application-stack.yaml \
+            --parameter-overrides \
+              Environment=dev \
+              LambdaArtifactBucket="$CLOUDMART_LAMBDA_ARTIFACT_BUCKET" \
+              AuthorizerCodeKey=dev/lambda/authorizer.zip \
+              ProductCodeKey=dev/lambda/product.zip \
+              OrderCodeKey=dev/lambda/order-api.zip \
+              ReportCodeKey=dev/lambda/report.zip \
+              PrivateSubnetIds="$PRIVATE_SUBNET_1,$PRIVATE_SUBNET_2" \
+              LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP" \
+              AuthorizerRoleArn="$AUTHORIZE_ROLE" \
+              ProductRoleArn="$PRODUCT_ROLE" \
+              OrderRoleArn="$ORDER_ROLE" \
+              ReportRoleArn="$REPORT_ROLE" \
+              ReportBucketName=cloudmart-dev-reports \
+              NotificationEmail="$CLOUDMART_NOTIFICATION_EMAIL" \
+              ReportScheduleExpression="rate(1 day)" \
+            --capabilities CAPABILITY_NAMED_IAM
+
+
+      # ==========================================================
+      # DEPLOYMENT STATUS
+      # ==========================================================
+
+      - name: Show CloudFormation status
+        run: |
+
+          echo "Network:"
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-network-dev \
+            --query 'Stacks[0].StackStatus' \
+            --output text
+
+          echo "IAM:"
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
+            --query 'Stacks[0].StackStatus' \
+            --output text
+
+          echo "Data:"
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --query 'Stacks[0].StackStatus' \
+            --output text
+
+          echo "Application:"
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-application-dev \
+            --query 'Stacks[0].StackStatus' \
+            --output text
 ```
