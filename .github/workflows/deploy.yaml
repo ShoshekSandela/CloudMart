@@ -232,7 +232,6 @@ jobs:
         run: |
           aws ssm get-parameter \
             --name "/cloudmart/dev/auth/token" \
-            --with-decryption \
             --region us-east-1 \
             --query "Parameter.[Name,Type]" \
             --output table
