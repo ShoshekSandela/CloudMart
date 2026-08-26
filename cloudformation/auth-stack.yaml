@@ -1,1 +1,257 @@
+AWSTemplateFormatVersion: '2010-09-09'
 
+Description: >
+  CloudMart Authentication Stack.
+  Creates the Lambda Authorizer and stores the API authentication
+  token in AWS Systems Manager Parameter Store as a SecureString.
+
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment
+
+  AuthToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: API authentication token
+
+Resources:
+
+  # ==========================================================
+  # SSM AUTH TOKEN
+  # ==========================================================
+
+  CloudMartAuthToken:
+    Type: AWS::SSM::Parameter
+
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/auth/token
+      Type: SecureString
+      Value: !Ref AuthToken
+      Description: CloudMart API authentication token
+
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+
+  # ==========================================================
+  # LAMBDA AUTHORIZE ROLE
+  # ==========================================================
+
+  LambdaAuthorizerRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
+
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: CloudMartAuthorizerPolicy
+
+          PolicyDocument:
+            Version: '2012-10-17'
+
+            Statement:
+
+              # CloudWatch Logs
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource: arn:aws:logs:*:*:*
+
+              # Read authentication token
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+
+
+  # ==========================================================
+  # LAMBDA AUTHORIZE FUNCTION
+  # ==========================================================
+
+  LambdaAuthorizer:
+    Type: AWS::Lambda::Function
+
+    Properties:
+
+      FunctionName:
+        !Sub cloudmart-${Environment}-lambda-authorizer
+
+      Runtime: python3.12
+
+      Handler: index.handler
+
+      Role:
+        !GetAtt LambdaAuthorizerRole.Arn
+
+      Timeout: 10
+
+      MemorySize: 128
+
+      Environment:
+
+        Variables:
+          AUTH_TOKEN_PARAMETER:
+            !Ref CloudMartAuthToken
+
+      Code:
+        ZipFile: |
+          import json
+          import os
+          import boto3
+
+          ssm = boto3.client("ssm")
+
+          def get_auth_token():
+              parameter_name = os.environ["AUTH_TOKEN_PARAMETER"]
+
+              response = ssm.get_parameter(
+                  Name=parameter_name,
+                  WithDecryption=True
+              )
+
+              return response["Parameter"]["Value"]
+
+
+          def handler(event, context):
+
+              headers = event.get("headers") or {}
+
+              authorization = (
+                  headers.get("Authorization")
+                  or headers.get("authorization")
+                  or ""
+              )
+
+              expected_token = get_auth_token()
+
+              if authorization.startswith("Bearer "):
+                  provided_token = authorization[7:]
+              else:
+                  provided_token = ""
+
+              effect = (
+                  "Allow"
+                  if provided_token == expected_token
+                  else "Deny"
+              )
+
+              method_arn = event.get(
+                  "methodArn",
+                  "*"
+              )
+
+              return {
+                  "principalId": "cloudmart-user",
+                  "policyDocument": {
+                      "Version": "2012-10-17",
+                      "Statement": [
+                          {
+                              "Action": "execute-api:Invoke",
+                              "Effect": effect,
+                              "Resource": method_arn
+                          }
+                      ]
+                  }
+              }
+
+
+      Tags:
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # ==========================================================
+  # LAMBDA AUTHORIZE PERMISSION FOR API GATEWAY
+  # ==========================================================
+
+  LambdaAuthorizerPermission:
+    Type: AWS::Lambda::Permission
+
+    Properties:
+
+      FunctionName:
+        !Ref LambdaAuthorizer
+
+      Action:
+        lambda:InvokeFunction
+
+      Principal:
+        apigateway.amazonaws.com
+
+
+# ==========================================================
+# OUTPUTS
+# ==========================================================
+
+Outputs:
+
+  AuthorizerFunctionArn:
+    Description: Lambda Authorizer ARN
+    Value:
+      !GetAtt LambdaAuthorizer.Arn
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-AuthorizerFunctionArn
+
+
+  AuthorizerFunctionName:
+    Description: Lambda Authorizer function name
+    Value:
+      !Ref LambdaAuthorizer
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-AuthorizerFunctionName
+
+
+  AuthTokenParameterName:
+    Description: SSM SecureString parameter containing API authentication token
+    Value:
+      !Ref CloudMartAuthToken
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-AuthTokenParameterName
+
+
+  AuthorizerRoleArn:
+    Description: Lambda Authorizer IAM role ARN
+    Value:
+      !GetAtt LambdaAuthorizerRole.Arn
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-AuthorizerRoleArn
