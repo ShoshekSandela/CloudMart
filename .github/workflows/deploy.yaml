@@ -156,7 +156,7 @@ jobs:
           aws cloudformation describe-stack-events \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table
 
 
@@ -202,7 +202,7 @@ jobs:
             --template-body file://cloudformation/iam-stack.yaml \
             --region "$AWS_REGION"
 
-      - name: Check IAM Stack Status
+      - name: Check Existing IAM Stack
         id: iam_status
         continue-on-error: true
         run: |
@@ -215,7 +215,7 @@ jobs:
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           echo "IAM Stack Status: $STATUS"
 
-      - name: Delete failed IAM stack
+      - name: Delete IAM Stack in ROLLBACK_COMPLETE
         if: steps.iam_status.outputs.status == 'ROLLBACK_COMPLETE'
         run: |
           echo "IAM stack is in ROLLBACK_COMPLETE."
@@ -258,16 +258,16 @@ jobs:
       # SSM AUTH TOKEN
       # =========================================================
 
-      - name: Verify Auth Token Secret Exists
+      - name: Verify Auth Token GitHub Secret
         env:
           AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
         run: |
           if [ -z "$AUTH_TOKEN" ]; then
-            echo "ERROR: CLOUDMART_AUTH_TOKEN GitHub Secret is empty or missing."
+            echo "ERROR: CLOUDMART_AUTH_TOKEN is missing or empty."
             exit 1
           fi
 
-          echo "CLOUDMART_AUTH_TOKEN GitHub Secret is available."
+          echo "CLOUDMART_AUTH_TOKEN is available."
 
       - name: Create or Update SSM Auth Token
         env:
@@ -280,7 +280,7 @@ jobs:
             --overwrite \
             --region "$AWS_REGION"
 
-          echo "SSM authentication token parameter created/updated."
+          echo "SSM authentication token parameter created or updated."
 
       - name: Verify SSM Auth Token Parameter
         run: |
@@ -291,14 +291,29 @@ jobs:
             --output table
 
       # =========================================================
-      # IAM FAILURE EVENTS
+      # IAM FAILURE DIAGNOSTICS
       # =========================================================
 
       - name: Show IAM Stack Failure Events
-        if: failure()
+        if: always()
         run: |
+          echo "========================================"
+          echo "IAM STACK STATUS"
+          echo "========================================"
+
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].[StackStatus,StackStatusReason]" \
+            --output table || true
+
+          echo ""
+          echo "========================================"
+          echo "IAM STACK FAILURE EVENTS"
+          echo "========================================"
+
           aws cloudformation describe-stack-events \
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-            --output table
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --output table || true
