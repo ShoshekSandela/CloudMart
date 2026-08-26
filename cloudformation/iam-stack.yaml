@@ -356,7 +356,7 @@ Outputs:
       Name: !Sub CloudMart-${Environment}-ReportLambdaRoleName
 
 
-    AuthorizerLambdaRoleArn:
+  AuthorizerLambdaRoleArn:
     Description: Authorizer Lambda IAM Role ARN
     Value: !GetAtt LambdaAuthorizerRole.Arn
 
