@@ -1,17 +1,12 @@
-name: Deploy CloudMart Infrastructure
+```yaml
+name: CloudMart Deployment
 
 on:
-  workflow_dispatch:
-
   push:
     branches:
       - main
-    paths:
-      - "cloudformation/network-stack.yaml"
-      - "cloudformation/data-stack.yaml"
-      - "cloudformation/iam-stack.yaml"
-      - "cloudformation/application-stack.yaml"
-      - ".github/workflows/deploy.yaml"
+
+  workflow_dispatch:
 
 permissions:
   id-token: write
@@ -19,6 +14,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+
 
 jobs:
 
@@ -145,6 +141,7 @@ jobs:
               AllocatedStorage=20 \
               DBUsername="${{ secrets.CLOUDMART_DB_USERNAME }}" \
               DBPassword="${{ secrets.CLOUDMART_DB_PASSWORD }}" \
+              ExistingReportBucketName=cloudmart-dev-reports \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -380,14 +377,15 @@ jobs:
             --output text
 
       # =====================================================
-      # VERIFY REQUIRED APPLICATION SECRETS
+      # VERIFY REQUIRED APPLICATION VARIABLES
       # =====================================================
 
-      - name: Verify Application Configuration Secrets
+      - name: Verify Application Configuration
         env:
-          ARTIFACT_BUCKET: ${{ secrets.CLOUDMART_LAMBDA_ARTIFACT_BUCKET }}
-          NOTIFICATION_EMAIL: ${{ secrets.CLOUDMART_NOTIFICATION_EMAIL }}
+          ARTIFACT_BUCKET: ${{ vars.CLOUDMART_LAMBDA_ARTIFACT_BUCKET }}
+          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
         run: |
+
           if [ -z "$ARTIFACT_BUCKET" ]; then
             echo "ERROR: CLOUDMART_LAMBDA_ARTIFACT_BUCKET is missing."
             exit 1
@@ -398,7 +396,8 @@ jobs:
             exit 1
           fi
 
-          echo "Application configuration secrets are available."
+          echo "CLOUDMART_LAMBDA_ARTIFACT_BUCKET is available."
+          echo "CLOUDMART_NOTIFICATION_EMAIL is available."
 
       # =====================================================
       # VALIDATE APPLICATION STACK
@@ -416,6 +415,7 @@ jobs:
 
       - name: Get Network Outputs
         run: |
+
           PRIVATE_SUBNET_1=$(aws cloudformation list-exports \
             --region "$AWS_REGION" \
             --query "Exports[?Name=='CloudMart-dev-PrivateSubnet1Id'].Value" \
@@ -450,6 +450,7 @@ jobs:
 
       - name: Get IAM Role Outputs
         run: |
+
           AUTHORIZER_ROLE=$(aws cloudformation list-exports \
             --region "$AWS_REGION" \
             --query "Exports[?Name=='CloudMart-dev-LambdaAuthorizerRoleArn'].Value" \
@@ -496,11 +497,12 @@ jobs:
           echo "REPORT_ROLE_ARN=$REPORT_ROLE" >> "$GITHUB_ENV"
 
       # =====================================================
-      # GET DATA STACK OUTPUTS
+      # GET REPORT BUCKET
       # =====================================================
 
       - name: Get Report Bucket
         run: |
+
           REPORT_BUCKET=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
@@ -508,7 +510,7 @@ jobs:
             --output text)
 
           if [ -z "$REPORT_BUCKET" ]; then
-            echo "ERROR: ReportBucketName output was not found in cloudmart-data-dev."
+            echo "ERROR: ReportBucketName output was not found."
             exit 1
           fi
 
@@ -520,9 +522,10 @@ jobs:
 
       - name: Deploy Application Events Stack
         env:
-          ARTIFACT_BUCKET: ${{ secrets.CLOUDMART_LAMBDA_ARTIFACT_BUCKET }}
-          NOTIFICATION_EMAIL: ${{ secrets.CLOUDMART_NOTIFICATION_EMAIL }}
+          ARTIFACT_BUCKET: ${{ vars.CLOUDMART_LAMBDA_ARTIFACT_BUCKET }}
+          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
         run: |
+
           aws cloudformation deploy \
             --template-file cloudformation/application-stack.yaml \
             --stack-name cloudmart-application-dev \
@@ -561,13 +564,10 @@ jobs:
             --query "Stacks[0].Outputs" \
             --output table
 
-      # =====================================================
-      # APPLICATION FAILURE DIAGNOSTICS
-      # =====================================================
-
       - name: Show Application Stack Failure Events
         if: always()
         run: |
+
           echo "APPLICATION STACK STATUS"
 
           aws cloudformation describe-stacks \
@@ -583,3 +583,4 @@ jobs:
             --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
+```
