@@ -38,7 +38,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity and region
         run: |
@@ -50,14 +50,14 @@ jobs:
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/network-stack.yaml \
-            --region us-east-1
+            --region "$AWS_REGION"
 
       - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
             --stack-name cloudmart-network-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
             --capabilities CAPABILITY_NAMED_IAM \
@@ -67,13 +67,13 @@ jobs:
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
-            --region us-east-1
+            --region "$AWS_REGION"
 
       - name: Show Network Outputs
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "Stacks[0].Outputs" \
             --output table
 
@@ -98,7 +98,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity and region
         run: |
@@ -110,7 +110,7 @@ jobs:
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text
 
@@ -118,14 +118,14 @@ jobs:
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
-            --region us-east-1
+            --region "$AWS_REGION"
 
       - name: Deploy Data Stack
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
             --stack-name cloudmart-data-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
               DBInstanceClass=db.t3.micro \
@@ -140,13 +140,13 @@ jobs:
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
-            --region us-east-1
+            --region "$AWS_REGION"
 
       - name: Show Data Outputs
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "Stacks[0].Outputs" \
             --output table
 
@@ -155,7 +155,7 @@ jobs:
         run: |
           aws cloudformation describe-stack-events \
             --stack-name cloudmart-data-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table
 
@@ -180,7 +180,7 @@ jobs:
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: us-east-1
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity and region
         run: |
@@ -192,7 +192,7 @@ jobs:
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text
 
@@ -200,17 +200,43 @@ jobs:
         run: |
           aws cloudformation validate-template \
             --template-body file://cloudformation/iam-stack.yaml \
-            --region us-east-1
+            --region "$AWS_REGION"
+
+      - name: Check IAM Stack Status
+        id: iam_status
+        continue-on-error: true
+        run: |
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "IAM Stack Status: $STATUS"
+
+      - name: Delete failed IAM stack
+        if: steps.iam_status.outputs.status == 'ROLLBACK_COMPLETE'
+        run: |
+          echo "IAM stack is in ROLLBACK_COMPLETE."
+          echo "Deleting failed stack before redeployment."
+
+          aws cloudformation delete-stack \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION"
+
+          aws cloudformation wait stack-delete-complete \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION"
 
       - name: Deploy IAM Stack
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/iam-stack.yaml \
             --stack-name cloudmart-iam-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --parameter-overrides \
               Environment=dev \
-              AuthToken="${{ secrets.CLOUDMART_AUTH_TOKEN }}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -218,29 +244,61 @@ jobs:
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-iam-dev \
-            --region us-east-1
+            --region "$AWS_REGION"
 
       - name: Show IAM Outputs
         run: |
           aws cloudformation describe-stacks \
             --stack-name cloudmart-iam-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "Stacks[0].Outputs" \
             --output table
+
+      # =========================================================
+      # SSM AUTH TOKEN
+      # =========================================================
+
+      - name: Verify Auth Token Secret Exists
+        env:
+          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
+        run: |
+          if [ -z "$AUTH_TOKEN" ]; then
+            echo "ERROR: CLOUDMART_AUTH_TOKEN GitHub Secret is empty or missing."
+            exit 1
+          fi
+
+          echo "CLOUDMART_AUTH_TOKEN GitHub Secret is available."
+
+      - name: Create or Update SSM Auth Token
+        env:
+          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
+        run: |
+          aws ssm put-parameter \
+            --name "/cloudmart/dev/auth/token" \
+            --value "$AUTH_TOKEN" \
+            --type SecureString \
+            --overwrite \
+            --region "$AWS_REGION"
+
+          echo "SSM authentication token parameter created/updated."
 
       - name: Verify SSM Auth Token Parameter
         run: |
           aws ssm get-parameter \
             --name "/cloudmart/dev/auth/token" \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "Parameter.[Name,Type]" \
             --output table
+
+      # =========================================================
+      # IAM FAILURE EVENTS
+      # =========================================================
 
       - name: Show IAM Stack Failure Events
         if: failure()
         run: |
           aws cloudformation describe-stack-events \
             --stack-name cloudmart-iam-dev \
-            --region us-east-1 \
+            --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table

@@ -2,14 +2,11 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   CloudMart IAM Configuration Stack.
-  Creates IAM roles for Lambda and EC2 and stores
-  the CloudMart authentication token in SSM Parameter Store.
+  Creates IAM roles required by CloudMart Lambda functions and EC2.
+  The API authentication token is managed separately by GitHub Actions
+  in AWS Systems Manager Parameter Store as a SecureString.
 
 Parameters:
-
-  # =========================================================
-  # ENVIRONMENT
-  # =========================================================
 
   Environment:
     Type: String
@@ -21,50 +18,7 @@ Parameters:
     Description: Deployment environment
 
 
-  # =========================================================
-  # AUTH TOKEN
-  # =========================================================
-
-  AuthToken:
-    Type: String
-    NoEcho: true
-    MinLength: 16
-    Description: CloudMart API authentication token
-
-
 Resources:
-
-  # =========================================================
-  # SSM AUTH TOKEN
-  # =========================================================
-  #
-  # NOTE:
-  # CloudFormation AWS::SSM::Parameter does NOT support
-  # Type: SecureString.
-  #
-  # Therefore this parameter is created as String.
-  # The GitHub Actions secret remains protected and NoEcho
-  # prevents the CloudFormation parameter from being displayed.
-  #
-  # The application can later read this parameter through IAM.
-  # =========================================================
-
-  CloudMartAuthToken:
-    Type: AWS::SSM::Parameter
-
-    Properties:
-      Name: !Sub /cloudmart/${Environment}/auth/token
-
-      Type: String
-
-      Value: !Ref AuthToken
-
-      Description: CloudMart API authentication token
-
-      Tags:
-        Project: CloudMart
-        Environment: !Ref Environment
-
 
   # =========================================================
   # PRODUCT LAMBDA ROLE
@@ -74,21 +28,15 @@ Resources:
     Type: AWS::IAM::Role
 
     Properties:
-
-      RoleName:
-        !Sub cloudmart-${Environment}-lambda-product-role
+      RoleName: !Sub cloudmart-${Environment}-lambda-product-role
 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
-
           - Effect: Allow
-
             Principal:
               Service:
                 - lambda.amazonaws.com
-
             Action:
               - sts:AssumeRole
 
@@ -97,39 +45,26 @@ Resources:
         - PolicyName: CloudMartProductLambdaPolicy
 
           PolicyDocument:
-
             Version: "2012-10-17"
 
             Statement:
 
-              # -------------------------------------------------
               # CloudWatch Logs
-              # -------------------------------------------------
-
               - Effect: Allow
-
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
 
-                Resource:
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
-
-              # -------------------------------------------------
-              # SSM Parameter
-              # -------------------------------------------------
-
+              # SSM Parameter Store
               - Effect: Allow
-
                 Action:
                   - ssm:GetParameter
-
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
       Tags:
-
         - Key: Project
           Value: CloudMart
 
@@ -145,21 +80,15 @@ Resources:
     Type: AWS::IAM::Role
 
     Properties:
-
-      RoleName:
-        !Sub cloudmart-${Environment}-lambda-order-role
+      RoleName: !Sub cloudmart-${Environment}-lambda-order-role
 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
-
           - Effect: Allow
-
             Principal:
               Service:
                 - lambda.amazonaws.com
-
             Action:
               - sts:AssumeRole
 
@@ -168,39 +97,26 @@ Resources:
         - PolicyName: CloudMartOrderLambdaPolicy
 
           PolicyDocument:
-
             Version: "2012-10-17"
 
             Statement:
 
-              # -------------------------------------------------
               # CloudWatch Logs
-              # -------------------------------------------------
-
               - Effect: Allow
-
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
 
-                Resource:
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
-
-              # -------------------------------------------------
-              # SSM Parameter
-              # -------------------------------------------------
-
+              # SSM Parameter Store
               - Effect: Allow
-
                 Action:
                   - ssm:GetParameter
-
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
       Tags:
-
         - Key: Project
           Value: CloudMart
 
@@ -216,21 +132,15 @@ Resources:
     Type: AWS::IAM::Role
 
     Properties:
-
-      RoleName:
-        !Sub cloudmart-${Environment}-lambda-report-role
+      RoleName: !Sub cloudmart-${Environment}-lambda-report-role
 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
-
           - Effect: Allow
-
             Principal:
               Service:
                 - lambda.amazonaws.com
-
             Action:
               - sts:AssumeRole
 
@@ -239,39 +149,35 @@ Resources:
         - PolicyName: CloudMartReportLambdaPolicy
 
           PolicyDocument:
-
             Version: "2012-10-17"
 
             Statement:
 
-              # -------------------------------------------------
               # CloudWatch Logs
-              # -------------------------------------------------
-
               - Effect: Allow
-
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
 
-                Resource:
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
-
-              # -------------------------------------------------
-              # SSM Parameter
-              # -------------------------------------------------
-
+              # S3 report bucket access
               - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource: "*"
 
+              # SSM Parameter Store
+              - Effect: Allow
                 Action:
                   - ssm:GetParameter
-
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
       Tags:
-
         - Key: Project
           Value: CloudMart
 
@@ -280,32 +186,22 @@ Resources:
 
 
   # =========================================================
-  # LAMBDA AUTHORIZE ROLE
-  # =========================================================
-  #
-  # This role is prepared for the Lambda Authorizer that
-  # will be deployed as part of the Application-Events stack.
+  # LAMBDA AUTHORIZER ROLE
   # =========================================================
 
   LambdaAuthorizerRole:
     Type: AWS::IAM::Role
 
     Properties:
-
-      RoleName:
-        !Sub cloudmart-${Environment}-lambda-authorizer-role
+      RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
-
           - Effect: Allow
-
             Principal:
               Service:
                 - lambda.amazonaws.com
-
             Action:
               - sts:AssumeRole
 
@@ -314,39 +210,26 @@ Resources:
         - PolicyName: CloudMartAuthorizerPolicy
 
           PolicyDocument:
-
             Version: "2012-10-17"
 
             Statement:
 
-              # -------------------------------------------------
               # CloudWatch Logs
-              # -------------------------------------------------
-
               - Effect: Allow
-
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
 
-                Resource:
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
-
-              # -------------------------------------------------
-              # Read authentication token
-              # -------------------------------------------------
-
+              # Read authentication token from SSM
               - Effect: Allow
-
                 Action:
                   - ssm:GetParameter
-
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
 
       Tags:
-
         - Key: Project
           Value: CloudMart
 
@@ -358,25 +241,19 @@ Resources:
   # EC2 ROLE
   # =========================================================
 
-  CloudMartEC2Role:
+  EC2Role:
     Type: AWS::IAM::Role
 
     Properties:
-
-      RoleName:
-        !Sub cloudmart-${Environment}-ec2-role
+      RoleName: !Sub cloudmart-${Environment}-ec2-role
 
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
-
           - Effect: Allow
-
             Principal:
               Service:
                 - ec2.amazonaws.com
-
             Action:
               - sts:AssumeRole
 
@@ -385,39 +262,26 @@ Resources:
         - PolicyName: CloudMartEC2Policy
 
           PolicyDocument:
-
             Version: "2012-10-17"
 
             Statement:
 
-              # -------------------------------------------------
               # CloudWatch Logs
-              # -------------------------------------------------
-
               - Effect: Allow
-
                 Action:
                   - logs:CreateLogGroup
                   - logs:CreateLogStream
                   - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
 
-                Resource:
-                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*
-
-              # -------------------------------------------------
-              # SSM Parameter Read
-              # -------------------------------------------------
-
+              # Read application configuration from SSM
               - Effect: Allow
-
                 Action:
                   - ssm:GetParameter
-
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
       Tags:
-
         - Key: Project
           Value: CloudMart
 
@@ -429,16 +293,13 @@ Resources:
   # EC2 INSTANCE PROFILE
   # =========================================================
 
-  CloudMartEC2InstanceProfile:
+  EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
 
     Properties:
-
-      InstanceProfileName:
-        !Sub cloudmart-${Environment}-ec2-instance-profile
-
+      InstanceProfileName: !Sub cloudmart-${Environment}-ec2-instance-profile
       Roles:
-        - !Ref CloudMartEC2Role
+        - !Ref EC2Role
 
 
 # =========================================================
@@ -447,113 +308,89 @@ Resources:
 
 Outputs:
 
-  # =========================================================
-  # PRODUCT ROLE
-  # =========================================================
-
   ProductLambdaRoleArn:
-
     Description: Product Lambda IAM Role ARN
-
-    Value:
-      !GetAtt ProductLambdaRole.Arn
+    Value: !GetAtt ProductLambdaRole.Arn
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-ProductLambdaRoleArn
+      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleArn
 
 
-  # =========================================================
-  # ORDER ROLE
-  # =========================================================
+  ProductLambdaRoleName:
+    Description: Product Lambda IAM Role Name
+    Value: !Ref ProductLambdaRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleName
+
 
   OrderLambdaRoleArn:
-
     Description: Order Lambda IAM Role ARN
-
-    Value:
-      !GetAtt OrderLambdaRole.Arn
+    Value: !GetAtt OrderLambdaRole.Arn
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-OrderLambdaRoleArn
+      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleArn
 
 
-  # =========================================================
-  # REPORT ROLE
-  # =========================================================
+  OrderLambdaRoleName:
+    Description: Order Lambda IAM Role Name
+    Value: !Ref OrderLambdaRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleName
+
 
   ReportLambdaRoleArn:
-
     Description: Report Lambda IAM Role ARN
-
-    Value:
-      !GetAtt ReportLambdaRole.Arn
+    Value: !GetAtt ReportLambdaRole.Arn
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-ReportLambdaRoleArn
+      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleArn
 
 
-  # =========================================================
-  # AUTHORIZE ROLE
-  # =========================================================
+  ReportLambdaRoleName:
+    Description: Report Lambda IAM Role Name
+    Value: !Ref ReportLambdaRole
 
-  AuthorizerRoleArn:
+    Export:
+      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleName
 
+
+  LambdaAuthorizerRoleArn:
     Description: Lambda Authorizer IAM Role ARN
-
-    Value:
-      !GetAtt LambdaAuthorizerRole.Arn
+    Value: !GetAtt LambdaAuthorizerRole.Arn
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-AuthorizerRoleArn
+      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleArn
 
 
-  # =========================================================
-  # EC2 ROLE
-  # =========================================================
+  LambdaAuthorizerRoleName:
+    Description: Lambda Authorizer IAM Role Name
+    Value: !Ref LambdaAuthorizerRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleName
+
 
   EC2RoleArn:
-
     Description: EC2 IAM Role ARN
-
-    Value:
-      !GetAtt CloudMartEC2Role.Arn
+    Value: !GetAtt EC2Role.Arn
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-EC2RoleArn
+      Name: !Sub CloudMart-${Environment}-EC2RoleArn
 
-
-  # =========================================================
-  # EC2 INSTANCE PROFILE
-  # =========================================================
 
   EC2InstanceProfileName:
-
     Description: EC2 Instance Profile Name
-
-    Value:
-      !Ref CloudMartEC2InstanceProfile
+    Value: !Ref EC2InstanceProfile
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-EC2InstanceProfileName
+      Name: !Sub CloudMart-${Environment}-EC2InstanceProfileName
 
-
-  # =========================================================
-  # SSM AUTH TOKEN PARAMETER
-  # =========================================================
 
   AuthTokenParameterName:
-
-    Description: SSM Parameter containing the CloudMart authentication token
-
-    Value:
-      !Ref CloudMartAuthToken
+    Description: SSM SecureString parameter name managed by GitHub Actions
+    Value: !Sub /cloudmart/${Environment}/auth/token
 
     Export:
-      Name:
-        !Sub CloudMart-${Environment}-AuthTokenParameterName
+      Name: !Sub CloudMart-${Environment}-AuthTokenParameterName
