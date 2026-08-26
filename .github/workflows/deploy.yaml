@@ -1,18 +1,17 @@
 name: Deploy CloudMart Infrastructure
 
 on:
+  workflow_dispatch:
+
   push:
     branches:
       - main
     paths:
-      paths:
-    - "cloudformation/network-stack.yaml"
-    - "cloudformation/data-stack.yaml"
-    - "cloudformation/iam-stack.yaml"
-    - "cloudformation/auth-stack.yaml"
-    - ".github/workflows/deploy.yaml"
-
-  workflow_dispatch:
+      - "cloudformation/network-stack.yaml"
+      - "cloudformation/data-stack.yaml"
+      - "cloudformation/iam-stack.yaml"
+      - "cloudformation/auth-stack.yaml"
+      - ".github/workflows/deploy.yaml"
 
 permissions:
   id-token: write
@@ -161,6 +160,7 @@ jobs:
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table
 
+
   # =========================================================
   # IAM STACK
   # =========================================================
@@ -236,10 +236,13 @@ jobs:
             --region us-east-1 \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table
+
+
   # =========================================================
   # AUTH STACK
   # =========================================================
-    deploy-auth:
+
+  deploy-auth:
     name: Deploy Auth Stack
     runs-on: ubuntu-latest
 
