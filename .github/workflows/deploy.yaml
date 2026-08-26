@@ -413,50 +413,54 @@ jobs:
           echo "LAMBDA_SECURITY_GROUP_ID=${LAMBDA_SECURITY_GROUP}" >> "$GITHUB_ENV"
 
 
-            # =====================================================
-      # GET IAM ROLE OUTPUTS
-      # =====================================================
+      # ==========================================================
+      # GET LAMBDA IAM ROLE ARNS
+      # ==========================================================
 
-      - name: Get IAM Role Outputs
+      - name: Get Lambda IAM role ARNs
+        shell: bash
         run: |
 
+          echo "Getting Lambda IAM role ARNs..."
+
           AUTHORIZE_ROLE=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-LambdaAuthorizerRoleArn'].Value" \
+            --query "Exports[?Name=='CloudMart-dev-AuthorizerLambdaRoleArn'].Value | [0]" \
             --output text)
 
           PRODUCT_ROLE=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-ProductLambdaRoleArn'].Value" \
+            --query "Exports[?Name=='CloudMart-dev-ProductLambdaRoleArn'].Value | [0]" \
             --output text)
 
           ORDER_ROLE=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-OrderLambdaRoleArn'].Value" \
+            --query "Exports[?Name=='CloudMart-dev-OrderLambdaRoleArn'].Value | [0]" \
             --output text)
 
           REPORT_ROLE=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-ReportLambdaRoleArn'].Value" \
+            --query "Exports[?Name=='CloudMart-dev-ReportLambdaRoleArn'].Value | [0]" \
             --output text)
 
+          echo "Authorizer Role: $AUTHORIZE_ROLE"
+          echo "Product Role: $PRODUCT_ROLE"
+          echo "Order Role: $ORDER_ROLE"
+          echo "Report Role: $REPORT_ROLE"
+
           if [ -z "$AUTHORIZE_ROLE" ] || [ "$AUTHORIZE_ROLE" = "None" ]; then
-            echo "ERROR: Lambda Authorizer IAM role export is missing."
+            echo "ERROR: Authorizer Lambda role export is missing."
             exit 1
           fi
 
           if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
-            echo "ERROR: Product Lambda IAM role export is missing."
+            echo "ERROR: Product Lambda role export is missing."
             exit 1
           fi
 
           if [ -z "$ORDER_ROLE" ] || [ "$ORDER_ROLE" = "None" ]; then
-            echo "ERROR: Order Lambda IAM role export is missing."
+            echo "ERROR: Order Lambda role export is missing."
             exit 1
           fi
 
           if [ -z "$REPORT_ROLE" ] || [ "$REPORT_ROLE" = "None" ]; then
-            echo "ERROR: Report Lambda IAM role export is missing."
+            echo "ERROR: Report Lambda role export is missing."
             exit 1
           fi
 
@@ -464,8 +468,6 @@ jobs:
           echo "PRODUCT_ROLE=$PRODUCT_ROLE" >> "$GITHUB_ENV"
           echo "ORDER_ROLE=$ORDER_ROLE" >> "$GITHUB_ENV"
           echo "REPORT_ROLE=$REPORT_ROLE" >> "$GITHUB_ENV"
-
-          echo "All Lambda IAM roles found."
 
       # =====================================================
       # GET REPORT BUCKET
