@@ -58,6 +58,31 @@ Parameters:
     Description: Initial RDS storage in GB
 
 
+  # ==========================================================
+  # REPORT BUCKET
+  # ==========================================================
+
+  ExistingReportBucketName:
+    Type: String
+    Default: ""
+    Description: >
+      Existing S3 report bucket name.
+      If provided, CloudMart uses this existing bucket.
+      If empty, CloudFormation creates cloudmart-${Environment}-reports.
+
+
+# ============================================================
+# CONDITIONS
+# ============================================================
+
+Conditions:
+
+  CreateReportBucket:
+    !Equals
+      - !Ref ExistingReportBucketName
+      - ""
+
+
 # ============================================================
 # RESOURCES
 # ============================================================
@@ -166,10 +191,14 @@ Resources:
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
 
+    Condition: CreateReportBucket
+
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
 
     Properties:
+
+      BucketName: !Sub cloudmart-${Environment}-reports
 
       BucketEncryption:
 
@@ -206,6 +235,10 @@ Resources:
 
 Outputs:
 
+  # ==========================================================
+  # DATABASE OUTPUTS
+  # ==========================================================
+
   DBEndpoint:
     Description: RDS MySQL endpoint
     Value: !GetAtt CloudMartRDS.Endpoint.Address
@@ -231,16 +264,24 @@ Outputs:
 
 
   DBInstanceIdentifier:
-    Description: RDS MySQL instance identifier
+    Description: CloudMart RDS instance identifier
     Value: !Ref CloudMartRDS
 
     Export:
       Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
 
 
+  # ==========================================================
+  # REPORT BUCKET OUTPUTS
+  # ==========================================================
+
   ReportBucketName:
     Description: CloudMart generated reports S3 bucket
-    Value: !Ref CloudMartReportBucket
+
+    Value: !If
+      - CreateReportBucket
+      - !Ref CloudMartReportBucket
+      - !Ref ExistingReportBucketName
 
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketName
@@ -248,7 +289,11 @@ Outputs:
 
   ReportBucketArn:
     Description: CloudMart generated reports S3 bucket ARN
-    Value: !GetAtt CloudMartReportBucket.Arn
+
+    Value: !If
+      - CreateReportBucket
+      - !GetAtt CloudMartReportBucket.Arn
+      - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
 
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketArn
