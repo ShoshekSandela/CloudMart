@@ -1,17 +1,16 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudMart IAM Stack.
-  Creates execution roles for CloudMart Lambda functions
-  with least-privilege access to CloudWatch Logs, VPC,
-  SSM Parameter Store, RDS-related application configuration,
-  S3 reports, EventBridge, and SNS.
+  CloudMart IAM Configuration Stack.
+  Creates IAM roles for Lambda functions and EC2,
+  and stores the CloudMart authentication token
+  in AWS Systems Manager Parameter Store.
 
 Parameters:
 
-  # ==========================================================
+  # =========================================================
   # ENVIRONMENT
-  # ==========================================================
+  # =========================================================
 
   Environment:
     Type: String
@@ -23,76 +22,58 @@ Parameters:
     Description: Deployment environment
 
 
+  # =========================================================
+  # AUTHENTICATION TOKEN
+  # =========================================================
+
+  AuthToken:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: CloudMart API authentication token
+
+
 Resources:
 
-  # ==========================================================
-  # COMMON LAMBDA BASIC EXECUTION ROLE
-  # ==========================================================
+  # =========================================================
+  # SSM AUTH TOKEN
+  # =========================================================
 
-  LambdaAuthorizerRole:
-    Type: AWS::IAM::Role
+  CloudMartAuthToken:
+    Type: AWS::SSM::Parameter
 
     Properties:
-      RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
+      Name: !Sub /cloudmart/${Environment}/auth/token
 
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
+      Type: SecureString
 
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Value: !Ref AuthToken
 
-      Policies:
-
-        - PolicyName: !Sub cloudmart-${Environment}-authorizer-ssm-policy
-
-          PolicyDocument:
-            Version: '2012-10-17'
-
-            Statement:
-
-              - Sid: ReadAuthenticationParameters
-                Effect: Allow
-
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-
-                Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+      Description: CloudMart API authentication token
 
       Tags:
-        - Key: Name
-          Value: !Sub cloudmart-${Environment}-lambda-authorizer-role
-
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
+        Project: CloudMart
+        Environment: !Ref Environment
 
 
-  # ==========================================================
-  # PRODUCT LAMBDA ROLE
-  # ==========================================================
+  # =========================================================
+  # PRODUCT LAMBDA IAM ROLE
+  # =========================================================
 
   ProductLambdaRole:
     Type: AWS::IAM::Role
 
     Properties:
-      RoleName: !Sub cloudmart-${Environment}-lambda-product-role
+
+      RoleName:
+        !Sub cloudmart-${Environment}-lambda-product-role
 
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+
+        Version: "2012-10-17"
 
         Statement:
+
           - Effect: Allow
 
             Principal:
@@ -102,55 +83,62 @@ Resources:
             Action:
               - sts:AssumeRole
 
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-
       Policies:
 
-        - PolicyName: !Sub cloudmart-${Environment}-product-ssm-policy
+        - PolicyName: CloudMartProductLambdaPolicy
 
           PolicyDocument:
-            Version: '2012-10-17'
+
+            Version: "2012-10-17"
 
             Statement:
 
-              - Sid: ReadDatabaseParameters
-                Effect: Allow
+              # -------------------------------------------------
+              # CLOUDWATCH LOGGING
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource:
+                  - arn:aws:logs:*:*:*
+
+
+              # -------------------------------------------------
+              # SSM PARAMETER STORE
+              # -------------------------------------------------
+
+              - Effect: Allow
 
                 Action:
                   - ssm:GetParameter
-                  - ssm:GetParameters
 
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
-      Tags:
 
-        - Key: Name
-          Value: !Sub cloudmart-${Environment}-lambda-product-role
-
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-
-  # ==========================================================
-  # ORDER LAMBDA ROLE
-  # ==========================================================
+  # =========================================================
+  # ORDER LAMBDA IAM ROLE
+  # =========================================================
 
   OrderLambdaRole:
     Type: AWS::IAM::Role
 
     Properties:
-      RoleName: !Sub cloudmart-${Environment}-lambda-order-role
+
+      RoleName:
+        !Sub cloudmart-${Environment}-lambda-order-role
 
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+
+        Version: "2012-10-17"
 
         Statement:
+
           - Effect: Allow
 
             Principal:
@@ -160,101 +148,62 @@ Resources:
             Action:
               - sts:AssumeRole
 
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-
       Policies:
 
-        # ------------------------------------------------------
-        # SSM
-        # ------------------------------------------------------
-
-        - PolicyName: !Sub cloudmart-${Environment}-order-ssm-policy
+        - PolicyName: CloudMartOrderLambdaPolicy
 
           PolicyDocument:
-            Version: '2012-10-17'
+
+            Version: "2012-10-17"
 
             Statement:
 
-              - Sid: ReadDatabaseParameters
-                Effect: Allow
+              # -------------------------------------------------
+              # CLOUDWATCH LOGGING
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource:
+                  - arn:aws:logs:*:*:*
+
+
+              # -------------------------------------------------
+              # SSM PARAMETER STORE
+              # -------------------------------------------------
+
+              - Effect: Allow
 
                 Action:
                   - ssm:GetParameter
-                  - ssm:GetParameters
 
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
 
-        # ------------------------------------------------------
-        # EVENTBRIDGE
-        # ------------------------------------------------------
-
-        - PolicyName: !Sub cloudmart-${Environment}-order-eventbridge-policy
-
-          PolicyDocument:
-            Version: '2012-10-17'
-
-            Statement:
-
-              - Sid: PublishOrderEvents
-                Effect: Allow
-
-                Action:
-                  - events:PutEvents
-
-                Resource:
-                  - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/default
-
-
-        # ------------------------------------------------------
-        # SNS
-        # ------------------------------------------------------
-
-        - PolicyName: !Sub cloudmart-${Environment}-order-sns-policy
-
-          PolicyDocument:
-            Version: '2012-10-17'
-
-            Statement:
-
-              - Sid: PublishNotifications
-                Effect: Allow
-
-                Action:
-                  - sns:Publish
-
-                Resource:
-                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-*
-
-      Tags:
-
-        - Key: Name
-          Value: !Sub cloudmart-${Environment}-lambda-order-role
-
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-
-  # ==========================================================
-  # REPORT LAMBDA ROLE
-  # ==========================================================
+  # =========================================================
+  # REPORT LAMBDA IAM ROLE
+  # =========================================================
 
   ReportLambdaRole:
     Type: AWS::IAM::Role
 
     Properties:
-      RoleName: !Sub cloudmart-${Environment}-lambda-report-role
+
+      RoleName:
+        !Sub cloudmart-${Environment}-lambda-report-role
 
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+
+        Version: "2012-10-17"
 
         Statement:
+
           - Effect: Allow
 
             Principal:
@@ -264,130 +213,318 @@ Resources:
             Action:
               - sts:AssumeRole
 
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
-
       Policies:
 
-        # ------------------------------------------------------
-        # SSM
-        # ------------------------------------------------------
-
-        - PolicyName: !Sub cloudmart-${Environment}-report-ssm-policy
+        - PolicyName: CloudMartReportLambdaPolicy
 
           PolicyDocument:
-            Version: '2012-10-17'
+
+            Version: "2012-10-17"
 
             Statement:
 
-              - Sid: ReadDatabaseParameters
-                Effect: Allow
+              # -------------------------------------------------
+              # CLOUDWATCH LOGGING
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource:
+                  - arn:aws:logs:*:*:*
+
+
+              # -------------------------------------------------
+              # SSM PARAMETER STORE
+              # -------------------------------------------------
+
+              - Effect: Allow
 
                 Action:
                   - ssm:GetParameter
-                  - ssm:GetParameters
 
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
 
-        # ------------------------------------------------------
-        # S3 REPORT BUCKET
-        # ------------------------------------------------------
+              # -------------------------------------------------
+              # S3 REPORT BUCKET
+              # -------------------------------------------------
 
-        - PolicyName: !Sub cloudmart-${Environment}-report-s3-policy
-
-          PolicyDocument:
-            Version: '2012-10-17'
-
-            Statement:
-
-              - Sid: ListReportBucket
-                Effect: Allow
-
-                Action:
-                  - s3:ListBucket
-
-                Resource:
-                  - Fn::ImportValue:
-                      Fn::Sub: CloudMart-${Environment}-ReportBucketArn
-
-              - Sid: ReadWriteReports
-                Effect: Allow
+              - Effect: Allow
 
                 Action:
                   - s3:GetObject
                   - s3:PutObject
+                  - s3:DeleteObject
 
                 Resource:
-                  - Fn::Sub:
-                      - "${BucketArn}/*"
-                      - BucketArn:
-                          Fn::ImportValue:
-                            Fn::Sub: CloudMart-${Environment}-ReportBucketArn
-
-      Tags:
-
-        - Key: Name
-          Value: !Sub cloudmart-${Environment}-lambda-report-role
-
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
+                  - !Sub arn:aws:s3:::cloudmart-${Environment}-reports/*
 
 
-# ============================================================
+  # =========================================================
+  # LAMBDA AUTHORIZER IAM ROLE
+  # =========================================================
+
+  LambdaAuthorizerRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName:
+        !Sub cloudmart-${Environment}-lambda-authorizer-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: CloudMartAuthorizerPolicy
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              # -------------------------------------------------
+              # CLOUDWATCH LOGGING
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource:
+                  - arn:aws:logs:*:*:*
+
+
+              # -------------------------------------------------
+              # READ AUTH TOKEN FROM SSM
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+
+
+  # =========================================================
+  # EC2 IAM ROLE
+  # =========================================================
+
+  CloudMartEC2Role:
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName:
+        !Sub cloudmart-${Environment}-ec2-role
+
+      AssumeRolePolicyDocument:
+
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: CloudMartEC2Policy
+
+          PolicyDocument:
+
+            Version: "2012-10-17"
+
+            Statement:
+
+              # -------------------------------------------------
+              # CLOUDWATCH LOGGING
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource:
+                  - arn:aws:logs:*:*:*
+
+
+              # -------------------------------------------------
+              # SSM PARAMETER STORE
+              # -------------------------------------------------
+
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+
+
+  # =========================================================
+  # EC2 INSTANCE PROFILE
+  # =========================================================
+
+  CloudMartEC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+
+    Properties:
+
+      InstanceProfileName:
+        !Sub cloudmart-${Environment}-ec2-instance-profile
+
+      Roles:
+        - !Ref CloudMartEC2Role
+
+
+# =========================================================
 # OUTPUTS
-# ============================================================
+# =========================================================
 
 Outputs:
 
-  # ==========================================================
-  # AUTHORIZER ROLE
-  # ==========================================================
-
-  LambdaAuthorizerRoleArn:
-    Description: Lambda Authorizer execution role ARN
-    Value: !GetAtt LambdaAuthorizerRole.Arn
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleArn
-
-
-  # ==========================================================
-  # PRODUCT ROLE
-  # ==========================================================
+  # =========================================================
+  # PRODUCT LAMBDA ROLE
+  # =========================================================
 
   ProductLambdaRoleArn:
-    Description: Product Lambda execution role ARN
-    Value: !GetAtt ProductLambdaRole.Arn
+
+    Description: Product Lambda IAM role ARN
+
+    Value:
+      !GetAtt ProductLambdaRole.Arn
 
     Export:
-      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleArn
+      Name:
+        !Sub CloudMart-${Environment}-ProductLambdaRoleArn
 
 
-  # ==========================================================
-  # ORDER ROLE
-  # ==========================================================
+  # =========================================================
+  # ORDER LAMBDA ROLE
+  # =========================================================
 
   OrderLambdaRoleArn:
-    Description: Order Lambda execution role ARN
-    Value: !GetAtt OrderLambdaRole.Arn
+
+    Description: Order Lambda IAM role ARN
+
+    Value:
+      !GetAtt OrderLambdaRole.Arn
 
     Export:
-      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleArn
+      Name:
+        !Sub CloudMart-${Environment}-OrderLambdaRoleArn
 
 
-  # ==========================================================
-  # REPORT ROLE
-  # ==========================================================
+  # =========================================================
+  # REPORT LAMBDA ROLE
+  # =========================================================
 
   ReportLambdaRoleArn:
-    Description: Report Lambda execution role ARN
-    Value: !GetAtt ReportLambdaRole.Arn
+
+    Description: Report Lambda IAM role ARN
+
+    Value:
+      !GetAtt ReportLambdaRole.Arn
 
     Export:
-      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleArn
+      Name:
+        !Sub CloudMart-${Environment}-ReportLambdaRoleArn
+
+
+  # =========================================================
+  # AUTHORIZER ROLE
+  # =========================================================
+
+  AuthorizerRoleArn:
+
+    Description: Lambda Authorizer IAM role ARN
+
+    Value:
+      !GetAtt LambdaAuthorizerRole.Arn
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-AuthorizerRoleArn
+
+
+  # =========================================================
+  # EC2 ROLE
+  # =========================================================
+
+  EC2RoleArn:
+
+    Description: EC2 IAM role ARN
+
+    Value:
+      !GetAtt CloudMartEC2Role.Arn
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-EC2RoleArn
+
+
+  # =========================================================
+  # EC2 INSTANCE PROFILE
+  # =========================================================
+
+  EC2InstanceProfileName:
+
+    Description: EC2 instance profile name
+
+    Value:
+      !Ref CloudMartEC2InstanceProfile
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-EC2InstanceProfileName
+
+
+  # =========================================================
+  # SSM AUTH TOKEN PARAMETER
+  # =========================================================
+
+  AuthTokenParameterName:
+
+    Description: SSM SecureString parameter containing API authentication token
+
+    Value:
+      !Ref CloudMartAuthToken
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-AuthTokenParameterName
