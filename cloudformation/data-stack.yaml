@@ -22,14 +22,24 @@ Parameters:
 
 
   # ==========================================================
-  # DATABASE CONFIGURATION
+  # DATABASE NAME
   # ==========================================================
 
   DBName:
     Type: String
     Default: cloudmart
+    MinLength: 1
+    MaxLength: 64
+    AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
+    ConstraintDescription: >
+      DBName must start with a letter and contain only
+      letters, numbers, and underscores.
     Description: CloudMart database name
 
+
+  # ==========================================================
+  # DATABASE USERNAME
+  # ==========================================================
 
   DBUsername:
     Type: String
@@ -37,23 +47,40 @@ Parameters:
     NoEcho: true
     MinLength: 1
     MaxLength: 16
-    AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]*$"
+    AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
+    ConstraintDescription: >
+      DBUsername must start with a letter and contain only
+      letters, numbers, and underscores.
     Description: RDS master username
 
+
+  # ==========================================================
+  # DATABASE PASSWORD
+  # ==========================================================
 
   DBPassword:
     Type: String
     NoEcho: true
     MinLength: 12
     MaxLength: 41
+    ConstraintDescription: >
+      DBPassword must be between 12 and 41 characters.
     Description: RDS master password
 
+
+  # ==========================================================
+  # RDS INSTANCE CLASS
+  # ==========================================================
 
   DBInstanceClass:
     Type: String
     Default: db.t3.micro
     Description: RDS instance class
 
+
+  # ==========================================================
+  # RDS STORAGE
+  # ==========================================================
 
   AllocatedStorage:
     Type: Number
@@ -94,7 +121,6 @@ Conditions:
 
 Resources:
 
-
   # ==========================================================
   # RDS SUBNET GROUP
   # ==========================================================
@@ -104,8 +130,8 @@ Resources:
 
     Properties:
 
-      DBSubnetGroupDescription: !Sub
-        "CloudMart ${Environment} RDS private subnet group"
+      DBSubnetGroupDescription:
+        !Sub "CloudMart ${Environment} RDS private subnet group"
 
       SubnetIds:
 
@@ -246,7 +272,6 @@ Resources:
 # ============================================================
 
 Outputs:
-
 
   # ==========================================================
   # DATABASE ENDPOINT
