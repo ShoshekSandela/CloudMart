@@ -1,130 +1,128 @@
+import json
 import os
 import boto3
 
 
-# ==========================================================
-# AWS CLIENTS
-# ==========================================================
-
 ssm = boto3.client("ssm")
 
 
-# ==========================================================
-# ENVIRONMENT VARIABLES
-# ==========================================================
+TOKEN_PARAMETER_NAME = os.environ.get(
+    "TOKEN_PARAMETER_NAME",
+    "/cloudmart/dev/auth/token"
+)
 
-TOKEN_PARAMETER_NAME = os.environ["TOKEN_PARAMETER_NAME"]
-
-
-# ==========================================================
-# TOKEN CACHE INSIDE LAMBDA CONTAINER
-# ==========================================================
-
-_cached_token = None
-
-
-# ==========================================================
-# LOAD TOKEN FROM SSM SECURESTRING
-# ==========================================================
 
 def get_expected_token():
-
-    global _cached_token
-
-    if _cached_token is not None:
-        return _cached_token
-
     response = ssm.get_parameter(
         Name=TOKEN_PARAMETER_NAME,
         WithDecryption=True
     )
 
-    _cached_token = response["Parameter"]["Value"]
+    return response["Parameter"]["Value"]
 
-    return _cached_token
-
-
-# ==========================================================
-# CREATE IAM POLICY
-# ==========================================================
 
 def generate_policy(principal_id, effect, resource):
-
-    policy_document = {
-        "Version": "2012-10-17",
-        "Statement": [
-            {
-                "Action": "execute-api:Invoke",
-                "Effect": effect,
-                "Resource": resource
-            }
-        ]
-    }
-
     return {
         "principalId": principal_id,
-        "policyDocument": policy_document
+        "policyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+                {
+                    "Action": "execute-api:Invoke",
+                    "Effect": effect,
+                    "Resource": resource
+                }
+            ]
+        }
     }
 
-
-# ==========================================================
-# LAMBDA AUTHORIZER
-# ==========================================================
 
 def lambda_handler(event, context):
 
-    # ------------------------------------------------------
-    # TOKEN AUTHORIZER INPUT
-    # ------------------------------------------------------
+    print(
+        json.dumps(
+            {
+                "message": "Authorizer request received",
+                "type": event.get("type"),
+                "methodArn": event.get("methodArn")
+            }
+        )
+    )
 
-    authorization_token = event.get("authorizationToken")
-    method_arn = event.get("methodArn")
+    authorization_header = event.get("authorizationToken")
 
-    # ------------------------------------------------------
-    # NO TOKEN
-    # ------------------------------------------------------
+    if not authorization_header:
+        print(
+            json.dumps(
+                {
+                    "message": "Authorization header missing"
+                }
+            )
+        )
 
-    if not authorization_token:
         raise Exception("Unauthorized")
 
-    # ------------------------------------------------------
-    # EXPECT:
-    #
-    # Authorization: Bearer <token>
-    #
-    # ------------------------------------------------------
 
-    token = authorization_token.strip()
+    token = authorization_header.strip()
 
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
 
-    # ------------------------------------------------------
-    # EMPTY TOKEN
-    # ------------------------------------------------------
+    try:
 
-    if not token:
-        raise Exception("Unauthorized")
+        expected_token = get_expected_token()
 
-    # ------------------------------------------------------
-    # READ EXPECTED TOKEN FROM SSM
-    # ------------------------------------------------------
+    except Exception as error:
 
-    expected_token = get_expected_token()
+        print(
+            json.dumps(
+                {
+                    "message": "Failed to retrieve token from SSM",
+                    "error": str(error)
+                }
+            )
+        )
 
-    # ------------------------------------------------------
-    # WRONG TOKEN
-    # ------------------------------------------------------
+        raise
+
 
     if token != expected_token:
+
+        print(
+            json.dumps(
+                {
+                    "message": "Invalid authorization token"
+                }
+            )
+        )
+
         raise Exception("Unauthorized")
 
-    # ------------------------------------------------------
-    # CORRECT TOKEN
-    # -------------------------------------------
+
+    method_arn = event.get("methodArn")
+
+    if not method_arn:
+
+        print(
+            json.dumps(
+                {
+                    "message": "methodArn missing"
+                }
+            )
+        )
+
+        raise Exception("Unauthorized")
+
+
+    print(
+        json.dumps(
+            {
+                "message": "Authorization successful"
+            }
+        )
+    )
+
 
     return generate_policy(
-        principal_id="cloudmart-api-client",
+        principal_id="cloudmart-user",
         effect="Allow",
         resource=method_arn
     )
