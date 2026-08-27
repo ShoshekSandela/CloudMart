@@ -1,4 +1,4 @@
-nname: Deploy CloudMart Infrastructure
+name: Deploy CloudMart Infrastructure
 
 on:
   workflow_dispatch:
