@@ -1,4 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
 
 Description: >
   CloudMart Application Stack.
@@ -6,523 +7,143 @@ Description: >
   SSM SecureString integration, API Gateway authorizer,
   authorizer caching, and API Gateway Lambda invoke permission.
 
-
-# ==========================================================
-# PARAMETERS
-# ==========================================================
-
 Parameters:
-
-  # ========================================================
-  # ENVIRONMENT
-  # ========================================================
 
   Environment:
     Type: String
     Default: dev
-
     AllowedValues:
       - dev
       - test
       - prod
-
     Description: Deployment environment
-
-
-  # ========================================================
-  # PROJECT NAME
-  # ========================================================
 
   ProjectName:
     Type: String
     Default: cloudmart
-
     Description: CloudMart project name
-
-
-  # ========================================================
-  # LAMBDA AUTHORIZER IAM ROLE
-  # ========================================================
 
   LambdaAuthorizerRoleArn:
     Type: String
-
-    Description: >
-      ARN of the Lambda Authorizer IAM role created by
-      the CloudMart IAM stack.
-
-
-  # ========================================================
-  # AUTHORIZER CACHE TTL
-  # ========================================================
+    Description: ARN of the Lambda Authorizer IAM role created by the CloudMart IAM stack.
 
   AuthorizerCacheTTL:
     Type: Number
-
     Default: 300
-
     MinValue: 0
     MaxValue: 3600
-
-    Description: >
-      Lambda Authorizer result cache TTL in seconds.
-
-
-  # ========================================================
-  # SSM TOKEN PARAMETER
-  # ========================================================
+    Description: Lambda Authorizer result cache TTL in seconds.
 
   TokenParameterName:
     Type: String
-
     Default: /cloudmart/dev/auth/token
-
-    Description: >
-      SSM Parameter Store SecureString parameter containing
-      the CloudMart API authorization token.
-
-
-# ==========================================================
-# RESOURCES
-# ==========================================================
+    Description: SSM SecureString parameter containing the CloudMart API authorization token.
 
 Resources:
 
-
-  # ========================================================
-  # API GATEWAY REST API
-  # ========================================================
-
   CloudMartRestApi:
     Type: AWS::ApiGateway::RestApi
-
     Properties:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-api"
-
-      Description:
-        !Sub "CloudMart ${Environment} REST API"
-
+      Name: !Sub "${ProjectName}-${Environment}-api"
+      Description: !Sub "CloudMart ${Environment} REST API"
       EndpointConfiguration:
-
         Types:
           - REGIONAL
-
       Tags:
-
         - Key: Name
-          Value:
-            !Sub "${ProjectName}-${Environment}-api"
-
+          Value: !Sub "${ProjectName}-${Environment}-api"
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
-          Value:
-            !Ref Environment
-
-
-  # ========================================================
-  # LAMBDA TOKEN AUTHORIZER
-  # ========================================================
+          Value: !Ref Environment
 
   LambdaAuthorizer:
-    Type: AWS::Lambda::Function
-
+    Type: AWS::Serverless::Function
     Properties:
-
-      FunctionName:
-        !Sub "${ProjectName}-${Environment}-authorizer"
-
+      FunctionName: !Sub "${ProjectName}-${Environment}-authorizer"
       Runtime: python3.12
-
       Handler: index.lambda_handler
-
-      Role:
-        !Ref LambdaAuthorizerRoleArn
-
+      CodeUri: ../lambdas/authorizer/
+      Role: !Ref LambdaAuthorizerRoleArn
       Timeout: 5
-
       MemorySize: 128
-
-
-      # ====================================================
-      # LAMBDA ENVIRONMENT VARIABLES
-      # ====================================================
-
       Environment:
-
         Variables:
-
-          TOKEN_PARAMETER_NAME:
-            !Ref TokenParameterName
-
-
-      # ====================================================
-      # INLINE LAMBDA CODE
-      # ====================================================
-      #
-      # No ZIP
-      # No artifact bucket
-      # No S3 Lambda package
-      #
-      # CloudFormation creates the Lambda code directly.
-      # ====================================================
-
-      Code:
-
-        ZipFile: |
-
-          import os
-          import boto3
-
-
-          ssm = boto3.client("ssm")
-
-
-          def lambda_handler(event, context):
-
-              token_parameter_name = os.environ.get(
-                  "TOKEN_PARAMETER_NAME"
-              )
-
-
-              # ------------------------------------------
-              # Get Authorization header
-              # ------------------------------------------
-
-              authorization_header = event.get(
-                  "authorizationToken",
-                  ""
-              )
-
-
-              if not authorization_header:
-
-                  return generate_policy(
-                      "anonymous",
-                      "Deny",
-                      event.get("methodArn", "*")
-                  )
-
-
-              # ------------------------------------------
-              # Remove Bearer prefix
-              # ------------------------------------------
-
-              token = authorization_header.strip()
-
-              if token.lower().startswith("bearer "):
-
-                  token = token[7:].strip()
-
-
-              if not token:
-
-                  return generate_policy(
-                      "anonymous",
-                      "Deny",
-                      event.get("methodArn", "*")
-                  )
-
-
-              # ------------------------------------------
-              # Read expected token from SSM
-              # ------------------------------------------
-
-              try:
-
-                  response = ssm.get_parameter(
-                      Name=token_parameter_name,
-                      WithDecryption=True
-                  )
-
-                  expected_token = response["Parameter"]["Value"]
-
-              except Exception:
-
-                  return generate_policy(
-                      "anonymous",
-                      "Deny",
-                      event.get("methodArn", "*")
-                  )
-
-
-              # ------------------------------------------
-              # Compare token
-              # ------------------------------------------
-
-              if token == expected_token:
-
-                  return generate_policy(
-                      "cloudmart-user",
-                      "Allow",
-                      event.get("methodArn", "*")
-                  )
-
-
-              return generate_policy(
-                  "anonymous",
-                  "Deny",
-                  event.get("methodArn", "*")
-              )
-
-
-          def generate_policy(
-              principal_id,
-              effect,
-              resource
-          ):
-
-              return {
-
-                  "principalId": principal_id,
-
-                  "policyDocument": {
-
-                      "Version": "2012-10-17",
-
-                      "Statement": [
-
-                          {
-
-                              "Action": "execute-api:Invoke",
-
-                              "Effect": effect,
-
-                              "Resource": resource
-
-                          }
-
-                      ]
-
-                  }
-
-              }
-
-
+          TOKEN_PARAMETER_NAME: !Ref TokenParameterName
       Tags:
-
-        - Key: Name
-          Value:
-            !Sub "${ProjectName}-${Environment}-authorizer"
-
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value:
-            !Ref Environment
-
-
-  # ========================================================
-  # API GATEWAY TOKEN AUTHORIZER
-  # ========================================================
+        Name: !Sub "${ProjectName}-${Environment}-authorizer"
+        Project: CloudMart
+        Environment: !Ref Environment
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
-
     Properties:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-token-authorizer"
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
+      Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
+      RestApiId: !Ref CloudMartRestApi
       Type: TOKEN
-
       IdentitySource:
-
         - method.request.header.Authorization
-
       AuthorizerUri:
-
         Fn::Sub:
-
-          - >
-            arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
-
-          - LambdaAuthorizerArn:
-              !GetAtt LambdaAuthorizer.Arn
-
-      AuthorizerResultTtlInSeconds:
-        !Ref AuthorizerCacheTTL
-
-
-  # ========================================================
-  # API GATEWAY -> LAMBDA PERMISSION
-  # ========================================================
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+          - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
+      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
 
   LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
-
     Properties:
-
-      Action:
-        lambda:InvokeFunction
-
-      FunctionName:
-        !Ref LambdaAuthorizer
-
-      Principal:
-        apigateway.amazonaws.com
-
-      SourceArn:
-
-        !Sub >
-          arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/${ApiGatewayAuthorizer}
-
-
-# ==========================================================
-# OUTPUTS
-# ==========================================================
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaAuthorizer
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub >
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/${ApiGatewayAuthorizer}
 
 Outputs:
 
-
-  # ========================================================
-  # REST API ID
-  # ========================================================
-
   RestApiId:
-
-    Description:
-      CloudMart API Gateway REST API ID
-
-    Value:
-      !Ref CloudMartRestApi
-
+    Description: CloudMart API Gateway REST API ID
+    Value: !Ref CloudMartRestApi
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiId"
-
-
-  # ========================================================
-  # REST API ROOT RESOURCE ID
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-RestApiId"
 
   RestApiRootResourceId:
-
-    Description:
-      CloudMart API Gateway root resource ID
-
-    Value:
-      !GetAtt CloudMartRestApi.RootResourceId
-
+    Description: CloudMart API Gateway root resource ID
+    Value: !GetAtt CloudMartRestApi.RootResourceId
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiRootResourceId"
-
-
-  # ========================================================
-  # REST API URL
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-RestApiRootResourceId"
 
   RestApiUrl:
-
-    Description:
-      CloudMart API Gateway regional endpoint
-
-    Value:
-
-      !Sub >
-        https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
-
+    Description: CloudMart API Gateway regional endpoint
+    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiUrl"
-
-
-  # ========================================================
-  # LAMBDA AUTHORIZER ARN
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-RestApiUrl"
 
   LambdaAuthorizerArn:
-
-    Description:
-      Lambda Authorizer ARN
-
-    Value:
-      !GetAtt LambdaAuthorizer.Arn
-
+    Description: Lambda Authorizer ARN
+    Value: !GetAtt LambdaAuthorizer.Arn
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
-
-
-  # ========================================================
-  # LAMBDA AUTHORIZER ROLE ARN
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
 
   LambdaAuthorizerRoleArn:
-
-    Description:
-      Lambda Authorizer IAM Role ARN
-
-    Value:
-      !Ref LambdaAuthorizerRoleArn
-
+    Description: Lambda Authorizer IAM Role ARN
+    Value: !Ref LambdaAuthorizerRoleArn
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
-
-
-  # ========================================================
-  # API GATEWAY AUTHORIZER ID
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
 
   ApiGatewayAuthorizerId:
-
-    Description:
-      API Gateway Lambda Authorizer ID
-
-    Value:
-      !Ref ApiGatewayAuthorizer
-
+    Description: API Gateway Lambda Authorizer ID
+    Value: !Ref ApiGatewayAuthorizer
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
-
-
-  # ========================================================
-  # SSM PARAMETER NAME
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
 
   TokenParameterName:
-
-    Description:
-      SSM SecureString parameter name
-
-    Value:
-      !Ref TokenParameterName
-
+    Description: SSM SecureString parameter name
+    Value: !Ref TokenParameterName
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-TokenParameterName"
-
-
-  # ========================================================
-  # AUTHORIZER CACHE TTL
-  # ========================================================
+      Name: !Sub "${ProjectName}-${Environment}-TokenParameterName"
 
   AuthorizerCacheTTL:
-
-    Description:
-      Authorizer cache TTL in seconds
-
-    Value:
-      !Ref AuthorizerCacheTTL
-
+    Description: Authorizer cache TTL in seconds
+    Value: !Ref AuthorizerCacheTTL
     Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-AuthorizerCacheTTL"
+      Name: !Sub "${ProjectName}-${Environment}-AuthorizerCacheTTL"

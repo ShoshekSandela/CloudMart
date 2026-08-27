@@ -814,6 +814,14 @@ jobs:
       # SAM BUILD
       # =====================================================
 
+      - name: Verify Lambda source code
+        run: |
+          if [ ! -f "lambdas/authorizer/index.py" ]; then
+            echo "ERROR: lambdas/authorizer/index.py is missing."
+            exit 1
+          fi
+          echo "Lambda Python source found."
+
       - name: Build Lambda application
         run: |
 
@@ -842,22 +850,14 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
+            --resolve-s3 \
             --parameter-overrides \
               Environment=dev \
               PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
-              AuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
-              ProductRoleArn="$PRODUCT_ROLE_ARN" \
-              OrderRoleArn="$ORDER_ROLE_ARN" \
-              ReportRoleArn="$REPORT_ROLE_ARN" \
-              ReportBucketName="$REPORT_BUCKET_NAME" \
-              NotificationEmail="$NOTIFICATION_EMAIL" \
-              ReportScheduleExpression="rate(1 day)" \
-              DBHost="$DB_HOST" \
-              DBPort="$DB_PORT" \
-              DBName="$DB_NAME" \
-              DBUsername="cloudmartadmin" \
-              DBPassword="$DB_PASSWORD"
+              LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
+              AuthorizerCacheTTL=300 \
+              TokenParameterName="/cloudmart/dev/auth/token"
 
           echo "Application Stack deployment completed successfully."
 
