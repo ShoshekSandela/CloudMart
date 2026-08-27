@@ -165,9 +165,6 @@ Resources:
 
     Properties:
 
-      DBInstanceIdentifier:
-        !Sub cloudmart-${Environment}-mysql
-
       Engine: mysql
 
       EngineVersion: "8.0"
