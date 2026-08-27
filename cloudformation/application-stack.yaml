@@ -81,8 +81,7 @@ Resources:
       Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
       RestApiId: !Ref CloudMartRestApi
       Type: TOKEN
-      IdentitySource:
-        - method.request.header.Authorization
+      IdentitySource: method.request.header.Authorization
       AuthorizerUri:
         Fn::Sub:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
