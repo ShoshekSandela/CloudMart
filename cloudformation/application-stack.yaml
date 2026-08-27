@@ -1,10 +1,15 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudMart Application Authorization Stack.
-  Creates the Lambda TOKEN Authorizer, integrates with SSM SecureString,
-  creates the API Gateway authorizer, authorizer caching, and
-  API Gateway Lambda invoke permission.
+  CloudMart Application Stack.
+  Creates the API Gateway REST API, Lambda TOKEN Authorizer,
+  SSM SecureString integration, API Gateway authorizer,
+  authorizer caching, and API Gateway Lambda invoke permission.
+
+
+# ==========================================================
+# PARAMETERS
+# ==========================================================
 
 Parameters:
 
@@ -17,23 +22,19 @@ Parameters:
       - prod
     Description: Deployment environment
 
+
   ProjectName:
     Type: String
     Default: cloudmart
     Description: CloudMart project name
 
-  ExistingRestApiId:
-    Type: String
-    MinLength: 1
-    Description: >
-      Existing API Gateway REST API ID used by CloudMart.
 
   LambdaAuthorizerRoleArn:
     Type: String
-    MinLength: 1
     Description: >
-      ARN of the Lambda Authorizer IAM role created
-      by the CloudMart IAM stack.
+      ARN of the Lambda Authorizer IAM role created by
+      the CloudMart IAM stack.
+
 
   AuthorizerCacheTTL:
     Type: Number
@@ -42,17 +43,58 @@ Parameters:
     MaxValue: 3600
     Description: >
       Lambda Authorizer result cache TTL in seconds.
-      300 seconds equals 5 minutes.
+
 
   TokenParameterName:
     Type: String
     Default: /cloudmart/dev/auth/token
-    MinLength: 1
     Description: >
       SSM Parameter Store SecureString parameter containing
       the CloudMart API authorization token.
 
+
+# ==========================================================
+# RESOURCES
+# ==========================================================
+
 Resources:
+
+  # ========================================================
+  # API GATEWAY REST API
+  # ========================================================
+
+  CloudMartRestApi:
+    Type: AWS::ApiGateway::RestApi
+
+    Properties:
+
+      Name:
+        !Sub "${ProjectName}-${Environment}-api"
+
+      Description:
+        !Sub "CloudMart ${Environment} REST API"
+
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+      Tags:
+
+        - Key: Name
+          Value:
+            !Sub "${ProjectName}-${Environment}-api"
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value:
+            !Ref Environment
+
+
+  # ========================================================
+  # LAMBDA AUTHORIZER
+  # ========================================================
 
   LambdaAuthorizer:
     Type: AWS::Lambda::Function
@@ -75,10 +117,12 @@ Resources:
 
       Environment:
         Variables:
+
           TOKEN_PARAMETER_NAME:
             !Ref TokenParameterName
 
       Code:
+
         S3Bucket:
           Fn::ImportValue:
             !Sub "${ProjectName}-${Environment}-LambdaArtifactBucket"
@@ -87,6 +131,23 @@ Resources:
           Fn::ImportValue:
             !Sub "${ProjectName}-${Environment}-AuthorizerArtifactKey"
 
+      Tags:
+
+        - Key: Name
+          Value:
+            !Sub "${ProjectName}-${Environment}-authorizer"
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value:
+            !Ref Environment
+
+
+  # ========================================================
+  # API GATEWAY TOKEN AUTHORIZER
+  # ========================================================
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
@@ -97,7 +158,7 @@ Resources:
         !Sub "${ProjectName}-${Environment}-token-authorizer"
 
       RestApiId:
-        !Ref ExistingRestApiId
+        !Ref CloudMartRestApi
 
       Type: TOKEN
 
@@ -108,6 +169,7 @@ Resources:
         Fn::Sub:
           - >
             arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+
           - LambdaAuthorizerArn:
               !GetAtt LambdaAuthorizer.Arn
 
@@ -115,24 +177,84 @@ Resources:
         !Ref AuthorizerCacheTTL
 
 
+  # ========================================================
+  # API GATEWAY -> LAMBDA PERMISSION
+  # ========================================================
+
   LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
 
     Properties:
 
-      Action: lambda:InvokeFunction
+      Action:
+        lambda:InvokeFunction
 
       FunctionName:
         !Ref LambdaAuthorizer
 
-      Principal: apigateway.amazonaws.com
+      Principal:
+        apigateway.amazonaws.com
 
       SourceArn:
         !Sub >
-          arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ExistingRestApiId}/authorizers/${ApiGatewayAuthorizer}
+          arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/${ApiGatewayAuthorizer}
 
+
+# ==========================================================
+# OUTPUTS
+# ==========================================================
 
 Outputs:
+
+  # ========================================================
+  # REST API ID
+  # ========================================================
+
+  RestApiId:
+    Description: CloudMart API Gateway REST API ID
+
+    Value:
+      !Ref CloudMartRestApi
+
+    Export:
+      Name:
+        !Sub "${ProjectName}-${Environment}-RestApiId"
+
+
+  # ========================================================
+  # REST API ROOT RESOURCE ID
+  # ========================================================
+
+  RestApiRootResourceId:
+    Description: CloudMart API Gateway root resource ID
+
+    Value:
+      !GetAtt CloudMartRestApi.RootResourceId
+
+    Export:
+      Name:
+        !Sub "${ProjectName}-${Environment}-RestApiRootResourceId"
+
+
+  # ========================================================
+  # REST API URL
+  # ========================================================
+
+  RestApiUrl:
+    Description: CloudMart API Gateway regional endpoint
+
+    Value:
+      !Sub >
+        https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+
+    Export:
+      Name:
+        !Sub "${ProjectName}-${Environment}-RestApiUrl"
+
+
+  # ========================================================
+  # LAMBDA AUTHORIZER ARN
+  # ========================================================
 
   LambdaAuthorizerArn:
     Description: Lambda Authorizer ARN
@@ -145,10 +267,12 @@ Outputs:
         !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
 
 
+  # ========================================================
+  # LAMBDA AUTHORIZER ROLE ARN
+  # ========================================================
+
   LambdaAuthorizerRoleArn:
-    Description: >
-      Lambda Authorizer IAM Role ARN created by
-      the CloudMart IAM stack.
+    Description: Lambda Authorizer IAM Role ARN
 
     Value:
       !Ref LambdaAuthorizerRoleArn
@@ -157,6 +281,10 @@ Outputs:
       Name:
         !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
 
+
+  # ========================================================
+  # API GATEWAY AUTHORIZER ID
+  # ========================================================
 
   ApiGatewayAuthorizerId:
     Description: API Gateway Lambda Authorizer ID
@@ -169,6 +297,10 @@ Outputs:
         !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
 
 
+  # ========================================================
+  # SSM PARAMETER NAME
+  # ========================================================
+
   TokenParameterName:
     Description: SSM SecureString parameter name
 
@@ -179,6 +311,10 @@ Outputs:
       Name:
         !Sub "${ProjectName}-${Environment}-TokenParameterName"
 
+
+  # ========================================================
+  # AUTHORIZER CACHE TTL
+  # ========================================================
 
   AuthorizerCacheTTL:
     Description: Authorizer cache TTL in seconds
