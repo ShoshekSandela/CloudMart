@@ -11,11 +11,6 @@ permissions:
   id-token: write
   contents: read
 
-
-# ============================================================
-# GLOBAL ENVIRONMENT
-# ============================================================
-
 env:
   AWS_REGION: us-east-1
 
@@ -31,7 +26,6 @@ env:
   DB_NAME: cloudmart
 
   REPORT_BUCKET_NAME: cloudmart-dev-reports
-
   NOTIFICATION_EMAIL: shoshekb@gmail.com
 
   REPORT_SCHEDULE_EXPRESSION: "rate(1 hour)"
@@ -39,29 +33,29 @@ env:
 
 jobs:
 
-  # ==========================================================
-  # 1. DEPLOY NETWORK STACK
-  # ==========================================================
+  # ============================================================
+  # COMPLETE CLOUDMART PIPELINE
+  # ============================================================
 
-  deploy-network:
+  deploy:
 
-    name: Deploy Network Stack
+    name: Deploy CloudMart Stacks
 
     runs-on: ubuntu-latest
 
     steps:
 
-      # --------------------------------------------------------
-      # CHECKOUT
-      # --------------------------------------------------------
+      # ==========================================================
+      # 1. CHECKOUT
+      # ==========================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
 
 
-      # --------------------------------------------------------
-      # AWS OIDC
-      # --------------------------------------------------------
+      # ==========================================================
+      # 2. AWS CREDENTIALS
+      # ==========================================================
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -70,17 +64,60 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
 
-      # --------------------------------------------------------
-      # INSTALL SAM
-      # --------------------------------------------------------
+      # ==========================================================
+      # 3. CHECK AWS CONNECTION
+      # ==========================================================
 
-      - name: Install AWS SAM CLI
-        uses: aws-actions/setup-sam@v2
+      - name: Verify AWS credentials
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Checking AWS credentials"
+          echo "=========================================="
+
+          aws sts get-caller-identity \
+            --region "$AWS_REGION"
+
+          echo "AWS credentials are working."
 
 
-      # --------------------------------------------------------
-      # VALIDATE NETWORK TEMPLATE
-      # --------------------------------------------------------
+      # ==========================================================
+      # 4. CHECK DATABASE PASSWORD
+      # ==========================================================
+
+      - name: Check database credentials
+        env:
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Checking database credentials"
+          echo "=========================================="
+
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD secret is missing."
+            echo ""
+            echo "Create this GitHub repository secret:"
+            echo ""
+            echo "CLOUDMART_DB_PASSWORD"
+            echo ""
+            echo "Location:"
+            echo "GitHub Repository"
+            echo "-> Settings"
+            echo "-> Secrets and variables"
+            echo "-> Actions"
+            echo "-> New repository secret"
+            exit 1
+          fi
+
+          echo "Database password is available."
+
+
+      # ==========================================================
+      # 5. VALIDATE NETWORK TEMPLATE
+      # ==========================================================
 
       - name: Validate Network Stack
         run: |
@@ -94,12 +131,12 @@ jobs:
             --template-body file://cloudformation/network-stack.yaml \
             --region "$AWS_REGION"
 
-          echo "Network template validation successful."
+          echo "Network template is valid."
 
 
-      # --------------------------------------------------------
-      # DEPLOY NETWORK
-      # --------------------------------------------------------
+      # ==========================================================
+      # 6. DEPLOY NETWORK STACK
+      # ==========================================================
 
       - name: Deploy Network Stack
         run: |
@@ -114,401 +151,23 @@ jobs:
             --stack-name "$NETWORK_STACK" \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
             --parameter-overrides \
               Environment="$ENVIRONMENT"
 
-          echo "Network Stack deployment successful."
+          echo "Network Stack deployed."
 
 
-      # --------------------------------------------------------
-      # SHOW NETWORK OUTPUTS
-      # --------------------------------------------------------
-
-      - name: Show Network Outputs
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name "$NETWORK_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs" \
-            --output table
-
-
-  # ==========================================================
-  # 2. DEPLOY DATA STACK
-  # ==========================================================
-
-  deploy-data:
-
-    name: Deploy Data Stack
-
-    runs-on: ubuntu-latest
-
-    needs:
-      - deploy-network
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-
-      # --------------------------------------------------------
-      # AWS OIDC
-      # --------------------------------------------------------
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-
-      # --------------------------------------------------------
-      # VALIDATE DATA TEMPLATE
-      # --------------------------------------------------------
-
-      - name: Validate Data Stack
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "Validating Data Stack"
-          echo "=========================================="
-
-          aws cloudformation validate-template \
-            --template-body file://cloudformation/data-stack.yaml \
-            --region "$AWS_REGION"
-
-          echo "Data template validation successful."
-
-
-      # --------------------------------------------------------
-      # CHECK DATABASE PASSWORD
-      # --------------------------------------------------------
-
-      - name: Check database credentials
-        env:
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-        run: |
-          set -e
-
-          echo "Checking database credentials..."
-
-          if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD GitHub secret is missing."
-            echo ""
-            echo "Create:"
-            echo "Repository Settings"
-            echo "-> Secrets and variables"
-            echo "-> Actions"
-            echo "-> New repository secret"
-            echo ""
-            echo "Name:"
-            echo "CLOUDMART_DB_PASSWORD"
-            exit 1
-          fi
-
-          if [ "$DB_PASSWORD" = "null" ]; then
-            echo "ERROR: DB password is invalid."
-            exit 1
-          fi
-
-          echo "Database password is available."
-
-
-      # --------------------------------------------------------
-      # DEPLOY DATA STACK
-      # --------------------------------------------------------
-
-      - name: Deploy Data Stack
-        env:
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "Deploying Data Stack"
-          echo "=========================================="
-
-          aws cloudformation deploy \
-            --template-file cloudformation/data-stack.yaml \
-            --stack-name "$DATA_STACK" \
-            --region "$AWS_REGION" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              DBName="$DB_NAME" \
-              DBUsername="$DB_USERNAME" \
-              DBPassword="$DB_PASSWORD" \
-              DBInstanceClass="db.t3.micro" \
-              AllocatedStorage="20"
-
-          echo "Data Stack deployment successful."
-
-
-      # --------------------------------------------------------
-      # GET DATA OUTPUTS
-      # --------------------------------------------------------
-
-      - name: Get Data Stack Outputs
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "Getting Data Stack outputs"
-          echo "=========================================="
-
-          DB_HOST=$(aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue | [0]" \
-            --output text)
-
-          DB_PORT=$(aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBPort'].OutputValue | [0]" \
-            --output text)
-
-          DB_NAME_OUTPUT=$(aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]" \
-            --output text)
-
-          DB_USERNAME_OUTPUT=$(aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBUsername'].OutputValue | [0]" \
-            --output text)
-
-          REPORT_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name "$DATA_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='ReportBucketName'].OutputValue | [0]" \
-            --output text)
-
-          if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
-            echo "ERROR: DBEndpoint output is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_PORT" ] || [ "$DB_PORT" = "None" ]; then
-            echo "ERROR: DBPort output is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_NAME_OUTPUT" ] || [ "$DB_NAME_OUTPUT" = "None" ]; then
-            echo "ERROR: DBName output is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_USERNAME_OUTPUT" ] || [ "$DB_USERNAME_OUTPUT" = "None" ]; then
-            echo "ERROR: DBUsername output is missing."
-            exit 1
-          fi
-
-          if [ -z "$REPORT_BUCKET" ] || [ "$REPORT_BUCKET" = "None" ]; then
-            echo "ERROR: ReportBucketName output is missing."
-            exit 1
-          fi
-
-          echo "DB Host: $DB_HOST"
-          echo "DB Port: $DB_PORT"
-          echo "DB Name: $DB_NAME_OUTPUT"
-          echo "DB Username: $DB_USERNAME_OUTPUT"
-          echo "Report Bucket: $REPORT_BUCKET"
-
-          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
-          echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
-          echo "DB_NAME_OUTPUT=$DB_NAME_OUTPUT" >> "$GITHUB_ENV"
-          echo "DB_USERNAME_OUTPUT=$DB_USERNAME_OUTPUT" >> "$GITHUB_ENV"
-          echo "REPORT_BUCKET=$REPORT_BUCKET" >> "$GITHUB_ENV"
-
-
-  # ==========================================================
-  # 3. DEPLOY IAM STACK
-  # ==========================================================
-
-  deploy-iam:
-
-    name: Deploy IAM Stack
-
-    runs-on: ubuntu-latest
-
-    needs:
-      - deploy-network
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-
-      # --------------------------------------------------------
-      # AWS OIDC
-      # --------------------------------------------------------
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-
-      # --------------------------------------------------------
-      # VALIDATE IAM
-      # --------------------------------------------------------
-
-      - name: Validate IAM Stack
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "Validating IAM Stack"
-          echo "=========================================="
-
-          aws cloudformation validate-template \
-            --template-body file://cloudformation/iam-stack.yaml \
-            --region "$AWS_REGION"
-
-          echo "IAM template validation successful."
-
-
-      # --------------------------------------------------------
-      # DEPLOY IAM
-      # --------------------------------------------------------
-
-      - name: Deploy IAM Stack
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "Deploying IAM Stack"
-          echo "=========================================="
-
-          aws cloudformation deploy \
-            --template-file cloudformation/iam-stack.yaml \
-            --stack-name "$IAM_STACK" \
-            --region "$AWS_REGION" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              ProjectName="$PROJECT_NAME"
-
-          echo "IAM Stack deployment successful."
-
-
-      # --------------------------------------------------------
-      # GET IAM OUTPUTS
-      # --------------------------------------------------------
-
-      - name: Get IAM Outputs
-        run: |
-          set -e
-
-          echo "=========================================="
-          echo "Getting IAM Stack outputs"
-          echo "=========================================="
-
-          AUTHORIZER_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LambdaAuthorizerRoleArn'].OutputValue | [0]" \
-            --output text)
-
-          PRODUCT_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LambdaProductRoleArn'].OutputValue | [0]" \
-            --output text)
-
-          ORDER_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LambdaOrderRoleArn'].OutputValue | [0]" \
-            --output text)
-
-          REPORT_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LambdaReportRoleArn'].OutputValue | [0]" \
-            --output text)
-
-          if [ -z "$AUTHORIZER_ROLE" ] || [ "$AUTHORIZER_ROLE" = "None" ]; then
-            echo "ERROR: LambdaAuthorizerRoleArn output is missing from IAM stack."
-            exit 1
-          fi
-
-          if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
-            echo "ERROR: LambdaProductRoleArn output is missing from IAM stack."
-            exit 1
-          fi
-
-          if [ -z "$ORDER_ROLE" ] || [ "$ORDER_ROLE" = "None" ]; then
-            echo "ERROR: LambdaOrderRoleArn output is missing from IAM stack."
-            exit 1
-          fi
-
-          if [ -z "$REPORT_ROLE" ] || [ "$REPORT_ROLE" = "None" ]; then
-            echo "ERROR: LambdaReportRoleArn output is missing from IAM stack."
-            exit 1
-          fi
-
-          echo "Authorizer Role: $AUTHORIZER_ROLE"
-          echo "Product Role: $PRODUCT_ROLE"
-          echo "Order Role: $ORDER_ROLE"
-          echo "Report Role: $REPORT_ROLE"
-
-          echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
-          echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE" >> "$GITHUB_ENV"
-          echo "ORDER_ROLE_ARN=$ORDER_ROLE" >> "$GITHUB_ENV"
-          echo "REPORT_ROLE_ARN=$REPORT_ROLE" >> "$GITHUB_ENV"
-
-
-  # ==========================================================
-  # 4. DEPLOY APPLICATION STACK
-  # ==========================================================
-
-  deploy-application:
-
-    name: Deploy Application Stack
-
-    runs-on: ubuntu-latest
-
-    needs:
-      - deploy-data
-      - deploy-iam
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-
-      # --------------------------------------------------------
-      # AWS OIDC
-      # --------------------------------------------------------
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-
-      # ========================================================
-      # GET NETWORK OUTPUTS
-      # ========================================================
+      # ==========================================================
+      # 7. SHOW NETWORK OUTPUTS
+      # ==========================================================
 
       - name: Get Network Outputs
         run: |
           set -e
 
           echo "=========================================="
-          echo "Getting Network outputs"
+          echo "Reading Network Stack outputs"
           echo "=========================================="
 
           PRIVATE_SUBNET_1=$(aws cloudformation describe-stacks \
@@ -546,20 +205,111 @@ jobs:
 
           PRIVATE_SUBNET_IDS="${PRIVATE_SUBNET_1},${PRIVATE_SUBNET_2}"
 
-          echo "Private Subnets: $PRIVATE_SUBNET_IDS"
+          echo "Private Subnet 1: $PRIVATE_SUBNET_1"
+          echo "Private Subnet 2: $PRIVATE_SUBNET_2"
           echo "Lambda Security Group: $LAMBDA_SECURITY_GROUP"
 
           echo "PRIVATE_SUBNET_IDS=$PRIVATE_SUBNET_IDS" >> "$GITHUB_ENV"
           echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP" >> "$GITHUB_ENV"
 
 
-      # ========================================================
-      # GET DATA OUTPUTS
-      # ========================================================
+      # ==========================================================
+      # 8. VALIDATE DATA TEMPLATE
+      # ==========================================================
+
+      - name: Validate Data Stack
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Validating Data Stack"
+          echo "=========================================="
+
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/data-stack.yaml \
+            --region "$AWS_REGION"
+
+          echo "Data template is valid."
+
+
+      # ==========================================================
+      # 9. DEPLOY DATA STACK
+      # ==========================================================
+
+      - name: Deploy Data Stack
+        env:
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Deploying Data Stack"
+          echo "=========================================="
+
+          aws cloudformation deploy \
+            --template-file cloudformation/data-stack.yaml \
+            --stack-name "$DATA_STACK" \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              DBName="$DB_NAME" \
+              DBUsername="$DB_USERNAME" \
+              DBPassword="$DB_PASSWORD" \
+              DBInstanceClass="db.t3.micro" \
+              AllocatedStorage="20"
+
+          echo "Data Stack deployed."
+
+
+      # ==========================================================
+      # 10. WAIT FOR DATA STACK
+      # ==========================================================
+
+      - name: Wait for Data Stack
+        run: |
+          set -e
+
+          aws cloudformation wait stack-update-complete \
+            --stack-name "$DATA_STACK" \
+            --region "$AWS_REGION" 2>/dev/null || true
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$DATA_STACK" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text)
+
+          echo "Data Stack status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Data Stack is healthy."
+              ;;
+            *)
+              echo "ERROR: Data Stack is not healthy."
+              aws cloudformation describe-stack-events \
+                --stack-name "$DATA_STACK" \
+                --region "$AWS_REGION" \
+                --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED'].[LogicalResourceId,ResourceStatus,ResourceStatusReason]" \
+                --output table
+              exit 1
+              ;;
+          esac
+
+
+      # ==========================================================
+      # 11. GET DATA OUTPUTS
+      # ==========================================================
 
       - name: Get Data Outputs
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Reading Data Stack outputs"
+          echo "=========================================="
 
           DB_HOST=$(aws cloudformation describe-stacks \
             --stack-name "$DATA_STACK" \
@@ -616,6 +366,12 @@ jobs:
             exit 1
           fi
 
+          echo "DB Host: $DB_HOST"
+          echo "DB Port: $DB_PORT"
+          echo "DB Name: $DB_NAME_OUTPUT"
+          echo "DB Username: $DB_USERNAME_OUTPUT"
+          echo "Report Bucket: $REPORT_BUCKET"
+
           echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
           echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
           echo "DB_NAME_OUTPUT=$DB_NAME_OUTPUT" >> "$GITHUB_ENV"
@@ -623,13 +379,61 @@ jobs:
           echo "REPORT_BUCKET=$REPORT_BUCKET" >> "$GITHUB_ENV"
 
 
-      # ========================================================
-      # GET IAM OUTPUTS
-      # ========================================================
+      # ==========================================================
+      # 12. VALIDATE IAM TEMPLATE
+      # ==========================================================
+
+      - name: Validate IAM Stack
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Validating IAM Stack"
+          echo "=========================================="
+
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/iam-stack.yaml \
+            --region "$AWS_REGION"
+
+          echo "IAM template is valid."
+
+
+      # ==========================================================
+      # 13. DEPLOY IAM STACK
+      # ==========================================================
+
+      - name: Deploy IAM Stack
+        run: |
+          set -e
+
+          echo "=========================================="
+          echo "Deploying IAM Stack"
+          echo "=========================================="
+
+          aws cloudformation deploy \
+            --template-file cloudformation/iam-stack.yaml \
+            --stack-name "$IAM_STACK" \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              ProjectName="$PROJECT_NAME"
+
+          echo "IAM Stack deployed."
+
+
+      # ==========================================================
+      # 14. GET IAM OUTPUTS
+      # ==========================================================
 
       - name: Get IAM Outputs
         run: |
           set -e
+
+          echo "=========================================="
+          echo "Reading IAM Stack outputs"
+          echo "=========================================="
 
           AUTHORIZER_ROLE=$(aws cloudformation describe-stacks \
             --stack-name "$IAM_STACK" \
@@ -660,17 +464,37 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
+            echo "ERROR: LambdaProductRoleArn missing."
+            exit 1
+          fi
+
+          if [ -z "$ORDER_ROLE" ] || [ "$ORDER_ROLE" = "None" ]; then
+            echo "ERROR: LambdaOrderRoleArn missing."
+            exit 1
+          fi
+
+          if [ -z "$REPORT_ROLE" ] || [ "$REPORT_ROLE" = "None" ]; then
+            echo "ERROR: LambdaReportRoleArn missing."
+            exit 1
+          fi
+
+          echo "Authorizer role found."
+          echo "Product role found."
+          echo "Order role found."
+          echo "Report role found."
+
           echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
           echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE" >> "$GITHUB_ENV"
           echo "ORDER_ROLE_ARN=$ORDER_ROLE" >> "$GITHUB_ENV"
           echo "REPORT_ROLE_ARN=$REPORT_ROLE" >> "$GITHUB_ENV"
 
 
-      # ========================================================
-      # FIND EXISTING API GATEWAY
-      # ========================================================
+      # ==========================================================
+      # 15. FIND OR CREATE API GATEWAY
+      # ==========================================================
 
-      - name: Find CloudMart API Gateway
+      - name: Find or Create CloudMart API Gateway
         run: |
           set -e
 
@@ -678,44 +502,45 @@ jobs:
           echo "Finding CloudMart API Gateway"
           echo "=========================================="
 
+          API_NAME="cloudmart-${ENVIRONMENT}-api"
+
           API_ID=$(aws apigateway get-rest-apis \
             --region "$AWS_REGION" \
-            --query "items[?name=='cloudmart-${ENVIRONMENT}-api'].id | [0]" \
+            --query "items[?name=='$API_NAME'].id | [0]" \
             --output text)
 
           if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
 
-            echo "CloudMart API was not found using exact name."
+            echo "API Gateway not found."
+            echo "Creating: $API_NAME"
 
-            API_ID=$(aws apigateway get-rest-apis \
+            API_ID=$(aws apigateway create-rest-api \
+              --name "$API_NAME" \
+              --description "CloudMart API Gateway" \
+              --endpoint-configuration types=REGIONAL \
               --region "$AWS_REGION" \
-              --query "items[?contains(name, 'cloudmart-${ENVIRONMENT}')].id | [0]" \
+              --query "id" \
               --output text)
+
+            echo "Created API Gateway: $API_ID"
+
+          else
+
+            echo "Existing API Gateway found: $API_ID"
 
           fi
 
           if [ -z "$API_ID" ] || [ "$API_ID" = "None" ]; then
-            echo ""
-            echo "ERROR: Existing CloudMart API Gateway REST API was not found."
-            echo ""
-            echo "Available REST APIs:"
-            aws apigateway get-rest-apis \
-              --region "$AWS_REGION" \
-              --query "items[].{ID:id,Name:name}" \
-              --output table
-            echo ""
-            echo "Create/keep your CloudMart REST API before deploying the application stack."
+            echo "ERROR: Could not obtain API Gateway ID."
             exit 1
           fi
-
-          echo "ExistingRestApiId: $API_ID"
 
           echo "EXISTING_REST_API_ID=$API_ID" >> "$GITHUB_ENV"
 
 
-      # ========================================================
-      # VALIDATE APPLICATION
-      # ========================================================
+      # ==========================================================
+      # 16. VALIDATE APPLICATION TEMPLATE
+      # ==========================================================
 
       - name: Validate Application Stack
         run: |
@@ -729,44 +554,70 @@ jobs:
             --template-body file://cloudformation/application-stack.yaml \
             --region "$AWS_REGION"
 
-          echo "Application template validation successful."
+          echo "Application template is valid."
 
 
-      # ========================================================
-      # CHECK APPLICATION PARAMETERS
-      # ========================================================
+      # ==========================================================
+      # 17. CHECK ALL APPLICATION PARAMETERS
+      # ==========================================================
 
       - name: Check Application Parameters
         run: |
           set -e
 
           echo "=========================================="
-          echo "Application deployment values"
+          echo "Checking Application parameters"
           echo "=========================================="
 
-          echo "Environment: $ENVIRONMENT"
-          echo "PrivateSubnetIds: $PRIVATE_SUBNET_IDS"
-          echo "LambdaSecurityGroupId: $LAMBDA_SECURITY_GROUP_ID"
-          echo "AuthorizerRoleArn: $AUTHORIZER_ROLE_ARN"
-          echo "ProductRoleArn: $PRODUCT_ROLE_ARN"
-          echo "OrderRoleArn: $ORDER_ROLE_ARN"
-          echo "ReportRoleArn: $REPORT_ROLE_ARN"
-          echo "ReportBucketName: $REPORT_BUCKET"
-          echo "NotificationEmail: $NOTIFICATION_EMAIL"
-          echo "ReportScheduleExpression: $REPORT_SCHEDULE_EXPRESSION"
-          echo "DBHost: $DB_HOST"
-          echo "DBPort: $DB_PORT"
-          echo "DBName: $DB_NAME_OUTPUT"
-          echo "DBUsername: $DB_USERNAME_OUTPUT"
-          echo "ExistingRestApiId: $EXISTING_REST_API_ID"
+          REQUIRED_VARS="
+          PRIVATE_SUBNET_IDS
+          LAMBDA_SECURITY_GROUP_ID
+          AUTHORIZER_ROLE_ARN
+          PRODUCT_ROLE_ARN
+          ORDER_ROLE_ARN
+          REPORT_ROLE_ARN
+          DB_HOST
+          DB_PORT
+          DB_NAME_OUTPUT
+          DB_USERNAME_OUTPUT
+          REPORT_BUCKET
+          EXISTING_REST_API_ID
+          "
+
+          for VAR in $REQUIRED_VARS; do
+
+            VALUE="${!VAR:-}"
+
+            if [ -z "$VALUE" ] || [ "$VALUE" = "None" ]; then
+              echo "ERROR: $VAR is missing."
+              exit 1
+            fi
+
+          done
+
+          echo "All application parameters are available."
 
           echo ""
-          echo "All required application values are present."
+          echo "Environment: $ENVIRONMENT"
+          echo "Private Subnets: $PRIVATE_SUBNET_IDS"
+          echo "Lambda Security Group: $LAMBDA_SECURITY_GROUP_ID"
+          echo "Authorizer Role: $AUTHORIZER_ROLE_ARN"
+          echo "Product Role: $PRODUCT_ROLE_ARN"
+          echo "Order Role: $ORDER_ROLE_ARN"
+          echo "Report Role: $REPORT_ROLE_ARN"
+          echo "Report Bucket: $REPORT_BUCKET"
+          echo "DB Host: $DB_HOST"
+          echo "DB Port: $DB_PORT"
+          echo "DB Name: $DB_NAME_OUTPUT"
+          echo "DB Username: $DB_USERNAME_OUTPUT"
+          echo "Existing REST API ID: $EXISTING_REST_API_ID"
+          echo "Notification Email: $NOTIFICATION_EMAIL"
+          echo "Report Schedule: $REPORT_SCHEDULE_EXPRESSION"
 
 
-      # ========================================================
-      # DEPLOY APPLICATION
-      # ========================================================
+      # ==========================================================
+      # 18. DEPLOY APPLICATION STACK
+      # ==========================================================
 
       - name: Deploy Application Stack
         env:
@@ -803,12 +654,12 @@ jobs:
               DBPassword="$DB_PASSWORD" \
               ExistingRestApiId="$EXISTING_REST_API_ID"
 
-          echo "Application Stack deployment successful."
+          echo "Application Stack deployed successfully."
 
 
-      # ========================================================
-      # APPLICATION OUTPUTS
-      # ========================================================
+      # ==========================================================
+      # 19. APPLICATION OUTPUTS
+      # ==========================================================
 
       - name: Show Application Outputs
         run: |
@@ -825,15 +676,46 @@ jobs:
             --output table
 
 
-      # ========================================================
-      # FINAL STATUS
-      # ========================================================
+      # ==========================================================
+      # 20. SHOW ALL STACKS
+      # ==========================================================
+
+      - name: Show CloudMart Stack Status
+        run: |
+          set -e
+
+          echo ""
+          echo "=========================================="
+          echo "CLOUDMART STACK STATUS"
+          echo "=========================================="
+
+          for STACK in \
+            "$NETWORK_STACK" \
+            "$DATA_STACK" \
+            "$IAM_STACK" \
+            "$APPLICATION_STACK"
+          do
+
+            STATUS=$(aws cloudformation describe-stacks \
+              --stack-name "$STACK" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].StackStatus" \
+              --output text)
+
+            echo "$STACK : $STATUS"
+
+          done
+
+
+      # ==========================================================
+      # 21. FINAL
+      # ==========================================================
 
       - name: Deployment Complete
         run: |
           echo ""
           echo "================================================"
-          echo "        CLOUDMART DEPLOYMENT COMPLETE"
+          echo "       CLOUDMART DEPLOYMENT COMPLETE"
           echo "================================================"
           echo ""
           echo "Network Stack:"
