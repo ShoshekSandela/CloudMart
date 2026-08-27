@@ -65,11 +65,23 @@ jobs:
 
       - name: Verify Network Stack
         run: |
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Network Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Network stack is ready."
+              ;;
+            *)
+              echo "ERROR: Network stack is not ready."
+              exit 1
+              ;;
+          esac
 
 
   # =========================================================
@@ -117,7 +129,10 @@ jobs:
           DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
 
+        shell: bash
         run: |
+
+          echo "Checking database credentials..."
 
           if [ -z "$DB_USERNAME" ]; then
             echo "ERROR: CLOUDMART_DB_USERNAME is missing."
@@ -148,11 +163,24 @@ jobs:
 
       - name: Verify Data Stack
         run: |
-          aws cloudformation describe-stacks \
+
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Data Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Data stack is ready."
+              ;;
+            *)
+              echo "ERROR: Data stack is not ready."
+              exit 1
+              ;;
+          esac
 
 
   # =========================================================
@@ -198,6 +226,7 @@ jobs:
       - name: Check Existing IAM Stack
         id: iam_status
         continue-on-error: true
+        shell: bash
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
@@ -211,6 +240,7 @@ jobs:
 
       - name: Delete IAM Stack in ROLLBACK_COMPLETE
         if: steps.iam_status.outputs.status == 'ROLLBACK_COMPLETE'
+        shell: bash
         run: |
 
           echo "IAM stack is in ROLLBACK_COMPLETE."
@@ -241,11 +271,23 @@ jobs:
       - name: Verify IAM Stack
         run: |
 
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "IAM Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "IAM stack is ready."
+              ;;
+            *)
+              echo "ERROR: IAM stack is not ready."
+              exit 1
+              ;;
+          esac
 
 
       # =====================================================
@@ -256,6 +298,7 @@ jobs:
         env:
           AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
 
+        shell: bash
         run: |
 
           if [ -z "$AUTH_TOKEN" ]; then
@@ -269,6 +312,7 @@ jobs:
         env:
           AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
 
+        shell: bash
         run: |
 
           aws ssm put-parameter \
@@ -297,14 +341,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-
       # =====================================================
       # SETUP SAM
       # =====================================================
 
       - name: Setup AWS SAM
         uses: aws-actions/setup-sam@v2
-
 
       # =====================================================
       # AWS CREDENTIALS
@@ -316,7 +358,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
       # =====================================================
       # VERIFY AWS
       # =====================================================
@@ -325,7 +366,6 @@ jobs:
         run: |
           aws sts get-caller-identity
 
-
       # =====================================================
       # VERIFY PREVIOUS STACKS
       # =====================================================
@@ -333,29 +373,35 @@ jobs:
       - name: Verify Network Stack
         run: |
 
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Network Stack: $STATUS"
 
       - name: Verify Data Stack
         run: |
 
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Data Stack: $STATUS"
 
       - name: Verify IAM Stack
         run: |
 
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "IAM Stack: $STATUS"
 
 
       # =====================================================
@@ -366,6 +412,7 @@ jobs:
         env:
           NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
 
+        shell: bash
         run: |
 
           if [ -z "$NOTIFICATION_EMAIL" ]; then
@@ -377,7 +424,7 @@ jobs:
 
 
       # =====================================================
-      # VALIDATE APPLICATION STACK
+      # VALIDATE APPLICATION TEMPLATE
       # =====================================================
 
       - name: Validate Application Stack
@@ -386,30 +433,37 @@ jobs:
           sam validate \
             --template-file cloudformation/application-stack.yaml
 
+          echo "Application template validation completed."
+
 
       # =====================================================
-      # GET NETWORK OUTPUTS
+      # GET NETWORK STACK OUTPUTS
+      #
+      # No cloudformation:list-exports required.
       # =====================================================
 
       - name: Get Network Outputs
         shell: bash
         run: |
 
-          echo "Getting Network outputs..."
+          echo "Getting Network stack outputs..."
 
-          PRIVATE_SUBNET_1=$(aws cloudformation list-exports \
+          PRIVATE_SUBNET_1=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-PrivateSubnet1Id'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet1Id'].OutputValue | [0]" \
             --output text)
 
-          PRIVATE_SUBNET_2=$(aws cloudformation list-exports \
+          PRIVATE_SUBNET_2=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-PrivateSubnet2Id'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet2Id'].OutputValue | [0]" \
             --output text)
 
-          LAMBDA_SECURITY_GROUP=$(aws cloudformation list-exports \
+          LAMBDA_SECURITY_GROUP=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-LambdaSecurityGroupId'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='LambdaSecurityGroupId'].OutputValue | [0]" \
             --output text)
 
           echo "Private Subnet 1: $PRIVATE_SUBNET_1"
@@ -417,17 +471,17 @@ jobs:
           echo "Lambda Security Group: $LAMBDA_SECURITY_GROUP"
 
           if [ -z "$PRIVATE_SUBNET_1" ] || [ "$PRIVATE_SUBNET_1" = "None" ]; then
-            echo "ERROR: Private subnet 1 export was not found."
+            echo "ERROR: PrivateSubnet1Id output is missing."
             exit 1
           fi
 
           if [ -z "$PRIVATE_SUBNET_2" ] || [ "$PRIVATE_SUBNET_2" = "None" ]; then
-            echo "ERROR: Private subnet 2 export was not found."
+            echo "ERROR: PrivateSubnet2Id output is missing."
             exit 1
           fi
 
           if [ -z "$LAMBDA_SECURITY_GROUP" ] || [ "$LAMBDA_SECURITY_GROUP" = "None" ]; then
-            echo "ERROR: Lambda security group export was not found."
+            echo "ERROR: LambdaSecurityGroupId output is missing."
             exit 1
           fi
 
@@ -437,62 +491,70 @@ jobs:
           echo "Network outputs loaded successfully."
 
 
-      # =========================================================
-      # GET LAMBDA IAM ROLE ARNS
-      # =========================================================
+      # =====================================================
+      # GET IAM STACK OUTPUTS
+      #
+      # IMPORTANT:
+      # LambdaAuthorizerRoleArn is the correct output key
+      # from your IAM template.
+      # =====================================================
 
-      - name: Get Lambda IAM role ARNs
+      - name: Get Lambda IAM Role ARNs
         shell: bash
         run: |
 
           echo "Getting Lambda IAM role ARNs..."
 
-          AUTHORIZE_ROLE=$(aws cloudformation list-exports \
+          AUTHORIZER_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-LambdaAuthorizerRoleArn'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='LambdaAuthorizerRoleArn'].OutputValue | [0]" \
             --output text)
 
-          PRODUCT_ROLE=$(aws cloudformation list-exports \
+          PRODUCT_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-ProductLambdaRoleArn'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='ProductLambdaRoleArn'].OutputValue | [0]" \
             --output text)
 
-          ORDER_ROLE=$(aws cloudformation list-exports \
+          ORDER_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-OrderLambdaRoleArn'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='OrderLambdaRoleArn'].OutputValue | [0]" \
             --output text)
 
-          REPORT_ROLE=$(aws cloudformation list-exports \
+          REPORT_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-ReportLambdaRoleArn'].Value | [0]" \
+            --query "Stacks[0].Outputs[?OutputKey=='ReportLambdaRoleArn'].OutputValue | [0]" \
             --output text)
 
-          echo "Authorizer Role: $AUTHORIZE_ROLE"
+          echo "Authorizer Role: $AUTHORIZER_ROLE"
           echo "Product Role: $PRODUCT_ROLE"
           echo "Order Role: $ORDER_ROLE"
           echo "Report Role: $REPORT_ROLE"
 
-          if [ -z "$AUTHORIZE_ROLE" ] || [ "$AUTHORIZE_ROLE" = "None" ]; then
-            echo "ERROR: Authorizer Lambda role export is missing."
+          if [ -z "$AUTHORIZER_ROLE" ] || [ "$AUTHORIZER_ROLE" = "None" ]; then
+            echo "ERROR: LambdaAuthorizerRoleArn output is missing."
             exit 1
           fi
 
           if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
-            echo "ERROR: Product Lambda role export is missing."
+            echo "ERROR: ProductLambdaRoleArn output is missing."
             exit 1
           fi
 
           if [ -z "$ORDER_ROLE" ] || [ "$ORDER_ROLE" = "None" ]; then
-            echo "ERROR: Order Lambda role export is missing."
+            echo "ERROR: OrderLambdaRoleArn output is missing."
             exit 1
           fi
 
           if [ -z "$REPORT_ROLE" ] || [ "$REPORT_ROLE" = "None" ]; then
-            echo "ERROR: Report Lambda role export is missing."
+            echo "ERROR: ReportLambdaRoleArn output is missing."
             exit 1
           fi
 
-          echo "AUTHORIZE_ROLE=$AUTHORIZE_ROLE" >> "$GITHUB_ENV"
+          echo "AUTHORIZE_ROLE=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
           echo "PRODUCT_ROLE=$PRODUCT_ROLE" >> "$GITHUB_ENV"
           echo "ORDER_ROLE=$ORDER_ROLE" >> "$GITHUB_ENV"
           echo "REPORT_ROLE=$REPORT_ROLE" >> "$GITHUB_ENV"
@@ -501,12 +563,14 @@ jobs:
 
 
       # =====================================================
-      # GET REPORT BUCKET
+      # GET DATA STACK OUTPUTS
       # =====================================================
 
-      - name: Get Report Bucket
+      - name: Get Data Stack Outputs
         shell: bash
         run: |
+
+          echo "Getting Data stack outputs..."
 
           REPORT_BUCKET=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
@@ -514,65 +578,55 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='ReportBucketName'].OutputValue | [0]" \
             --output text)
 
-          if [ -z "$REPORT_BUCKET" ] || [ "$REPORT_BUCKET" = "None" ]; then
-            echo "ERROR: ReportBucketName output was not found."
-            exit 1
-          fi
+          DB_HOST=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue | [0]" \
+            --output text)
+
+          DB_PORT=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='DBPort'].OutputValue | [0]" \
+            --output text)
+
+          DB_NAME=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]" \
+            --output text)
 
           echo "Report Bucket: $REPORT_BUCKET"
-
-          echo "REPORT_BUCKET_NAME=$REPORT_BUCKET" >> "$GITHUB_ENV"
-
-
-      # =====================================================
-      # GET DATABASE OUTPUTS
-      # =====================================================
-
-      - name: Get Database Outputs
-        shell: bash
-        run: |
-
-          echo "Getting database outputs..."
-
-          DB_HOST=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-DBEndpoint'].Value | [0]" \
-            --output text)
-
-          DB_PORT=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-DBPort'].Value | [0]" \
-            --output text)
-
-          DB_NAME=$(aws cloudformation list-exports \
-            --region "$AWS_REGION" \
-            --query "Exports[?Name=='CloudMart-dev-DBName'].Value | [0]" \
-            --output text)
-
           echo "DB Host: $DB_HOST"
           echo "DB Port: $DB_PORT"
           echo "DB Name: $DB_NAME"
 
+          if [ -z "$REPORT_BUCKET" ] || [ "$REPORT_BUCKET" = "None" ]; then
+            echo "ERROR: ReportBucketName output is missing."
+            exit 1
+          fi
+
           if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
-            echo "ERROR: DB endpoint export was not found."
+            echo "ERROR: DBEndpoint output is missing."
             exit 1
           fi
 
           if [ -z "$DB_PORT" ] || [ "$DB_PORT" = "None" ]; then
-            echo "ERROR: DB port export was not found."
+            echo "ERROR: DBPort output is missing."
             exit 1
           fi
 
           if [ -z "$DB_NAME" ] || [ "$DB_NAME" = "None" ]; then
-            echo "ERROR: DB name export was not found."
+            echo "ERROR: DBName output is missing."
             exit 1
           fi
 
+          echo "REPORT_BUCKET_NAME=$REPORT_BUCKET" >> "$GITHUB_ENV"
           echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
           echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
           echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
 
-          echo "Database outputs loaded successfully."
+          echo "Data outputs loaded successfully."
 
 
       # =====================================================
@@ -587,11 +641,14 @@ jobs:
           sam build \
             --template-file cloudformation/application-stack.yaml
 
-          echo "SAM build completed."
+          echo "SAM build completed successfully."
 
 
       # =====================================================
       # SAM DEPLOY
+      #
+      # SAM automatically manages Lambda packaging.
+      # No CLOUDMART_LAMBDA_ARTIFACT_BUCKET variable required.
       # =====================================================
 
       - name: Deploy Application Stack
@@ -605,7 +662,7 @@ jobs:
           echo "Preparing Application Stack deployment..."
 
           # ---------------------------------------------------
-          # MAP ROLE VARIABLES
+          # MAP IAM ROLE VALUES
           # ---------------------------------------------------
 
           AUTHORIZER_ROLE_ARN="$AUTHORIZE_ROLE"
@@ -614,7 +671,7 @@ jobs:
           REPORT_ROLE_ARN="$REPORT_ROLE"
 
           # ---------------------------------------------------
-          # VALIDATE VALUES
+          # VALIDATE ALL VALUES
           # ---------------------------------------------------
 
           if [ -z "$PRIVATE_SUBNET_IDS" ]; then
@@ -628,26 +685,26 @@ jobs:
           fi
 
           if [ -z "$AUTHORIZER_ROLE_ARN" ] || [ "$AUTHORIZER_ROLE_ARN" = "None" ]; then
-            echo "ERROR: Authorizer Lambda role is missing."
+            echo "ERROR: AUTHORIZER_ROLE_ARN is missing."
             exit 1
           fi
 
           if [ -z "$PRODUCT_ROLE_ARN" ] || [ "$PRODUCT_ROLE_ARN" = "None" ]; then
-            echo "ERROR: Product Lambda role is missing."
+            echo "ERROR: PRODUCT_ROLE_ARN is missing."
             exit 1
           fi
 
           if [ -z "$ORDER_ROLE_ARN" ] || [ "$ORDER_ROLE_ARN" = "None" ]; then
-            echo "ERROR: Order Lambda role is missing."
+            echo "ERROR: ORDER_ROLE_ARN is missing."
             exit 1
           fi
 
           if [ -z "$REPORT_ROLE_ARN" ] || [ "$REPORT_ROLE_ARN" = "None" ]; then
-            echo "ERROR: Report Lambda role is missing."
+            echo "ERROR: REPORT_ROLE_ARN is missing."
             exit 1
           fi
 
-          if [ -z "$REPORT_BUCKET_NAME" ]; then
+          if [ -z "$REPORT_BUCKET_NAME" ] || [ "$REPORT_BUCKET_NAME" = "None" ]; then
             echo "ERROR: REPORT_BUCKET_NAME is missing."
             exit 1
           fi
@@ -657,17 +714,17 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$DB_HOST" ]; then
+          if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
             echo "ERROR: DB_HOST is missing."
             exit 1
           fi
 
-          if [ -z "$DB_PORT" ]; then
+          if [ -z "$DB_PORT" ] || [ "$DB_PORT" = "None" ]; then
             echo "ERROR: DB_PORT is missing."
             exit 1
           fi
 
-          if [ -z "$DB_NAME" ]; then
+          if [ -z "$DB_NAME" ] || [ "$DB_NAME" = "None" ]; then
             echo "ERROR: DB_NAME is missing."
             exit 1
           fi
@@ -680,13 +737,29 @@ jobs:
           echo "All Application Stack values are available."
 
           # ---------------------------------------------------
-          # DEPLOY APPLICATION STACK
+          # DISPLAY NON-SECRET VALUES
+          # ---------------------------------------------------
+
+          echo "Private Subnets: $PRIVATE_SUBNET_IDS"
+          echo "Lambda Security Group: $LAMBDA_SECURITY_GROUP_ID"
+          echo "Authorizer Role: $AUTHORIZER_ROLE_ARN"
+          echo "Product Role: $PRODUCT_ROLE_ARN"
+          echo "Order Role: $ORDER_ROLE_ARN"
+          echo "Report Role: $REPORT_ROLE_ARN"
+          echo "Report Bucket: $REPORT_BUCKET_NAME"
+          echo "DB Host: $DB_HOST"
+          echo "DB Port: $DB_PORT"
+          echo "DB Name: $DB_NAME"
+
+          # ---------------------------------------------------
+          # DEPLOY APPLICATION
           # ---------------------------------------------------
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name cloudmart-application-dev \
             --region "$AWS_REGION" \
+            --resolve-s3 \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
@@ -707,7 +780,7 @@ jobs:
               DBUsername="cloudmartadmin" \
               DBPassword="$DB_PASSWORD"
 
-          echo "Application Stack deployment completed successfully."
+          echo "Application Stack deployment completed."
 
 
       # =====================================================
@@ -717,11 +790,23 @@ jobs:
       - name: Verify Application Stack
         run: |
 
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-application-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Application Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Application stack deployed successfully."
+              ;;
+            *)
+              echo "ERROR: Application stack deployment did not complete successfully."
+              exit 1
+              ;;
+          esac
 
 
       # =====================================================
@@ -730,6 +815,10 @@ jobs:
 
       - name: Show Application Outputs
         run: |
+
+          echo "=================================================="
+          echo "CLOUDMART APPLICATION OUTPUTS"
+          echo "=================================================="
 
           aws cloudformation describe-stacks \
             --stack-name cloudmart-application-dev \
@@ -744,9 +833,12 @@ jobs:
 
       - name: Show Application Failure Events
         if: failure()
+        shell: bash
         run: |
 
-          echo "Checking Application Stack status..."
+          echo "=================================================="
+          echo "APPLICATION STACK FAILURE DIAGNOSTICS"
+          echo "=================================================="
 
           aws cloudformation describe-stacks \
             --stack-name cloudmart-application-dev \
@@ -754,10 +846,11 @@ jobs:
             --query "Stacks[0].[StackStatus,StackStatusReason]" \
             --output table || true
 
-          echo "Application Stack failure events:"
+          echo ""
+          echo "CloudFormation failure events:"
 
           aws cloudformation describe-stack-events \
             --stack-name cloudmart-application-dev \
             --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
