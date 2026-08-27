@@ -1,4 +1,3 @@
-```yaml
 name: Deploy CloudMart Infrastructure
 
 on:
@@ -21,6 +20,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  ENVIRONMENT: dev
 
 jobs:
 
@@ -60,7 +60,7 @@ jobs:
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -113,11 +113,22 @@ jobs:
 
       - name: Verify Network Stack
         run: |
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Network Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              ;;
+            *)
+              echo "ERROR: Network stack is not ready."
+              exit 1
+              ;;
+          esac
 
       - name: Validate Data Stack
         run: |
@@ -152,7 +163,7 @@ jobs:
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
               DBInstanceClass=db.t3.micro \
               DBName=cloudmart \
               AllocatedStorage=20 \
@@ -212,11 +223,22 @@ jobs:
 
       - name: Verify Data Stack
         run: |
-          aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
-            --output text
+            --output text)
+
+          echo "Data Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              ;;
+            *)
+              echo "ERROR: Data stack is not ready."
+              exit 1
+              ;;
+          esac
 
       - name: Validate IAM Stack
         run: |
@@ -266,7 +288,7 @@ jobs:
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -293,7 +315,7 @@ jobs:
 
 
       # =====================================================
-      # SSM SECURESTRING AUTH TOKEN
+      # SSM AUTH TOKEN
       # =====================================================
 
       - name: Verify Auth Token
@@ -310,7 +332,6 @@ jobs:
 
           echo "Auth token is available."
 
-
       - name: Create or Update SSM Auth Token
         env:
           AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
@@ -326,7 +347,6 @@ jobs:
             --region "$AWS_REGION"
 
           echo "SSM SecureString auth token created/updated."
-
 
       - name: Verify SSM Auth Token Parameter
         run: |
@@ -643,11 +663,8 @@ jobs:
           fi
 
           echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
-
           echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE" >> "$GITHUB_ENV"
-
           echo "ORDER_ROLE_ARN=$ORDER_ROLE" >> "$GITHUB_ENV"
-
           echo "REPORT_ROLE_ARN=$REPORT_ROLE" >> "$GITHUB_ENV"
 
           echo "All Lambda IAM role ARNs loaded successfully."
@@ -687,10 +704,17 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]" \
             --output text)
 
+          DB_USERNAME=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='DBUsername'].OutputValue | [0]" \
+            --output text)
+
           echo "Report Bucket: $REPORT_BUCKET"
           echo "DB Host: $DB_HOST"
           echo "DB Port: $DB_PORT"
           echo "DB Name: $DB_NAME"
+          echo "DB Username: $DB_USERNAME"
 
           if [ -z "$REPORT_BUCKET" ] || [ "$REPORT_BUCKET" = "None" ]; then
             echo "ERROR: ReportBucketName output is missing."
@@ -712,13 +736,16 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$DB_USERNAME" ] || [ "$DB_USERNAME" = "None" ]; then
+            echo "ERROR: DBUsername output is missing."
+            exit 1
+          fi
+
           echo "REPORT_BUCKET_NAME=$REPORT_BUCKET" >> "$GITHUB_ENV"
-
           echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
-
           echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
-
           echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_USERNAME=$DB_USERNAME" >> "$GITHUB_ENV"
 
           echo "Data outputs loaded successfully."
 
@@ -785,6 +812,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$DB_USERNAME" ]; then
+            echo "ERROR: DB_USERNAME is missing."
+            exit 1
+          fi
+
           if [ -z "$DB_PASSWORD" ]; then
             echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
             exit 1
@@ -815,7 +847,7 @@ jobs:
       # SAM BUILD
       # =====================================================
 
-      - name: Build Lambda application
+      - name: Build Lambda Application
         run: |
 
           sam build \
@@ -844,7 +876,7 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
               PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               AuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
@@ -857,7 +889,7 @@ jobs:
               DBHost="$DB_HOST" \
               DBPort="$DB_PORT" \
               DBName="$DB_NAME" \
-              DBUsername="cloudmartadmin" \
+              DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD"
 
           echo "Application Stack deployment completed successfully."
@@ -949,4 +981,3 @@ jobs:
             --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
-```
