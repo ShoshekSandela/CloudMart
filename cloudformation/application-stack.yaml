@@ -2,9 +2,14 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   CloudMart Application Authorization Stack.
-  Creates Lambda TOKEN Authorizer, SSM SecureString integration,
-  API Gateway authorizer, authorizer caching, and API Gateway
-  Lambda invoke permission.
+  Creates Lambda TOKEN Authorizer, integrates with SSM SecureString,
+  creates API Gateway authorizer, authorizer caching, and
+  API Gateway Lambda invoke permission.
+
+
+# =========================================================
+# PARAMETERS
+# =========================================================
 
 Parameters:
 
@@ -15,15 +20,36 @@ Parameters:
       - dev
       - test
       - prod
+    Description: Deployment environment
+
 
   ProjectName:
     Type: String
     Default: cloudmart
+    Description: CloudMart project name
+
 
   ExistingRestApiId:
     Type: String
     Description: >
       Existing API Gateway REST API ID used by CloudMart.
+
+
+  # =======================================================
+  # LAMBDA AUTHORIZER IAM ROLE
+  # CREATED BY IAM STACK
+  # =======================================================
+
+  LambdaAuthorizerRoleArn:
+    Type: String
+    Description: >
+      ARN of the Lambda Authorizer IAM role created
+      by the CloudMart IAM stack.
+
+
+  # =======================================================
+  # AUTHORIZER CACHE
+  # =======================================================
 
   AuthorizerCacheTTL:
     Type: Number
@@ -34,84 +60,33 @@ Parameters:
       Lambda Authorizer result cache TTL in seconds.
       300 seconds = 5 minutes.
 
+
+  # =======================================================
+  # SSM TOKEN PARAMETER
+  # =======================================================
+
   TokenParameterName:
     Type: String
-    Default: /cloudmart/dev/api/auth-token
+    Default: /cloudmart/dev/auth/token
     Description: >
       SSM Parameter Store SecureString parameter containing
       the CloudMart API authorization token.
 
+
+# =========================================================
+# RESOURCES
+# =========================================================
+
 Resources:
 
-  # ==========================================================
-  # IAM ROLE FOR LAMBDA AUTHORIZER
-  # ==========================================================
 
-  AuthorizerLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ProjectName}-${Environment}-authorizer-role"
-
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-
-      Policies:
-
-        - PolicyName: AuthorizerCloudWatchLogs
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-
-              - Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*
-
-        # ----------------------------------------------------
-        # READ TOKEN FROM SSM PARAMETER STORE
-        # ----------------------------------------------------
-
-        - PolicyName: AuthorizerReadSSMToken
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-
-              - Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource:
-                  - !Sub >
-                    arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${TokenParameterName}
-
-              # ------------------------------------------------
-              # Required when the SecureString uses a KMS key.
-              # If AWS managed SSM key is used, this permission
-              # can normally be omitted.
-              # ------------------------------------------------
-
-              - Effect: Allow
-                Action:
-                  - kms:Decrypt
-                Resource: "*"
-
-  # ==========================================================
+  # =========================================================
   # LAMBDA AUTHORIZER
-  # ==========================================================
+  # =========================================================
 
-  AuthorizerLambda:
+  LambdaAuthorizer:
     Type: AWS::Lambda::Function
+
     Properties:
 
       FunctionName:
@@ -121,8 +96,12 @@ Resources:
 
       Handler: index.lambda_handler
 
+      # -----------------------------------------------------
+      # IAM ROLE CREATED BY IAM STACK
+      # -----------------------------------------------------
+
       Role:
-        !GetAtt AuthorizerLambdaRole.Arn
+        !Ref LambdaAuthorizerRoleArn
 
       Timeout: 5
 
@@ -134,7 +113,12 @@ Resources:
           TOKEN_PARAMETER_NAME:
             !Ref TokenParameterName
 
+      # -----------------------------------------------------
+      # Lambda deployment package
+      # -----------------------------------------------------
+
       Code:
+
         S3Bucket:
           Fn::ImportValue:
             !Sub "${ProjectName}-${Environment}-LambdaArtifactBucket"
@@ -143,9 +127,10 @@ Resources:
           Fn::ImportValue:
             !Sub "${ProjectName}-${Environment}-AuthorizerArtifactKey"
 
-  # ==========================================================
+
+  # =========================================================
   # API GATEWAY TOKEN AUTHORIZER
-  # ==========================================================
+  # =========================================================
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
@@ -166,18 +151,20 @@ Resources:
       AuthorizerUri:
         Fn::Sub:
           - >
-            arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerLambdaArn}/invocations
-          - AuthorizerLambdaArn:
-              !GetAtt AuthorizerLambda.Arn
+            arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+
+          - LambdaAuthorizerArn:
+              !GetAtt LambdaAuthorizer.Arn
 
       AuthorizerResultTtlInSeconds:
         !Ref AuthorizerCacheTTL
 
-  # ==========================================================
-  # ALLOW API GATEWAY TO INVOKE AUTHORIZER LAMBDA
-  # ==========================================================
 
-  AuthorizerLambdaPermission:
+  # =========================================================
+  # API GATEWAY -> LAMBDA PERMISSION
+  # =========================================================
+
+  LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
 
     Properties:
@@ -186,7 +173,7 @@ Resources:
         lambda:InvokeFunction
 
       FunctionName:
-        !Ref AuthorizerLambda
+        !Ref LambdaAuthorizer
 
       Principal:
         apigateway.amazonaws.com
@@ -195,27 +182,53 @@ Resources:
         !Sub >
           arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ExistingRestApiId}/authorizers/${ApiGatewayAuthorizer}
 
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
 Outputs:
 
-  # ==========================================================
-  # AUTHORIZE LAMBDA
-  # ==========================================================
 
-  AuthorizerLambdaArn:
+  # =========================================================
+  # LAMBDA AUTHORIZER ARN
+  # =========================================================
+
+  LambdaAuthorizerArn:
     Description: Lambda Authorizer ARN
+
     Value:
-      !GetAtt AuthorizerLambda.Arn
+      !GetAtt LambdaAuthorizer.Arn
 
     Export:
       Name:
-        !Sub "${ProjectName}-${Environment}-AuthorizerLambdaArn"
+        !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
 
-  # ==========================================================
-  # API GATEWAY AUTHORZIER ID
-  # ==========================================================
+
+  # =========================================================
+  # LAMBDA AUTHORIZER IAM ROLE ARN
+  # =========================================================
+
+  LambdaAuthorizerRoleArn:
+    Description: >
+      Lambda Authorizer IAM Role ARN created by
+      the CloudMart IAM stack.
+
+    Value:
+      !Ref LambdaAuthorizerRoleArn
+
+    Export:
+      Name:
+        !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
+
+
+  # =========================================================
+  # API GATEWAY AUTHORIZER ID
+  # =========================================================
 
   ApiGatewayAuthorizerId:
     Description: API Gateway Lambda Authorizer ID
+
     Value:
       !Ref ApiGatewayAuthorizer
 
@@ -223,12 +236,14 @@ Outputs:
       Name:
         !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
 
-  # ==========================================================
+
+  # =========================================================
   # SSM PARAMETER NAME
-  # ==========================================================
+  # =========================================================
 
   TokenParameterName:
     Description: SSM SecureString parameter name
+
     Value:
       !Ref TokenParameterName
 
@@ -236,12 +251,14 @@ Outputs:
       Name:
         !Sub "${ProjectName}-${Environment}-TokenParameterName"
 
-  # ==========================================================
-  # CACHE TTL
-  # ==========================================================
+
+  # =========================================================
+  # AUTHORIZER CACHE TTL
+  # =========================================================
 
   AuthorizerCacheTTL:
     Description: Authorizer cache TTL in seconds
+
     Value:
       !Ref AuthorizerCacheTTL
 
