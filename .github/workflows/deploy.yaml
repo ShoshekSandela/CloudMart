@@ -1,6 +1,7 @@
 name: Deploy CloudMart Infrastructure
 
 on:
+
   workflow_dispatch:
 
   push:
@@ -14,22 +15,35 @@ on:
       - "lambdas/**"
       - ".github/workflows/deploy.yaml"
 
+
+# ==========================================================
+# GITHUB PERMISSIONS
+# ==========================================================
+
 permissions:
   id-token: write
   contents: read
+
+
+# ==========================================================
+# GLOBAL ENVIRONMENT
+# ==========================================================
 
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
 
+
 jobs:
 
-  # =========================================================
+  # ========================================================
   # NETWORK STACK
-  # =========================================================
+  # ========================================================
 
   deploy-network:
+
     name: Deploy Network Stack
+
     runs-on: ubuntu-latest
 
     steps:
@@ -37,15 +51,30 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+
+      # ----------------------------------------------------
+      # AWS CREDENTIALS
+      # ----------------------------------------------------
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+
+      # ----------------------------------------------------
+      # VERIFY AWS
+      # ----------------------------------------------------
+
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
+
+
+      # ----------------------------------------------------
+      # VALIDATE NETWORK
+      # ----------------------------------------------------
 
       - name: Validate Network Stack
         run: |
@@ -53,8 +82,14 @@ jobs:
             --template-body file://cloudformation/network-stack.yaml \
             --region "$AWS_REGION"
 
+
+      # ----------------------------------------------------
+      # DEPLOY NETWORK
+      # ----------------------------------------------------
+
       - name: Deploy Network Stack
         run: |
+
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
             --stack-name cloudmart-network-dev \
@@ -64,8 +99,14 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
+
+      # ----------------------------------------------------
+      # VERIFY NETWORK
+      # ----------------------------------------------------
+
       - name: Verify Network Stack
         run: |
+
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
@@ -75,22 +116,27 @@ jobs:
           echo "Network Stack Status: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "Network stack is ready."
               ;;
+
             *)
               echo "ERROR: Network stack is not ready."
               exit 1
               ;;
+
           esac
 
 
-  # =========================================================
+  # ========================================================
   # DATA STACK
-  # =========================================================
+  # ========================================================
 
   deploy-data:
+
     name: Deploy Data Stack
+
     runs-on: ubuntu-latest
 
     needs:
@@ -101,18 +147,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+
+      # ----------------------------------------------------
+      # AWS CREDENTIALS
+      # ----------------------------------------------------
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+
+      # ----------------------------------------------------
+      # VERIFY AWS
+      # ----------------------------------------------------
+
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
+
+      # ----------------------------------------------------
+      # VERIFY NETWORK
+      # ----------------------------------------------------
+
       - name: Verify Network Stack
         run: |
+
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
@@ -122,41 +184,59 @@ jobs:
           echo "Network Stack Status: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               ;;
+
             *)
               echo "ERROR: Network stack is not ready."
               exit 1
               ;;
+
           esac
+
+
+      # ----------------------------------------------------
+      # VALIDATE DATA STACK
+      # ----------------------------------------------------
 
       - name: Validate Data Stack
         run: |
+
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
             --region "$AWS_REGION"
 
+
+      # ----------------------------------------------------
+      # DEPLOY DATA STACK
+      #
+      # IMPORTANT:
+      # DBUsername is NOT passed here.
+      # CloudFormation uses:
+      #
+      # DBUsername:
+      #   Default: cloudmartadmin
+      #
+      # DBPassword still comes from GitHub Secret.
+      # ----------------------------------------------------
+
       - name: Deploy Data Stack
         env:
-          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
 
         shell: bash
+
         run: |
 
           echo "Checking database credentials..."
-
-          if [ -z "$DB_USERNAME" ]; then
-            echo "ERROR: CLOUDMART_DB_USERNAME is missing."
-            exit 1
-          fi
 
           if [ -z "$DB_PASSWORD" ]; then
             echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
             exit 1
           fi
 
-          echo "Database credentials are available."
+          echo "Database password is available."
 
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
@@ -164,14 +244,18 @@ jobs:
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              DBInstanceClass=db.t3.micro \
               DBName=cloudmart \
-              AllocatedStorage=20 \
-              DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
+              DBInstanceClass=db.t3.micro \
+              AllocatedStorage=20 \
               ExistingReportBucketName=cloudmart-dev-reports \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+
+
+      # ----------------------------------------------------
+      # VERIFY DATA STACK
+      # ----------------------------------------------------
 
       - name: Verify Data Stack
         run: |
@@ -185,22 +269,41 @@ jobs:
           echo "Data Stack Status: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "Data stack is ready."
               ;;
+
             *)
               echo "ERROR: Data stack is not ready."
               exit 1
               ;;
+
           esac
 
 
-  # =========================================================
+      # ----------------------------------------------------
+      # SHOW DATA STACK OUTPUTS
+      # ----------------------------------------------------
+
+      - name: Show Data Stack Outputs
+        run: |
+
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs" \
+            --output table
+
+
+  # ========================================================
   # IAM STACK
-  # =========================================================
+  # ========================================================
 
   deploy-iam:
+
     name: Deploy IAM Stack
+
     runs-on: ubuntu-latest
 
     needs:
@@ -211,18 +314,34 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
+
+      # ----------------------------------------------------
+      # AWS CREDENTIALS
+      # ----------------------------------------------------
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+
+      # ----------------------------------------------------
+      # VERIFY AWS
+      # ----------------------------------------------------
+
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
+
+      # ----------------------------------------------------
+      # VERIFY DATA STACK
+      # ----------------------------------------------------
+
       - name: Verify Data Stack
         run: |
+
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
@@ -232,19 +351,33 @@ jobs:
           echo "Data Stack Status: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               ;;
+
             *)
               echo "ERROR: Data stack is not ready."
               exit 1
               ;;
+
           esac
+
+
+      # ----------------------------------------------------
+      # VALIDATE IAM
+      # ----------------------------------------------------
 
       - name: Validate IAM Stack
         run: |
+
           aws cloudformation validate-template \
             --template-body file://cloudformation/iam-stack.yaml \
             --region "$AWS_REGION"
+
+
+      # ----------------------------------------------------
+      # CHECK EXISTING IAM STACK
+      # ----------------------------------------------------
 
       - name: Check Existing IAM Stack
         id: iam_status
@@ -261,6 +394,11 @@ jobs:
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
 
           echo "IAM Stack Status: $STATUS"
+
+
+      # ----------------------------------------------------
+      # DELETE FAILED IAM STACK
+      # ----------------------------------------------------
 
       - name: Delete IAM Stack in ROLLBACK_COMPLETE
         if: steps.iam_status.outputs.status == 'ROLLBACK_COMPLETE'
@@ -280,6 +418,11 @@ jobs:
 
           echo "IAM stack deleted."
 
+
+      # ----------------------------------------------------
+      # DEPLOY IAM
+      # ----------------------------------------------------
+
       - name: Deploy IAM Stack
         run: |
 
@@ -291,6 +434,11 @@ jobs:
               Environment="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+
+
+      # ----------------------------------------------------
+      # VERIFY IAM
+      # ----------------------------------------------------
 
       - name: Verify IAM Stack
         run: |
@@ -304,25 +452,29 @@ jobs:
           echo "IAM Stack Status: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "IAM stack is ready."
               ;;
+
             *)
               echo "ERROR: IAM stack is not ready."
               exit 1
               ;;
+
           esac
 
 
-      # =====================================================
+      # ====================================================
       # SSM AUTH TOKEN
-      # =====================================================
+      # ====================================================
 
       - name: Verify Auth Token
         env:
           AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
 
         shell: bash
+
         run: |
 
           if [ -z "$AUTH_TOKEN" ]; then
@@ -332,11 +484,13 @@ jobs:
 
           echo "Auth token is available."
 
+
       - name: Create or Update SSM Auth Token
         env:
           AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
 
         shell: bash
+
         run: |
 
           aws ssm put-parameter \
@@ -347,6 +501,7 @@ jobs:
             --region "$AWS_REGION"
 
           echo "SSM SecureString auth token created/updated."
+
 
       - name: Verify SSM Auth Token Parameter
         run: |
@@ -367,9 +522,9 @@ jobs:
           echo "SSM SecureString verification passed."
 
 
-      # =====================================================
+      # ====================================================
       # IAM FAILURE DIAGNOSTICS
-      # =====================================================
+      # ====================================================
 
       - name: Show IAM Stack Failure Events
         if: failure()
@@ -392,12 +547,14 @@ jobs:
             --output table || true
 
 
-  # =========================================================
+  # ========================================================
   # APPLICATION STACK
-  # =========================================================
+  # ========================================================
 
   deploy-application:
+
     name: Deploy Application Stack
+
     runs-on: ubuntu-latest
 
     needs:
@@ -409,17 +566,17 @@ jobs:
         uses: actions/checkout@v5
 
 
-      # =====================================================
+      # ----------------------------------------------------
       # SETUP SAM
-      # =====================================================
+      # ----------------------------------------------------
 
       - name: Setup AWS SAM
         uses: aws-actions/setup-sam@v2
 
 
-      # =====================================================
+      # ----------------------------------------------------
       # AWS CREDENTIALS
-      # =====================================================
+      # ----------------------------------------------------
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -428,9 +585,9 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
 
-      # =====================================================
+      # ----------------------------------------------------
       # VERIFY AWS
-      # =====================================================
+      # ----------------------------------------------------
 
       - name: Verify AWS identity
         run: |
@@ -440,9 +597,9 @@ jobs:
           aws sts get-caller-identity
 
 
-      # =====================================================
-      # VERIFY PREVIOUS STACKS
-      # =====================================================
+      # ----------------------------------------------------
+      # VERIFY NETWORK
+      # ----------------------------------------------------
 
       - name: Verify Network Stack
         run: |
@@ -456,14 +613,21 @@ jobs:
           echo "Network Stack: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               ;;
+
             *)
               echo "ERROR: Network stack is not ready."
               exit 1
               ;;
+
           esac
 
+
+      # ----------------------------------------------------
+      # VERIFY DATA
+      # ----------------------------------------------------
 
       - name: Verify Data Stack
         run: |
@@ -477,14 +641,21 @@ jobs:
           echo "Data Stack: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               ;;
+
             *)
               echo "ERROR: Data stack is not ready."
               exit 1
               ;;
+
           esac
 
+
+      # ----------------------------------------------------
+      # VERIFY IAM
+      # ----------------------------------------------------
 
       - name: Verify IAM Stack
         run: |
@@ -498,18 +669,21 @@ jobs:
           echo "IAM Stack: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               ;;
+
             *)
               echo "ERROR: IAM stack is not ready."
               exit 1
               ;;
+
           esac
 
 
-      # =====================================================
+      # ====================================================
       # VERIFY SSM AUTH TOKEN
-      # =====================================================
+      # ====================================================
 
       - name: Verify SSM Auth Token
         run: |
@@ -530,15 +704,16 @@ jobs:
           echo "SSM auth token is ready."
 
 
-      # =====================================================
+      # ====================================================
       # NOTIFICATION EMAIL
-      # =====================================================
+      # ====================================================
 
       - name: Verify Notification Email
         env:
           NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
 
         shell: bash
+
         run: |
 
           if [ -z "$NOTIFICATION_EMAIL" ]; then
@@ -549,12 +724,13 @@ jobs:
           echo "Notification email is available."
 
 
-      # =====================================================
+      # ====================================================
       # GET NETWORK OUTPUTS
-      # =====================================================
+      # ====================================================
 
       - name: Get Network Outputs
         shell: bash
+
         run: |
 
           echo "Getting Network stack outputs..."
@@ -603,12 +779,13 @@ jobs:
           echo "Network outputs loaded successfully."
 
 
-      # =====================================================
-      # GET IAM LAMBDA ROLE ARNS
-      # =====================================================
+      # ====================================================
+      # GET IAM ROLE ARNS
+      # ====================================================
 
       - name: Get Lambda IAM Role ARNs
         shell: bash
+
         run: |
 
           echo "Getting Lambda IAM role ARNs..."
@@ -670,12 +847,13 @@ jobs:
           echo "All Lambda IAM role ARNs loaded successfully."
 
 
-      # =====================================================
+      # ====================================================
       # GET DATA STACK OUTPUTS
-      # =====================================================
+      # ====================================================
 
       - name: Get Data Stack Outputs
         shell: bash
+
         run: |
 
           echo "Getting Data stack outputs..."
@@ -714,7 +892,8 @@ jobs:
           echo "DB Host: $DB_HOST"
           echo "DB Port: $DB_PORT"
           echo "DB Name: $DB_NAME"
-          echo "DB Username: $DB_USERNAME"
+
+          # Do NOT print DB_USERNAME because it is a credential.
 
           if [ -z "$REPORT_BUCKET" ] || [ "$REPORT_BUCKET" = "None" ]; then
             echo "ERROR: ReportBucketName output is missing."
@@ -741,6 +920,13 @@ jobs:
             exit 1
           fi
 
+          # Validate returned username without printing it.
+
+          if ! printf '%s' "$DB_USERNAME" | grep -Eq '^[A-Za-z][A-Za-z0-9_]*$'; then
+            echo "ERROR: DBUsername output contains invalid characters."
+            exit 1
+          fi
+
           echo "REPORT_BUCKET_NAME=$REPORT_BUCKET" >> "$GITHUB_ENV"
           echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
           echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
@@ -750,16 +936,18 @@ jobs:
           echo "Data outputs loaded successfully."
 
 
-      # =====================================================
-      # VERIFY REQUIRED APPLICATION VALUES
-      # =====================================================
+      # ====================================================
+      # VERIFY APPLICATION CONFIGURATION
+      # ====================================================
 
       - name: Verify Application Configuration
+
         env:
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
           NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
 
         shell: bash
+
         run: |
 
           if [ -z "$PRIVATE_SUBNET_IDS" ]; then
@@ -830,9 +1018,9 @@ jobs:
           echo "All Application Stack values are available."
 
 
-      # =====================================================
-      # VALIDATE APPLICATION STACK
-      # =====================================================
+      # ====================================================
+      # VALIDATE APPLICATION
+      # ====================================================
 
       - name: Validate Application Stack
         run: |
@@ -843,9 +1031,9 @@ jobs:
           echo "Application template validation completed."
 
 
-      # =====================================================
+      # ====================================================
       # SAM BUILD
-      # =====================================================
+      # ====================================================
 
       - name: Build Lambda Application
         run: |
@@ -856,16 +1044,18 @@ jobs:
           echo "SAM build completed successfully."
 
 
-      # =====================================================
-      # SAM DEPLOY APPLICATION STACK
-      # =====================================================
+      # ====================================================
+      # SAM DEPLOY APPLICATION
+      # ====================================================
 
       - name: Deploy Application Stack
+
         env:
           NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
 
         shell: bash
+
         run: |
 
           sam deploy \
@@ -895,9 +1085,9 @@ jobs:
           echo "Application Stack deployment completed successfully."
 
 
-      # =====================================================
-      # VERIFY APPLICATION STACK
-      # =====================================================
+      # ====================================================
+      # VERIFY APPLICATION
+      # ====================================================
 
       - name: Verify Application Stack
         run: |
@@ -911,19 +1101,22 @@ jobs:
           echo "Application Stack Status: $STATUS"
 
           case "$STATUS" in
+
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "Application stack is ready."
               ;;
+
             *)
               echo "ERROR: Application stack is not ready."
               exit 1
               ;;
+
           esac
 
 
-      # =====================================================
+      # ====================================================
       # VERIFY AUTHORIZER LAMBDA
-      # =====================================================
+      # ====================================================
 
       - name: Verify Authorizer Lambda
         run: |
@@ -944,9 +1137,9 @@ jobs:
           echo "Authorizer Lambda verified successfully."
 
 
-      # =====================================================
+      # ====================================================
       # SHOW APPLICATION OUTPUTS
-      # =====================================================
+      # ====================================================
 
       - name: Show Application Outputs
         run: |
@@ -958,9 +1151,9 @@ jobs:
             --output table
 
 
-      # =====================================================
+      # ====================================================
       # APPLICATION FAILURE DIAGNOSTICS
-      # =====================================================
+      # ====================================================
 
       - name: Show Application Stack Failure Events
         if: failure()

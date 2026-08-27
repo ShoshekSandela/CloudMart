@@ -121,7 +121,7 @@ def lambda_handler(event, context):
 
     # ------------------------------------------------------
     # CORRECT TOKEN
-    # ------------------------------------------------------
+    # -------------------------------------------
 
     return generate_policy(
         principal_id="cloudmart-api-client",
