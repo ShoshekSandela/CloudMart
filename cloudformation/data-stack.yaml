@@ -30,6 +30,7 @@ Parameters:
     Default: cloudmart
     Description: CloudMart database name
 
+
   DBUsername:
     Type: String
     Default: cloudmartadmin
@@ -39,6 +40,7 @@ Parameters:
     AllowedPattern: "^[a-zA-Z][a-zA-Z0-9_]*$"
     Description: RDS master username
 
+
   DBPassword:
     Type: String
     NoEcho: true
@@ -46,10 +48,12 @@ Parameters:
     MaxLength: 41
     Description: RDS master password
 
+
   DBInstanceClass:
     Type: String
     Default: db.t3.micro
     Description: RDS instance class
+
 
   AllocatedStorage:
     Type: Number
@@ -68,7 +72,8 @@ Parameters:
     Description: >
       Existing S3 report bucket name.
       If provided, CloudMart uses this existing bucket.
-      If empty, CloudFormation creates cloudmart-${Environment}-reports.
+      If empty, CloudFormation creates
+      cloudmart-${Environment}-reports.
 
 
 # ============================================================
@@ -88,6 +93,7 @@ Conditions:
 # ============================================================
 
 Resources:
+
 
   # ==========================================================
   # RDS SUBNET GROUP
@@ -133,22 +139,27 @@ Resources:
 
     Properties:
 
-      DBInstanceIdentifier: !Sub
-        cloudmart-${Environment}-mysql
+      DBInstanceIdentifier:
+        !Sub cloudmart-${Environment}-mysql
 
       Engine: mysql
 
       EngineVersion: "8.0"
 
-      DBName: !Ref DBName
+      DBName:
+        !Ref DBName
 
-      MasterUsername: !Ref DBUsername
+      MasterUsername:
+        !Ref DBUsername
 
-      MasterUserPassword: !Ref DBPassword
+      MasterUserPassword:
+        !Ref DBPassword
 
-      DBInstanceClass: !Ref DBInstanceClass
+      DBInstanceClass:
+        !Ref DBInstanceClass
 
-      AllocatedStorage: !Ref AllocatedStorage
+      AllocatedStorage:
+        !Ref AllocatedStorage
 
       StorageType: gp3
 
@@ -198,7 +209,8 @@ Resources:
 
     Properties:
 
-      BucketName: !Sub cloudmart-${Environment}-reports
+      BucketName:
+        !Sub cloudmart-${Environment}-reports
 
       BucketEncryption:
 
@@ -235,65 +247,113 @@ Resources:
 
 Outputs:
 
+
   # ==========================================================
-  # DATABASE OUTPUTS
+  # DATABASE ENDPOINT
   # ==========================================================
 
   DBEndpoint:
     Description: RDS MySQL endpoint
-    Value: !GetAtt CloudMartRDS.Endpoint.Address
+
+    Value:
+      !GetAtt CloudMartRDS.Endpoint.Address
 
     Export:
-      Name: !Sub CloudMart-${Environment}-DBEndpoint
-
-
-  DBPort:
-    Description: RDS MySQL port
-    Value: !GetAtt CloudMartRDS.Endpoint.Port
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-DBPort
-
-
-  DBName:
-    Description: CloudMart database name
-    Value: !Ref DBName
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-DBName
-
-
-  DBInstanceIdentifier:
-    Description: CloudMart RDS instance identifier
-    Value: !Ref CloudMartRDS
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
+      Name:
+        !Sub CloudMart-${Environment}-DBEndpoint
 
 
   # ==========================================================
-  # REPORT BUCKET OUTPUTS
+  # DATABASE PORT
+  # ==========================================================
+
+  DBPort:
+    Description: RDS MySQL port
+
+    Value:
+      !GetAtt CloudMartRDS.Endpoint.Port
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-DBPort
+
+
+  # ==========================================================
+  # DATABASE NAME
+  # ==========================================================
+
+  DBName:
+    Description: CloudMart database name
+
+    Value:
+      !Ref DBName
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-DBName
+
+
+  # ==========================================================
+  # DATABASE USERNAME
+  # ==========================================================
+
+  DBUsername:
+    Description: RDS MySQL master username
+
+    Value:
+      !Ref DBUsername
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-DBUsername
+
+
+  # ==========================================================
+  # DATABASE INSTANCE IDENTIFIER
+  # ==========================================================
+
+  DBInstanceIdentifier:
+    Description: CloudMart RDS instance identifier
+
+    Value:
+      !Ref CloudMartRDS
+
+    Export:
+      Name:
+        !Sub CloudMart-${Environment}-DBInstanceIdentifier
+
+
+  # ==========================================================
+  # REPORT BUCKET NAME
   # ==========================================================
 
   ReportBucketName:
     Description: CloudMart generated reports S3 bucket
 
-    Value: !If
-      - CreateReportBucket
-      - !Ref CloudMartReportBucket
-      - !Ref ExistingReportBucketName
+    Value:
+      !If
+        - CreateReportBucket
+        - !Ref CloudMartReportBucket
+        - !Ref ExistingReportBucketName
 
     Export:
-      Name: !Sub CloudMart-${Environment}-ReportBucketName
+      Name:
+        !Sub CloudMart-${Environment}-ReportBucketName
 
+
+  # ==========================================================
+  # REPORT BUCKET ARN
+  # ==========================================================
 
   ReportBucketArn:
     Description: CloudMart generated reports S3 bucket ARN
 
-    Value: !If
-      - CreateReportBucket
-      - !GetAtt CloudMartReportBucket.Arn
-      - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
+    Value:
+      !If
+        - CreateReportBucket
+        - !GetAtt CloudMartReportBucket.Arn
+        - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
 
     Export:
-      Name: !Sub CloudMart-${Environment}-ReportBucketArn
+      Name:
+        !Sub CloudMart-${Environment}-ReportBucketArn
