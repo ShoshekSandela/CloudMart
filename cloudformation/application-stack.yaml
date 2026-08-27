@@ -1,11 +1,16 @@
 AWSTemplateFormatVersion: "2010-09-09"
+
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
   CloudMart Application Stack.
-  Creates the API Gateway REST API, Lambda TOKEN Authorizer,
-  SSM SecureString integration, API Gateway authorizer,
-  authorizer caching, and API Gateway Lambda invoke permission.
+  Creates API Gateway REST API, Lambda TOKEN Authorizer,
+  API Gateway deployment and dev/test/prod stage,
+  authorizer caching, and Lambda invoke permission.
+
+# ==========================================================
+# PARAMETERS
+# ==========================================================
 
 Parameters:
 
@@ -39,109 +44,310 @@ Parameters:
     Default: /cloudmart/dev/auth/token
     Description: SSM SecureString parameter containing the CloudMart API authorization token.
 
+
+# ==========================================================
+# RESOURCES
+# ==========================================================
+
 Resources:
+
+  # ========================================================
+  # API GATEWAY REST API
+  # ========================================================
 
   CloudMartRestApi:
     Type: AWS::ApiGateway::RestApi
+
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-api"
+
       Description: !Sub "CloudMart ${Environment} REST API"
+
       EndpointConfiguration:
         Types:
           - REGIONAL
+
       Tags:
         - Key: Name
           Value: !Sub "${ProjectName}-${Environment}-api"
+
         - Key: Project
           Value: CloudMart
+
         - Key: Environment
           Value: !Ref Environment
 
+
+  # ========================================================
+  # LAMBDA TOKEN AUTHORIZER
+  # ========================================================
+
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
+
     Properties:
       FunctionName: !Sub "${ProjectName}-${Environment}-authorizer"
+
       Runtime: python3.12
+
       Handler: index.lambda_handler
+
       CodeUri: ../lambdas/authorizer/
+
       Role: !Ref LambdaAuthorizerRoleArn
+
       Timeout: 5
+
       MemorySize: 128
+
       Environment:
         Variables:
           TOKEN_PARAMETER_NAME: !Ref TokenParameterName
+
       Tags:
         Name: !Sub "${ProjectName}-${Environment}-authorizer"
+
         Project: CloudMart
+
         Environment: !Ref Environment
+
+
+  # ========================================================
+  # API GATEWAY TOKEN AUTHORIZER
+  # ========================================================
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
+
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
+
       RestApiId: !Ref CloudMartRestApi
+
       Type: TOKEN
+
       IdentitySource: method.request.header.Authorization
+
       AuthorizerUri:
         Fn::Sub:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+
           - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
+
       AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
+
+    DependsOn:
+      - LambdaAuthorizerPermission
+
+
+  # ========================================================
+  # ALLOW API GATEWAY TO INVOKE AUTHORIZER
+  # ========================================================
 
   LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
+
     Properties:
       Action: lambda:InvokeFunction
+
       FunctionName: !Ref LambdaAuthorizer
+
       Principal: apigateway.amazonaws.com
+
       SourceAccount: !Ref AWS::AccountId
+
+
+  # ========================================================
+  # API GATEWAY DEPLOYMENT
+  # ========================================================
+  #
+  # This creates an API Gateway deployment.
+  #
+  # Important:
+  # A REST API needs a deployment before a stage can expose it.
+  #
+  # ========================================================
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+
+    DependsOn:
+      - ApiGatewayAuthorizer
+
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+
+      Description: !Sub "CloudMart ${Environment} API deployment"
+
+
+  # ========================================================
+  # API GATEWAY STAGE
+  # ========================================================
+  #
+  # Environment=dev
+  #       ↓
+  # StageName=dev
+  #
+  # Result:
+  #
+  # https://API-ID.execute-api.REGION.amazonaws.com/dev
+  #
+  # ========================================================
+
+  ApiGatewayStage:
+    Type: AWS::ApiGateway::Stage
+
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+
+      DeploymentId: !Ref ApiGatewayDeployment
+
+      StageName: !Ref Environment
+
+      Description: !Sub "CloudMart ${Environment} API Gateway stage"
+
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName}-${Environment}-stage"
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+# ==========================================================
+# OUTPUTS
+# ==========================================================
 
 Outputs:
 
+  # ========================================================
+  # API ID
+  # ========================================================
+
   RestApiId:
     Description: CloudMart API Gateway REST API ID
+
     Value: !Ref CloudMartRestApi
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-RestApiId"
 
+
+  # ========================================================
+  # ROOT RESOURCE ID
+  # ========================================================
+
   RestApiRootResourceId:
     Description: CloudMart API Gateway root resource ID
+
     Value: !GetAtt CloudMartRestApi.RootResourceId
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-RestApiRootResourceId"
 
+
+  # ========================================================
+  # BASE API URL
+  # ========================================================
+
   RestApiUrl:
     Description: CloudMart API Gateway regional endpoint
+
     Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-RestApiUrl"
 
+
+  # ========================================================
+  # STAGE URL
+  # ========================================================
+
+  RestApiStageUrl:
+    Description: CloudMart API Gateway environment stage URL
+
+    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
+
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-RestApiStageUrl"
+
+
+  # ========================================================
+  # LAMBDA AUTHORIZER ARN
+  # ========================================================
+
   LambdaAuthorizerArn:
     Description: Lambda Authorizer ARN
+
     Value: !GetAtt LambdaAuthorizer.Arn
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
 
+
+  # ========================================================
+  # AUTHORIZER ROLE ARN
+  # ========================================================
+
   LambdaAuthorizerRoleArn:
     Description: Lambda Authorizer IAM Role ARN
+
     Value: !Ref LambdaAuthorizerRoleArn
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
 
+
+  # ========================================================
+  # API GATEWAY AUTHORIZER ID
+  # ========================================================
+
   ApiGatewayAuthorizerId:
     Description: API Gateway Lambda Authorizer ID
+
     Value: !Ref ApiGatewayAuthorizer
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
 
+
+  # ========================================================
+  # API GATEWAY STAGE NAME
+  # ========================================================
+
+  ApiGatewayStageName:
+    Description: API Gateway stage name
+
+    Value: !Ref ApiGatewayStage
+
+    Export:
+      Name: !Sub "${ProjectName}-${Environment}-ApiGatewayStageName"
+
+
+  # ========================================================
+  # TOKEN PARAMETER
+  # ========================================================
+
   TokenParameterName:
     Description: SSM SecureString parameter name
+
     Value: !Ref TokenParameterName
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-TokenParameterName"
 
+
+  # ========================================================
+  # AUTHORIZER CACHE TTL
+  # ========================================================
+
   AuthorizerCacheTTL:
     Description: Authorizer cache TTL in seconds
+
     Value: !Ref AuthorizerCacheTTL
+
     Export:
       Name: !Sub "${ProjectName}-${Environment}-AuthorizerCacheTTL"
