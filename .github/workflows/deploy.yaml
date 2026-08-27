@@ -1,7 +1,6 @@
-nname: Deploy CloudMart Infrastructure
+name: Deploy CloudMart Infrastructure
 
 on:
-
   workflow_dispatch:
 
   push:
@@ -15,35 +14,23 @@ on:
       - "lambdas/**"
       - ".github/workflows/deploy.yaml"
 
-
-# ==========================================================
-# GITHUB PERMISSIONS
-# ==========================================================
-
 permissions:
   id-token: write
   contents: read
 
-
-# ==========================================================
-# GLOBAL ENVIRONMENT
-# ==========================================================
-
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-
+  PROJECT_NAME: cloudmart
 
 jobs:
 
-  # ========================================================
-  # NETWORK STACK
-  # ========================================================
+  # ==========================================================
+  # 1. NETWORK STACK
+  # ==========================================================
 
   deploy-network:
-
     name: Deploy Network Stack
-
     runs-on: ubuntu-latest
 
     steps:
@@ -51,30 +38,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-
-      # ----------------------------------------------------
-      # AWS CREDENTIALS
-      # ----------------------------------------------------
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
-      # ----------------------------------------------------
-      # VERIFY AWS
-      # ----------------------------------------------------
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
-
-
-      # ----------------------------------------------------
-      # VALIDATE NETWORK
-      # ----------------------------------------------------
 
       - name: Validate Network Stack
         run: |
@@ -82,14 +54,8 @@ jobs:
             --template-body file://cloudformation/network-stack.yaml \
             --region "$AWS_REGION"
 
-
-      # ----------------------------------------------------
-      # DEPLOY NETWORK
-      # ----------------------------------------------------
-
       - name: Deploy Network Stack
         run: |
-
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
             --stack-name cloudmart-network-dev \
@@ -99,14 +65,8 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-
-      # ----------------------------------------------------
-      # VERIFY NETWORK
-      # ----------------------------------------------------
-
       - name: Verify Network Stack
         run: |
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-network-dev \
             --region "$AWS_REGION" \
@@ -116,27 +76,22 @@ jobs:
           echo "Network Stack Status: $STATUS"
 
           case "$STATUS" in
-
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "Network stack is ready."
               ;;
-
             *)
-              echo "ERROR: Network stack is not ready."
+              echo "ERROR: Network stack failed."
               exit 1
               ;;
-
           esac
 
 
-  # ========================================================
-  # DATA STACK
-  # ========================================================
+  # ==========================================================
+  # 2. DATA STACK
+  # ==========================================================
 
   deploy-data:
-
     name: Deploy Data Stack
-
     runs-on: ubuntu-latest
 
     needs:
@@ -147,117 +102,61 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-
-      # ----------------------------------------------------
-      # AWS CREDENTIALS
-      # ----------------------------------------------------
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
-      # ----------------------------------------------------
-      # VERIFY AWS
-      # ----------------------------------------------------
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
-
-      # ----------------------------------------------------
-      # VERIFY NETWORK
-      # ----------------------------------------------------
-
-      - name: Verify Network Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Network Stack Status: $STATUS"
-
-          case "$STATUS" in
-
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              ;;
-
-            *)
-              echo "ERROR: Network stack is not ready."
-              exit 1
-              ;;
-
-          esac
-
-
-      # ----------------------------------------------------
-      # VALIDATE DATA STACK
-      # ----------------------------------------------------
-
       - name: Validate Data Stack
         run: |
-
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
             --region "$AWS_REGION"
 
-
-      # ----------------------------------------------------
-      # DEPLOY DATA STACK
-      #
-      # IMPORTANT:
-      # DBUsername is NOT passed here.
-      # CloudFormation uses:
-      #
-      # DBUsername:
-      #   Default: cloudmartadmin
-      #
-      # DBPassword still comes from GitHub Secret.
-      # ----------------------------------------------------
-
-      - name: Deploy Data Stack
+      - name: Check Database Password
         env:
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-
         shell: bash
-
         run: |
 
-          echo "Checking database credentials..."
-
           if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
+            echo "ERROR: CLOUDMART_DB_PASSWORD secret is missing."
             exit 1
           fi
 
-          echo "Database password is available."
+          if [ "${#DB_PASSWORD}" -lt 12 ]; then
+            echo "ERROR: Database password must be at least 12 characters."
+            exit 1
+          fi
 
-          # RDS MySQL password rules used by this stack:
-          # - printable ASCII characters
-          # - must not contain: / @ " or spaces
-          # - CloudFormation template requires 12-41 characters
-          if [ "${#DB_PASSWORD}" -lt 12 ] || [ "${#DB_PASSWORD}" -gt 41 ]; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD must contain 12-41 characters."
+          if [ "${#DB_PASSWORD}" -gt 41 ]; then
+            echo "ERROR: Database password must not exceed 41 characters."
             exit 1
           fi
 
           if printf '%s' "$DB_PASSWORD" | LC_ALL=C grep -q '[^ -~]'; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD contains a non-printable/non-ASCII character."
+            echo "ERROR: Database password contains non-ASCII characters."
             exit 1
           fi
 
           if printf '%s' "$DB_PASSWORD" | grep -qE '[/@" ]'; then
-            echo 'ERROR: CLOUDMART_DB_PASSWORD contains a character rejected by RDS: / @ " or space.'
+            echo 'ERROR: Database password contains an RDS-invalid character.'
+            echo 'Do not use: / @ " or spaces.'
             exit 1
           fi
 
-          echo "Database password format passed RDS validation."
+          echo "Database password format is valid."
+
+      - name: Deploy Data Stack
+        env:
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        shell: bash
+        run: |
 
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
@@ -265,23 +164,18 @@ jobs:
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              DBName=cloudmart \
+              DBName="cloudmart" \
+              DBUsername="cloudmartadmin" \
               DBPassword="$DB_PASSWORD" \
-              DBInstanceClass=db.t3.micro \
-              AllocatedStorage=20 \
-              ExistingReportBucketName=cloudmart-dev-reports \
+              DBInstanceClass="db.t3.micro" \
+              AllocatedStorage="20" \
+              ExistingReportBucketName="cloudmart-dev-reports" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
-
-
-      # ----------------------------------------------------
-      # SHOW DATA STACK FAILURE DETAILS
-      # ----------------------------------------------------
 
       - name: Show Data Stack Failure Events
         if: failure()
         shell: bash
-
         run: |
 
           echo "=================================================="
@@ -294,21 +188,15 @@ jobs:
             --query "Stacks[0].[StackStatus,StackStatusReason]" \
             --output table || true
 
-          echo ""
           echo "=================================================="
-          echo "DATA STACK FAILURE EVENTS"
+          echo "DATA STACK EVENTS"
           echo "=================================================="
 
           aws cloudformation describe-stack-events \
             --stack-name cloudmart-data-dev \
             --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_FAILED' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
-
-
-      # ----------------------------------------------------
-      # VERIFY DATA STACK
-      # ----------------------------------------------------
 
       - name: Verify Data Stack
         run: |
@@ -322,34 +210,14 @@ jobs:
           echo "Data Stack Status: $STATUS"
 
           case "$STATUS" in
-
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "Data stack is ready."
               ;;
-
-            UPDATE_ROLLBACK_FAILED)
-              echo "ERROR: Data stack is in UPDATE_ROLLBACK_FAILED."
-              echo "Recover the CloudFormation rollback before retrying deployment."
-              exit 1
-              ;;
-
-            ROLLBACK_COMPLETE)
-              echo "ERROR: Data stack is in ROLLBACK_COMPLETE."
-              echo "The failed stack must be recovered/recreated before continuing."
-              exit 1
-              ;;
-
             *)
-              echo "ERROR: Data stack is not ready. Status: $STATUS"
+              echo "ERROR: Data stack is not ready."
               exit 1
               ;;
-
           esac
-
-
-      # ----------------------------------------------------
-      # SHOW DATA STACK OUTPUTS
-      # ----------------------------------------------------
 
       - name: Show Data Stack Outputs
         run: |
@@ -361,14 +229,12 @@ jobs:
             --output table
 
 
-  # ========================================================
-  # IAM STACK
-  # ========================================================
+  # ==========================================================
+  # 3. IAM STACK
+  # ==========================================================
 
   deploy-iam:
-
     name: Deploy IAM Stack
-
     runs-on: ubuntu-latest
 
     needs:
@@ -379,74 +245,24 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-
-      # ----------------------------------------------------
-      # AWS CREDENTIALS
-      # ----------------------------------------------------
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-
-      # ----------------------------------------------------
-      # VERIFY AWS
-      # ----------------------------------------------------
-
       - name: Verify AWS identity
         run: |
           aws sts get-caller-identity
 
-
-      # ----------------------------------------------------
-      # VERIFY DATA STACK
-      # ----------------------------------------------------
-
-      - name: Verify Data Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Data Stack Status: $STATUS"
-
-          case "$STATUS" in
-
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              ;;
-
-            *)
-              echo "ERROR: Data stack is not ready."
-              exit 1
-              ;;
-
-          esac
-
-
-      # ----------------------------------------------------
-      # VALIDATE IAM
-      # ----------------------------------------------------
-
       - name: Validate IAM Stack
         run: |
-
           aws cloudformation validate-template \
             --template-body file://cloudformation/iam-stack.yaml \
             --region "$AWS_REGION"
 
-
-      # ----------------------------------------------------
-      # CHECK EXISTING IAM STACK
-      # ----------------------------------------------------
-
-      - name: Check Existing IAM Stack
+      - name: Check IAM Stack
         id: iam_status
-        continue-on-error: true
         shell: bash
         run: |
 
@@ -460,18 +276,11 @@ jobs:
 
           echo "IAM Stack Status: $STATUS"
 
-
-      # ----------------------------------------------------
-      # DELETE FAILED IAM STACK
-      # ----------------------------------------------------
-
-      - name: Delete IAM Stack in ROLLBACK_COMPLETE
+      - name: Delete Failed IAM Stack
         if: steps.iam_status.outputs.status == 'ROLLBACK_COMPLETE'
-        shell: bash
         run: |
 
-          echo "IAM stack is in ROLLBACK_COMPLETE."
-          echo "Deleting failed IAM stack..."
+          echo "Deleting IAM stack in ROLLBACK_COMPLETE."
 
           aws cloudformation delete-stack \
             --stack-name cloudmart-iam-dev \
@@ -480,13 +289,6 @@ jobs:
           aws cloudformation wait stack-delete-complete \
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION"
-
-          echo "IAM stack deleted."
-
-
-      # ----------------------------------------------------
-      # DEPLOY IAM
-      # ----------------------------------------------------
 
       - name: Deploy IAM Stack
         run: |
@@ -500,11 +302,6 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-
-      # ----------------------------------------------------
-      # VERIFY IAM
-      # ----------------------------------------------------
-
       - name: Verify IAM Stack
         run: |
 
@@ -517,171 +314,18 @@ jobs:
           echo "IAM Stack Status: $STATUS"
 
           case "$STATUS" in
-
             CREATE_COMPLETE|UPDATE_COMPLETE)
               echo "IAM stack is ready."
               ;;
-
             *)
               echo "ERROR: IAM stack is not ready."
               exit 1
               ;;
-
           esac
 
-
-      # ====================================================
-      # SSM AUTH TOKEN
-      # ====================================================
-
-      - name: Verify Auth Token
-        env:
-          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
-
-        shell: bash
-
-        run: |
-
-          if [ -z "$AUTH_TOKEN" ]; then
-            echo "ERROR: CLOUDMART_AUTH_TOKEN is missing."
-            exit 1
-          fi
-
-          echo "Auth token is available."
-
-
-      - name: Create or Update SSM Auth Token
-        env:
-          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
-
-        shell: bash
-
-        run: |
-
-          aws ssm put-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --value "$AUTH_TOKEN" \
-            --type SecureString \
-            --overwrite \
-            --region "$AWS_REGION"
-
-          echo "SSM SecureString auth token created/updated."
-
-
-      - name: Verify SSM Auth Token Parameter
-        run: |
-
-          PARAM_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --region "$AWS_REGION" \
-            --query "Parameter.Type" \
-            --output text)
-
-          echo "SSM Auth Token Parameter Type: $PARAM_TYPE"
-
-          if [ "$PARAM_TYPE" != "SecureString" ]; then
-            echo "ERROR: Auth token is not stored as SecureString."
-            exit 1
-          fi
-
-          echo "SSM SecureString verification passed."
-
-
-      # ====================================================
-      # IAM FAILURE DIAGNOSTICS
-      # ====================================================
-
-      - name: Show IAM Stack Failure Events
-        if: failure()
-        run: |
-
-          echo "IAM STACK STATUS"
-
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].[StackStatus,StackStatusReason]" \
-            --output table || true
-
-          echo "IAM STACK FAILURE EVENTS"
-
-          aws cloudformation describe-stack-events \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-            --output table || true
-
-
-  # ========================================================
-  # APPLICATION STACK
-  # ========================================================
-
-  deploy-application:
-
-    name: Deploy Application Stack
-
-    runs-on: ubuntu-latest
-
-    needs:
-      - deploy-iam
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      # ----------------------------------------------------
-      # SETUP SAM
-      # ----------------------------------------------------
-
-      - name: Setup AWS SAM
-        uses: aws-actions/setup-sam@v2
-
-      # ----------------------------------------------------
-      # AWS CREDENTIALS
-      # ----------------------------------------------------
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      # ----------------------------------------------------
-      # VERIFY AWS
-      # ----------------------------------------------------
-
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
-
-      # ----------------------------------------------------
-      # VERIFY PREVIOUS STACKS
-      # ----------------------------------------------------
-
-      - name: Verify IAM Stack
-        run: |
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "IAM Stack: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "IAM stack is ready."
-              ;;
-            *)
-              echo "ERROR: IAM stack is not ready. Status: $STATUS"
-              exit 1
-              ;;
-          esac
-
-      # ----------------------------------------------------
-      # GET AUTHORIZER IAM ROLE FROM IAM STACK
-      # ----------------------------------------------------
+      # ------------------------------------------------------
+      # GET AUTHORizer ROLE ARN
+      # ------------------------------------------------------
 
       - name: Get Lambda Authorizer Role ARN
         shell: bash
@@ -694,76 +338,196 @@ jobs:
             --output text)
 
           if [ -z "$AUTHORIZER_ROLE" ] || [ "$AUTHORIZER_ROLE" = "None" ]; then
-            echo "ERROR: LambdaAuthorizerRoleArn output is missing from IAM stack."
+            echo "ERROR: LambdaAuthorizerRoleArn output is missing."
+            echo "Check cloudformation/iam-stack.yaml."
             exit 1
           fi
 
-          echo "Lambda Authorizer IAM role ARN found."
+          echo "Authorizer role ARN found."
 
           echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
 
-      # ----------------------------------------------------
-      # VERIFY EXISTING API GATEWAY REST API ID
-      # ----------------------------------------------------
-      #
-      # Create a GitHub Actions Repository Variable:
-      #
-      # EXISTING_REST_API_ID = your API Gateway REST API ID
-      #
-      # Example value:
-      # abc123xyz
-      #
-      # Do NOT use the API Gateway URL here.
-      # ----------------------------------------------------
+      # ------------------------------------------------------
+      # CREATE SSM TOKEN
+      # ------------------------------------------------------
 
-      - name: Verify Existing API Gateway ID
+      - name: Check Auth Token
         env:
-          EXISTING_REST_API_ID: ${{ vars.EXISTING_REST_API_ID }}
+          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
         shell: bash
         run: |
 
-          if [ -z "$EXISTING_REST_API_ID" ]; then
-            echo "ERROR: GitHub Actions variable EXISTING_REST_API_ID is missing."
-            echo "Create it under:"
-            echo "Repository Settings -> Secrets and variables -> Actions -> Variables"
+          if [ -z "$AUTH_TOKEN" ]; then
+            echo "ERROR: CLOUDMART_AUTH_TOKEN secret is missing."
             exit 1
           fi
 
-          if ! printf '%s' "$EXISTING_REST_API_ID" | grep -Eq '^[A-Za-z0-9]+$'; then
-            echo "ERROR: EXISTING_REST_API_ID contains invalid characters."
-            echo "Use only the API Gateway REST API ID."
-            exit 1
-          fi
+          echo "Auth token is available."
 
-          echo "Existing API Gateway REST API ID is available."
+      - name: Create or Update SSM Auth Token
+        env:
+          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
+        shell: bash
+        run: |
 
-          echo "EXISTING_REST_API_ID=$EXISTING_REST_API_ID" >> "$GITHUB_ENV"
+          aws ssm put-parameter \
+            --name "/cloudmart/dev/auth/token" \
+            --value "$AUTH_TOKEN" \
+            --type SecureString \
+            --overwrite \
+            --region "$AWS_REGION"
 
-      # ----------------------------------------------------
-      # VERIFY SSM AUTH TOKEN
-      # ----------------------------------------------------
+          echo "SSM auth token created/updated."
 
       - name: Verify SSM Auth Token
         run: |
 
-          PARAM_TYPE=$(aws ssm get-parameter \
+          TYPE=$(aws ssm get-parameter \
             --name "/cloudmart/dev/auth/token" \
             --region "$AWS_REGION" \
             --query "Parameter.Type" \
             --output text)
 
-          echo "Auth Token Parameter Type: $PARAM_TYPE"
-
-          if [ "$PARAM_TYPE" != "SecureString" ]; then
-            echo "ERROR: SSM auth token parameter is not SecureString."
+          if [ "$TYPE" != "SecureString" ]; then
+            echo "ERROR: SSM token is not SecureString."
             exit 1
           fi
 
-          echo "SSM auth token is ready."
+          echo "SSM token is ready."
 
-      # ----------------------------------------------------
-      # VALIDATE APPLICATION TEMPLATE
-      # ----------------------------------------------------
+      - name: Show IAM Failure Events
+        if: failure()
+        shell: bash
+        run: |
+
+          aws cloudformation describe-stack-events \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION" \
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --output table || true
+
+
+  # ==========================================================
+  # 4. APPLICATION STACK
+  # ==========================================================
+
+  deploy-application:
+    name: Deploy Application Stack
+    runs-on: ubuntu-latest
+
+    needs:
+      - deploy-iam
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      # ------------------------------------------------------
+      # GET IAM AUTHORizer ROLE
+      # ------------------------------------------------------
+
+      - name: Get Authorizer Role ARN
+        shell: bash
+        run: |
+
+          AUTHORIZER_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='LambdaAuthorizerRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          if [ -z "$AUTHORIZER_ROLE" ] || [ "$AUTHORIZER_ROLE" = "None" ]; then
+            echo "ERROR: LambdaAuthorizerRoleArn not found."
+            exit 1
+          fi
+
+          echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------
+      # API GATEWAY
+      #
+      # REQUIRED:
+      # Set EXISTING_REST_API_ID as a GitHub Repository Variable
+      # ------------------------------------------------------
+
+      - name: Get Existing API Gateway ID
+        shell: bash
+        env:
+          EXISTING_REST_API_ID: ${{ vars.EXISTING_REST_API_ID }}
+        run: |
+
+          if [ -z "$EXISTING_REST_API_ID" ]; then
+            echo "ERROR: EXISTING_REST_API_ID is not configured."
+            echo ""
+            echo "Go to:"
+            echo "GitHub Repository"
+            echo " -> Settings"
+            echo " -> Secrets and variables"
+            echo " -> Actions"
+            echo " -> Variables"
+            echo ""
+            echo "Create:"
+            echo "Name: EXISTING_REST_API_ID"
+            echo "Value: your API Gateway REST API ID"
+            exit 1
+          fi
+
+          if ! printf '%s' "$EXISTING_REST_API_ID" | grep -Eq '^[A-Za-z0-9]+$'; then
+            echo "ERROR: EXISTING_REST_API_ID contains invalid characters."
+            exit 1
+          fi
+
+          echo "EXISTING_REST_API_ID=$EXISTING_REST_API_ID" >> "$GITHUB_ENV"
+
+      # ------------------------------------------------------
+      # VERIFY API EXISTS
+      # ------------------------------------------------------
+
+      - name: Verify API Gateway
+        run: |
+
+          aws apigateway get-rest-api \
+            --rest-api-id "$EXISTING_REST_API_ID" \
+            --region "$AWS_REGION" \
+            --query "[id,name]" \
+            --output table
+
+          echo "API Gateway REST API verified."
+
+      # ------------------------------------------------------
+      # VERIFY SSM
+      # ------------------------------------------------------
+
+      - name: Verify SSM Auth Token
+        run: |
+
+          TYPE=$(aws ssm get-parameter \
+            --name "/cloudmart/dev/auth/token" \
+            --region "$AWS_REGION" \
+            --query "Parameter.Type" \
+            --output text)
+
+          if [ "$TYPE" != "SecureString" ]; then
+            echo "ERROR: SSM auth token is not SecureString."
+            exit 1
+          fi
+
+          echo "SSM token verified."
+
+      # ------------------------------------------------------
+      # VALIDATE APPLICATION
+      # ------------------------------------------------------
 
       - name: Validate Application Stack
         run: |
@@ -772,61 +536,61 @@ jobs:
             --template-body file://cloudformation/application-stack.yaml \
             --region "$AWS_REGION"
 
-          sam validate \
-            --template-file cloudformation/application-stack.yaml
+          echo "Application template is valid."
 
-          echo "Application template validation completed."
-
-      # ----------------------------------------------------
-      # SAM BUILD
-      # ----------------------------------------------------
-
-      - name: Build Application Stack
-        run: |
-
-          sam build \
-            --template-file cloudformation/application-stack.yaml
-
-          echo "SAM build completed successfully."
-
-      # ----------------------------------------------------
-      # DEPLOY APPLICATION STACK
-      #
-      # IMPORTANT:
-      # This deployment passes ONLY parameters that exist in
-      # the supplied application-stack.yaml:
-      #
-      # Environment
-      # ProjectName
-      # ExistingRestApiId
-      # LambdaAuthorizerRoleArn
-      # AuthorizerCacheTTL
-      # TokenParameterName
-      # ----------------------------------------------------
+      # ------------------------------------------------------
+      # DEPLOY APPLICATION
+      # ------------------------------------------------------
 
       - name: Deploy Application Stack
         run: |
 
-          sam deploy \
-            --template-file .aws-sam/build/template.yaml \
+          aws cloudformation deploy \
+            --template-file cloudformation/application-stack.yaml \
             --stack-name cloudmart-application-dev \
             --region "$AWS_REGION" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              ProjectName="cloudmart" \
+              ProjectName="$PROJECT_NAME" \
               ExistingRestApiId="$EXISTING_REST_API_ID" \
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
-              AuthorizerCacheTTL=300 \
-              TokenParameterName="/cloudmart/dev/auth/token"
+              AuthorizerCacheTTL="300" \
+              TokenParameterName="/cloudmart/dev/auth/token" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
 
-          echo "Application Stack deployment completed successfully."
+      # ------------------------------------------------------
+      # SHOW APPLICATION FAILURE
+      # ------------------------------------------------------
 
-      # ----------------------------------------------------
-      # VERIFY APPLICATION STACK
-      # ----------------------------------------------------
+      - name: Show Application Failure Events
+        if: failure()
+        shell: bash
+        run: |
+
+          echo "=================================================="
+          echo "APPLICATION STACK STATUS"
+          echo "=================================================="
+
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-application-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].[StackStatus,StackStatusReason]" \
+            --output table || true
+
+          echo "=================================================="
+          echo "APPLICATION STACK EVENTS"
+          echo "=================================================="
+
+          aws cloudformation describe-stack-events \
+            --stack-name cloudmart-application-dev \
+            --region "$AWS_REGION" \
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --output table || true
+
+      # ------------------------------------------------------
+      # VERIFY APPLICATION
+      # ------------------------------------------------------
 
       - name: Verify Application Stack
         run: |
@@ -844,34 +608,29 @@ jobs:
               echo "Application stack is ready."
               ;;
             *)
-              echo "ERROR: Application stack is not ready. Status: $STATUS"
+              echo "ERROR: Application stack is not ready."
               exit 1
               ;;
           esac
 
-      # ----------------------------------------------------
+      # ------------------------------------------------------
       # VERIFY AUTHORIZER LAMBDA
-      # ----------------------------------------------------
+      # ------------------------------------------------------
 
       - name: Verify Authorizer Lambda
         run: |
 
-          AUTHORIZE_LAMBDA=$(aws lambda get-function \
+          aws lambda get-function \
             --function-name cloudmart-dev-authorizer \
             --region "$AWS_REGION" \
-            --query "Configuration.FunctionArn" \
-            --output text)
+            --query "Configuration.[FunctionName,FunctionArn,Runtime,State]" \
+            --output table
 
-          if [ -z "$AUTHORIZE_LAMBDA" ] || [ "$AUTHORIZE_LAMBDA" = "None" ]; then
-            echo "ERROR: Authorizer Lambda was not found."
-            exit 1
-          fi
+          echo "Authorizer Lambda verified."
 
-          echo "Authorizer Lambda verified successfully."
-
-      # ----------------------------------------------------
+      # ------------------------------------------------------
       # SHOW APPLICATION OUTPUTS
-      # ----------------------------------------------------
+      # ------------------------------------------------------
 
       - name: Show Application Outputs
         run: |
@@ -882,31 +641,7 @@ jobs:
             --query "Stacks[0].Outputs" \
             --output table
 
-      # ----------------------------------------------------
-      # APPLICATION FAILURE DIAGNOSTICS
-      # ----------------------------------------------------
-
-      - name: Show Application Stack Failure Events
-        if: failure()
-        run: |
-
-          echo "=================================================="
-          echo "APPLICATION STACK STATUS"
-          echo "=================================================="
-
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].[StackStatus,StackStatusReason]" \
-            --output table || true
-
           echo ""
           echo "=================================================="
-          echo "APPLICATION STACK FAILURE EVENTS"
+          echo "CLOUDMART DEPLOYMENT COMPLETED"
           echo "=================================================="
-
-          aws cloudformation describe-stack-events \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-            --output table || true
