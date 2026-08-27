@@ -238,6 +238,27 @@ jobs:
 
           echo "Database password is available."
 
+          # RDS MySQL password rules used by this stack:
+          # - printable ASCII characters
+          # - must not contain: / @ " or spaces
+          # - CloudFormation template requires 12-41 characters
+          if [ "${#DB_PASSWORD}" -lt 12 ] || [ "${#DB_PASSWORD}" -gt 41 ]; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD must contain 12-41 characters."
+            exit 1
+          fi
+
+          if printf '%s' "$DB_PASSWORD" | LC_ALL=C grep -q '[^ -~]'; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD contains a non-printable/non-ASCII character."
+            exit 1
+          fi
+
+          if printf '%s' "$DB_PASSWORD" | grep -qE '[/@" ]'; then
+            echo 'ERROR: CLOUDMART_DB_PASSWORD contains a character rejected by RDS: / @ " or space.'
+            exit 1
+          fi
+
+          echo "Database password format passed RDS validation."
+
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
             --stack-name cloudmart-data-dev \
@@ -251,6 +272,38 @@ jobs:
               ExistingReportBucketName=cloudmart-dev-reports \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+
+
+      # ----------------------------------------------------
+      # SHOW DATA STACK FAILURE DETAILS
+      # ----------------------------------------------------
+
+      - name: Show Data Stack Failure Events
+        if: failure()
+        shell: bash
+
+        run: |
+
+          echo "=================================================="
+          echo "DATA STACK STATUS"
+          echo "=================================================="
+
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].[StackStatus,StackStatusReason]" \
+            --output table || true
+
+          echo ""
+          echo "=================================================="
+          echo "DATA STACK FAILURE EVENTS"
+          echo "=================================================="
+
+          aws cloudformation describe-stack-events \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_FAILED' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+            --output table || true
 
 
       # ----------------------------------------------------
@@ -274,8 +327,20 @@ jobs:
               echo "Data stack is ready."
               ;;
 
+            UPDATE_ROLLBACK_FAILED)
+              echo "ERROR: Data stack is in UPDATE_ROLLBACK_FAILED."
+              echo "Recover the CloudFormation rollback before retrying deployment."
+              exit 1
+              ;;
+
+            ROLLBACK_COMPLETE)
+              echo "ERROR: Data stack is in ROLLBACK_COMPLETE."
+              echo "The failed stack must be recovered/recreated before continuing."
+              exit 1
+              ;;
+
             *)
-              echo "ERROR: Data stack is not ready."
+              echo "ERROR: Data stack is not ready. Status: $STATUS"
               exit 1
               ;;
 
