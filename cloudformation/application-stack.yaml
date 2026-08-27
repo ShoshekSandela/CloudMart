@@ -94,8 +94,7 @@ Resources:
       Action: lambda:InvokeFunction
       FunctionName: !Ref LambdaAuthorizer
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub >
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/${ApiGatewayAuthorizer}
+      SourceAccount: !Ref AWS::AccountId
 
 Outputs:
 
