@@ -1,0 +1,202 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  CloudMart Milestone 3 - Step 1.
+  Lambda Authorizer, SSM SecureString token,
+  API Gateway and authorizer caching.
+
+# ==========================================================
+# PARAMETERS
+# ==========================================================
+
+Parameters:
+
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  AuthorizerRoleArn:
+    Type: String
+    Description: IAM role ARN for Lambda Authorizer
+
+  AuthToken:
+    Type: String
+    NoEcho: true
+    Description: Authentication token stored in SSM SecureString
+
+# ==========================================================
+# GLOBALS
+# ==========================================================
+
+Globals:
+
+  Function:
+
+    Runtime: python3.12
+
+    Timeout: 10
+
+    MemorySize: 128
+
+# ==========================================================
+# RESOURCES
+# ==========================================================
+
+Resources:
+
+  # ========================================================
+  # SSM SECURESTRING - AUTH TOKEN
+  # ========================================================
+
+  CloudMartAuthToken:
+    Type: AWS::SSM::Parameter
+
+    Properties:
+
+      Name: !Sub /cloudmart/${Environment}/auth/token
+
+      Type: SecureString
+
+      Value: !Ref AuthToken
+
+      Description: CloudMart API authentication token
+
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+
+  # ========================================================
+  # API GATEWAY
+  # ========================================================
+
+  CloudMartApi:
+    Type: AWS::Serverless::Api
+
+    Properties:
+
+      Name: !Sub cloudmart-${Environment}-api
+
+      StageName: !Ref Environment
+
+      EndpointConfiguration:
+        Type: REGIONAL
+
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+
+      # ----------------------------------------------------
+      # DEFAULT LAMBDA AUTHORIZER
+      # ----------------------------------------------------
+
+      Auth:
+
+        DefaultAuthorizer: CloudMartAuthorizer
+
+        AddDefaultAuthorizerToCorsPreflight: false
+
+        Authorizers:
+
+          CloudMartAuthorizer:
+
+            FunctionArn: !GetAtt AuthorizerLambda.Arn
+
+            FunctionPayloadType: TOKEN
+
+            Identity:
+              Header: Authorization
+              ReauthorizeEvery: 300
+
+            AuthorizerResultTtlInSeconds: 300
+
+
+  # ========================================================
+  # LAMBDA AUTHORIZE
+  # ========================================================
+
+  AuthorizerLambda:
+    Type: AWS::Serverless::Function
+
+    Properties:
+
+      FunctionName: !Sub cloudmart-${Environment}-authorizer
+
+      CodeUri: ../lambdas/authorizer/
+
+      Handler: index.lambda_handler
+
+      Role: !Ref AuthorizerRoleArn
+
+      Runtime: python3.12
+
+      Timeout: 10
+
+      MemorySize: 128
+
+      Environment:
+
+        Variables:
+
+          AUTH_TOKEN_PARAMETER:
+            !Sub /cloudmart/${Environment}/auth/token
+
+
+  # ========================================================
+  # AUTHORIZE LAMBDA PERMISSION FOR API GATEWAY
+  # ========================================================
+
+  AuthorizerLambdaPermission:
+    Type: AWS::Lambda::Permission
+
+    Properties:
+
+      FunctionName: !Ref AuthorizerLambda
+
+      Action: lambda:InvokeFunction
+
+      Principal: apigateway.amazonaws.com
+
+
+# ==========================================================
+# OUTPUTS
+# ==========================================================
+
+Outputs:
+
+  ApiUrl:
+    Description: CloudMart API Gateway URL
+
+    Value: !Sub
+      https://${CloudMartApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+
+
+  ApiId:
+    Description: CloudMart API Gateway ID
+
+    Value: !Ref CloudMartApi
+
+
+  AuthorizerLambdaArn:
+    Description: Lambda Authorizer ARN
+
+    Value: !GetAtt AuthorizerLambda.Arn
+
+
+  AuthTokenParameterName:
+    Description: SSM SecureString parameter containing the API token
+
+    Value: !Ref CloudMartAuthToken
+
+
+  AuthorizerCacheTTL:
+    Description: Lambda Authorizer cache TTL in seconds
+
+    Value: "300"

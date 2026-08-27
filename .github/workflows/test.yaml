@@ -1,0 +1,143 @@
+name: Deploy CloudMart Authentication
+
+on:
+  push:
+    branches:
+      - main
+
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ENVIRONMENT: dev
+
+jobs:
+
+  deploy-authentication:
+
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+
+      # ==========================================================
+      # AWS CREDENTIALS
+      # ==========================================================
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::446988881202:role/CloudMart-GitHubActions-Role
+          aws-region: ${{ env.AWS_REGION }}
+
+
+      # ==========================================================
+      # VERIFY AWS ACCOUNT
+      # ==========================================================
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+
+      # ==========================================================
+      # GET AUTHORIZE ROLE
+      # ==========================================================
+
+      - name: Get Authorizer Lambda Role ARN
+        run: |
+
+          AUTHORIZE_ROLE=$(aws cloudformation list-exports \
+            --region "$AWS_REGION" \
+            --query "Exports[?Name=='CloudMart-${ENVIRONMENT}-LambdaAuthorizerRoleArn'].Value | [0]" \
+            --output text)
+
+          echo "Authorizer Role: $AUTHORIZE_ROLE"
+
+          if [ -z "$AUTHORIZE_ROLE" ] || [ "$AUTHORIZE_ROLE" = "None" ]; then
+            echo "ERROR: Authorizer Lambda role export is missing."
+            exit 1
+          fi
+
+          echo "AUTHORIZE_ROLE=$AUTHORIZE_ROLE" >> "$GITHUB_ENV"
+
+
+      # ==========================================================
+      # INSTALL SAM
+      # ==========================================================
+
+      - name: Setup SAM CLI
+        uses: aws-actions/setup-sam@v2
+
+
+      # ==========================================================
+      # VALIDATE SAM TEMPLATE
+      # ==========================================================
+
+      - name: Validate Application Stack
+        run: |
+          sam validate \
+            --template-file cloudformation/application-stack.yaml
+
+
+      # ==========================================================
+      # BUILD SAM APPLICATION
+      # ==========================================================
+
+      - name: Build Application Stack
+        run: |
+          sam build \
+            --template-file cloudformation/application-stack.yaml
+
+
+      # ==========================================================
+      # DEPLOY APPLICATION STACK
+      # ==========================================================
+
+      - name: Deploy Authentication Stack
+        env:
+          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
+
+        run: |
+
+          if [ -z "$AUTH_TOKEN" ]; then
+            echo "ERROR: CLOUDMART_AUTH_TOKEN GitHub secret is missing."
+            exit 1
+          fi
+
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
+            --region "$AWS_REGION" \
+            --capabilities CAPABILITY_IAM CAPABILITY_NAMED_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              AuthorizerRoleArn="$AUTHORIZE_ROLE" \
+              AuthToken="$AUTH_TOKEN"
+
+
+      # ==========================================================
+      # SHOW STACK OUTPUTS
+      # ==========================================================
+
+      - name: Show Application Stack Outputs
+        run: |
+
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs" \
+            --output table
