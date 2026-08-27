@@ -2,14 +2,9 @@ AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
   CloudMart Application Authorization Stack.
-  Creates Lambda TOKEN Authorizer, integrates with SSM SecureString,
-  creates API Gateway authorizer, authorizer caching, and
+  Creates the Lambda TOKEN Authorizer, integrates with SSM SecureString,
+  creates the API Gateway authorizer, authorizer caching, and
   API Gateway Lambda invoke permission.
-
-
-# =========================================================
-# PARAMETERS
-# =========================================================
 
 Parameters:
 
@@ -22,34 +17,23 @@ Parameters:
       - prod
     Description: Deployment environment
 
-
   ProjectName:
     Type: String
     Default: cloudmart
     Description: CloudMart project name
 
-
   ExistingRestApiId:
     Type: String
+    MinLength: 1
     Description: >
       Existing API Gateway REST API ID used by CloudMart.
 
-
-  # =======================================================
-  # LAMBDA AUTHORIZER IAM ROLE
-  # CREATED BY IAM STACK
-  # =======================================================
-
   LambdaAuthorizerRoleArn:
     Type: String
+    MinLength: 1
     Description: >
       ARN of the Lambda Authorizer IAM role created
       by the CloudMart IAM stack.
-
-
-  # =======================================================
-  # AUTHORIZER CACHE
-  # =======================================================
 
   AuthorizerCacheTTL:
     Type: Number
@@ -58,31 +42,17 @@ Parameters:
     MaxValue: 3600
     Description: >
       Lambda Authorizer result cache TTL in seconds.
-      300 seconds = 5 minutes.
-
-
-  # =======================================================
-  # SSM TOKEN PARAMETER
-  # =======================================================
+      300 seconds equals 5 minutes.
 
   TokenParameterName:
     Type: String
     Default: /cloudmart/dev/auth/token
+    MinLength: 1
     Description: >
       SSM Parameter Store SecureString parameter containing
       the CloudMart API authorization token.
 
-
-# =========================================================
-# RESOURCES
-# =========================================================
-
 Resources:
-
-
-  # =========================================================
-  # LAMBDA AUTHORIZER
-  # =========================================================
 
   LambdaAuthorizer:
     Type: AWS::Lambda::Function
@@ -96,10 +66,6 @@ Resources:
 
       Handler: index.lambda_handler
 
-      # -----------------------------------------------------
-      # IAM ROLE CREATED BY IAM STACK
-      # -----------------------------------------------------
-
       Role:
         !Ref LambdaAuthorizerRoleArn
 
@@ -109,16 +75,10 @@ Resources:
 
       Environment:
         Variables:
-
           TOKEN_PARAMETER_NAME:
             !Ref TokenParameterName
 
-      # -----------------------------------------------------
-      # Lambda deployment package
-      # -----------------------------------------------------
-
       Code:
-
         S3Bucket:
           Fn::ImportValue:
             !Sub "${ProjectName}-${Environment}-LambdaArtifactBucket"
@@ -127,10 +87,6 @@ Resources:
           Fn::ImportValue:
             !Sub "${ProjectName}-${Environment}-AuthorizerArtifactKey"
 
-
-  # =========================================================
-  # API GATEWAY TOKEN AUTHORIZER
-  # =========================================================
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
@@ -152,7 +108,6 @@ Resources:
         Fn::Sub:
           - >
             arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
-
           - LambdaAuthorizerArn:
               !GetAtt LambdaAuthorizer.Arn
 
@@ -160,39 +115,24 @@ Resources:
         !Ref AuthorizerCacheTTL
 
 
-  # =========================================================
-  # API GATEWAY -> LAMBDA PERMISSION
-  # =========================================================
-
   LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
 
     Properties:
 
-      Action:
-        lambda:InvokeFunction
+      Action: lambda:InvokeFunction
 
       FunctionName:
         !Ref LambdaAuthorizer
 
-      Principal:
-        apigateway.amazonaws.com
+      Principal: apigateway.amazonaws.com
 
       SourceArn:
         !Sub >
           arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ExistingRestApiId}/authorizers/${ApiGatewayAuthorizer}
 
 
-# =========================================================
-# OUTPUTS
-# =========================================================
-
 Outputs:
-
-
-  # =========================================================
-  # LAMBDA AUTHORIZER ARN
-  # =========================================================
 
   LambdaAuthorizerArn:
     Description: Lambda Authorizer ARN
@@ -204,10 +144,6 @@ Outputs:
       Name:
         !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
 
-
-  # =========================================================
-  # LAMBDA AUTHORIZER IAM ROLE ARN
-  # =========================================================
 
   LambdaAuthorizerRoleArn:
     Description: >
@@ -222,10 +158,6 @@ Outputs:
         !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
 
 
-  # =========================================================
-  # API GATEWAY AUTHORIZER ID
-  # =========================================================
-
   ApiGatewayAuthorizerId:
     Description: API Gateway Lambda Authorizer ID
 
@@ -237,10 +169,6 @@ Outputs:
         !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
 
 
-  # =========================================================
-  # SSM PARAMETER NAME
-  # =========================================================
-
   TokenParameterName:
     Description: SSM SecureString parameter name
 
@@ -251,10 +179,6 @@ Outputs:
       Name:
         !Sub "${ProjectName}-${Environment}-TokenParameterName"
 
-
-  # =========================================================
-  # AUTHORIZER CACHE TTL
-  # =========================================================
 
   AuthorizerCacheTTL:
     Description: Authorizer cache TTL in seconds
