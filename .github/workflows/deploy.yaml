@@ -856,6 +856,7 @@ jobs:
               PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
+              ProductLambdaRoleArn="$PRODUCT_ROLE_ARN" \
               AuthorizerCacheTTL=300 \
               TokenParameterName="/cloudmart/dev/auth/token"
 
@@ -909,6 +910,29 @@ jobs:
           fi
 
           echo "Authorizer Lambda verified successfully."
+
+
+      # =====================================================
+      # VERIFY PRODUCT LAMBDA
+      # =====================================================
+
+      - name: Verify Product Lambda
+        run: |
+
+          PRODUCT_LAMBDA=$(aws lambda get-function \
+            --function-name cloudmart-dev-product \
+            --region "$AWS_REGION" \
+            --query "Configuration.FunctionArn" \
+            --output text)
+
+          echo "Product Lambda: $PRODUCT_LAMBDA"
+
+          if [ -z "$PRODUCT_LAMBDA" ] || [ "$PRODUCT_LAMBDA" = "None" ]; then
+            echo "ERROR: Product Lambda was not found."
+            exit 1
+          fi
+
+          echo "Product Lambda verified successfully."
 
 
       # =====================================================
