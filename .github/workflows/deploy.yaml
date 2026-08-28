@@ -938,6 +938,20 @@ jobs:
 
           echo "All required Lambda source files are present."
 
+      - name: Prepare Product Lambda schema
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "database/schema.sql" ]; then
+            echo "ERROR: database/schema.sql is missing."
+            exit 1
+          fi
+
+          cp database/schema.sql lambdas/product/schema.sql
+
+          echo "schema.sql copied into Product Lambda build context."
+
       - name: Build Lambda application
         shell: bash
         run: |
@@ -965,6 +979,13 @@ jobs:
           fi
 
           echo "PyMySQL is included in the Product Lambda build."
+
+          if [ ! -f ".aws-sam/build/ProductFunction/schema.sql" ]; then
+            echo "ERROR: schema.sql was not included in ProductFunction."
+            exit 1
+          fi
+
+          echo "schema.sql is included in the Product Lambda build."
 
       - name: Verify SAM build output
         shell: bash

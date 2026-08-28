@@ -1,7 +1,9 @@
 import json
 import os
+import re
 import logging
 from decimal import Decimal
+from pathlib import Path
 
 import boto3
 import pymysql
@@ -90,6 +92,80 @@ def get_db_connection():
         write_timeout=10,
         autocommit=False
     )
+
+
+# ============================================================
+# ONE-TIME DATABASE SCHEMA INITIALIZATION
+#
+# Uses the existing database/schema.sql copied into the Lambda
+# deployment package by GitHub Actions.
+#
+# Invoke directly with:
+# {"action": "initialize_database"}
+#
+# Do NOT expose this as a normal API operation.
+# ============================================================
+
+def initialize_database(connection):
+
+    schema_path = Path(__file__).with_name("schema.sql")
+
+    if not schema_path.exists():
+        raise FileNotFoundError(
+            "schema.sql was not included in the Product Lambda package"
+        )
+
+    schema = schema_path.read_text(encoding="utf-8")
+
+    # The Lambda is already connected to the cloudmart database.
+    # These two statements are therefore unnecessary.
+    cleaned_lines = []
+
+    for line in schema.splitlines():
+
+        stripped = line.strip()
+        upper = stripped.upper()
+
+        if upper.startswith("CREATE DATABASE"):
+            continue
+
+        if upper.startswith("USE CLOUDMART"):
+            continue
+
+        cleaned_lines.append(line)
+
+    schema = "\n".join(cleaned_lines)
+
+    # Remove SQL comments before splitting statements.
+    schema = re.sub(r"/\*.*?\*/", "", schema, flags=re.DOTALL)
+    schema = re.sub(r"--[^\n]*", "", schema)
+    schema = re.sub(r"#[^\n]*", "", schema)
+
+    statements = [
+        statement.strip()
+        for statement in schema.split(";")
+        if statement.strip()
+    ]
+
+    executed = 0
+
+    with connection.cursor() as cursor:
+
+        for statement in statements:
+
+            # Do not run the SELECT-only verification statements.
+            if statement.upper().startswith("SELECT"):
+                continue
+
+            cursor.execute(statement)
+            executed += 1
+
+    connection.commit()
+
+    return {
+        "message": "Database schema applied successfully",
+        "statements_executed": executed
+    }
 
 
 # ============================================================
@@ -256,6 +332,7 @@ def get_product(cursor, product_id):
 def create_product(cursor, payload):
 
     required = [
+        "category_id",
         "name",
         "price",
         "stock_quantity",
@@ -532,6 +609,24 @@ def lambda_handler(event, context):
             payload = {}
 
         connection = get_db_connection()
+
+        # ---------------------------------------------------------
+        # ONE-TIME DATABASE INITIALIZATION
+        # This is intentionally a direct Lambda invocation action,
+        # not a normal HTTP/API operation.
+        # ---------------------------------------------------------
+
+        if event.get("action") == "initialize_database":
+
+            logger.info(
+                json.dumps({
+                    "message": "Database initialization requested"
+                })
+            )
+
+            result = initialize_database(connection)
+
+            return response(200, result)
 
         with connection.cursor() as cursor:
 
