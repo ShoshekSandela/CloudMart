@@ -1,766 +1,357 @@
 AWSTemplateFormatVersion: "2010-09-09"
-
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
   CloudMart Application Stack.
-  Creates API Gateway REST API, Lambda TOKEN Authorizer,
-  protected product API methods, API Gateway deployment and stage,
-  authorizer caching, and Lambda invoke permission.
-
-# ==========================================================
-# PARAMETERS
-# ==========================================================
+  API Gateway REST API with Lambda TOKEN Authorizer and Product Lambda
+  integrated with the private RDS MySQL database.
 
 Parameters:
-
-  # ========================================================
-  # ENVIRONMENT
-  # ========================================================
 
   Environment:
     Type: String
     Default: dev
-
     AllowedValues:
       - dev
       - test
       - prod
 
-    Description: Deployment environment
-
-
-  # ========================================================
-  # PROJECT NAME
-  # ========================================================
-
   ProjectName:
     Type: String
     Default: cloudmart
 
-    Description: CloudMart project name
-
-
-  # ========================================================
-  # LAMBDA AUTHORIZER IAM ROLE
-  # ========================================================
-
   LambdaAuthorizerRoleArn:
     Type: String
+    Description: IAM role ARN for the Lambda Authorizer.
 
-    Description: >
-      ARN of the Lambda Authorizer IAM role created by
-      the CloudMart IAM stack.
+  ProductLambdaRoleArn:
+    Type: String
+    Description: IAM role ARN for the Product Lambda.
 
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: Private subnet IDs used by Product Lambda.
 
-  # ========================================================
-  # AUTHORIZER CACHE TTL
-  # ========================================================
+  LambdaSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: Lambda security group used by Product Lambda.
 
   AuthorizerCacheTTL:
     Type: Number
-
     Default: 300
-
     MinValue: 0
     MaxValue: 3600
 
-    Description: >
-      Lambda Authorizer result cache TTL in seconds.
-
-
-  # ========================================================
-  # SSM TOKEN PARAMETER
-  # ========================================================
-
   TokenParameterName:
     Type: String
-
     Default: /cloudmart/dev/auth/token
 
-    Description: >
-      SSM SecureString parameter containing the
-      CloudMart API authorization token.
+  DBHostParameterName:
+    Type: String
+    Default: /cloudmart/dev/database/host
 
+  DBPortParameterName:
+    Type: String
+    Default: /cloudmart/dev/database/port
 
-# ==========================================================
-# RESOURCES
-# ==========================================================
+  DBNameParameterName:
+    Type: String
+    Default: /cloudmart/dev/database/name
+
+  DBUsernameParameterName:
+    Type: String
+    Default: /cloudmart/dev/database/username
+
+  DBPasswordParameterName:
+    Type: String
+    Default: /cloudmart/dev/database/password
 
 Resources:
 
-
-  # ========================================================
-  # API GATEWAY REST API
-  # ========================================================
+  # ==========================================================
+  # API GATEWAY
+  # ==========================================================
 
   CloudMartRestApi:
     Type: AWS::ApiGateway::RestApi
-
     Properties:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-api"
-
-      Description:
-        !Sub "CloudMart ${Environment} REST API"
-
+      Name: !Sub "${ProjectName}-${Environment}-api"
+      Description: !Sub "CloudMart ${Environment} REST API"
       EndpointConfiguration:
-
         Types:
           - REGIONAL
-
       Tags:
-
-        - Key: Name
-          Value:
-            !Sub "${ProjectName}-${Environment}-api"
-
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
-          Value:
-            !Ref Environment
+          Value: !Ref Environment
 
-
-  # ========================================================
-  # LAMBDA TOKEN AUTHORIZER
-  # ========================================================
+  # ==========================================================
+  # AUTHORIZER LAMBDA
+  # ==========================================================
 
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
-
     Properties:
-
-      FunctionName:
-        !Sub "${ProjectName}-${Environment}-authorizer"
-
+      FunctionName: !Sub "${ProjectName}-${Environment}-authorizer"
       Runtime: python3.12
-
       Handler: index.lambda_handler
-
       CodeUri: ../lambdas/authorizer/
-
-      Role:
-        !Ref LambdaAuthorizerRoleArn
-
+      Role: !Ref LambdaAuthorizerRoleArn
       Timeout: 5
-
       MemorySize: 128
-
       Environment:
-
         Variables:
-
-          TOKEN_PARAMETER_NAME:
-            !Ref TokenParameterName
-
+          TOKEN_PARAMETER_NAME: !Ref TokenParameterName
       Tags:
-
-        Name:
-          !Sub "${ProjectName}-${Environment}-authorizer"
-
-        Project:
-          CloudMart
-
-        Environment:
-          !Ref Environment
-
-
-  # ========================================================
-  # API GATEWAY TOKEN AUTHORIZER
-  # ========================================================
-
-  ApiGatewayAuthorizer:
-    Type: AWS::ApiGateway::Authorizer
-
-    Properties:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-token-authorizer"
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      Type:
-        TOKEN
-
-      IdentitySource:
-        method.request.header.Authorization
-
-      AuthorizerUri:
-
-        Fn::Sub:
-
-          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
-
-          - LambdaAuthorizerArn:
-              !GetAtt LambdaAuthorizer.Arn
-
-      AuthorizerResultTtlInSeconds:
-        !Ref AuthorizerCacheTTL
-
-    DependsOn:
-
-      - LambdaAuthorizerPermission
-
-
-  # ========================================================
-  # ALLOW API GATEWAY TO INVOKE AUTHORIZER
-  # ========================================================
+        Project: CloudMart
+        Environment: !Ref Environment
 
   LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
-
     Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaAuthorizer
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
 
-      Action:
-        lambda:InvokeFunction
+  ApiGatewayAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    DependsOn:
+      - LambdaAuthorizerPermission
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
+      RestApiId: !Ref CloudMartRestApi
+      Type: TOKEN
+      IdentitySource: method.request.header.Authorization
+      AuthorizerUri:
+        Fn::Sub:
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+          - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
+      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
 
-      FunctionName:
-        !Ref LambdaAuthorizer
+  # ==========================================================
+  # PRODUCT LAMBDA
+  # ==========================================================
 
-      Principal:
-        apigateway.amazonaws.com
+  ProductFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-product"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/product/
+      Role: !Ref ProductLambdaRoleArn
+      Timeout: 15
+      MemorySize: 256
 
-      SourceAccount:
-        !Ref AWS::AccountId
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        SubnetIds: !Ref PrivateSubnetIds
 
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
+          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
+          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
+          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
+          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
 
-  # ========================================================
-  # /products RESOURCE
-  # ========================================================
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  ProductLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ProductFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+
+  # ==========================================================
+  # /products
+  # ==========================================================
 
   ProductsResource:
     Type: AWS::ApiGateway::Resource
-
     Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !GetAtt CloudMartRestApi.RootResourceId
+      PathPart: products
 
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ParentId:
-        !GetAtt CloudMartRestApi.RootResourceId
-
-      PathPart:
-        products
-
-
-  # ========================================================
-  # /products/{id} RESOURCE
-  # ========================================================
+  # ==========================================================
+  # /products/{id}
+  # ==========================================================
 
   ProductByIdResource:
     Type: AWS::ApiGateway::Resource
-
     Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !Ref ProductsResource
+      PathPart: "{id}"
 
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ParentId:
-        !Ref ProductsResource
-
-      PathPart:
-        "{id}"
-
-
-  # ========================================================
+  # ==========================================================
   # GET /products
-  # ========================================================
+  # ==========================================================
 
   GetProductsMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductsResource
-
-      HttpMethod:
-        GET
-
-      AuthorizationType:
-        CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductsResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-        Type:
-          MOCK
-
-        RequestTemplates:
-
-          application/json: |
-            {
-              "statusCode": 200
-            }
-
-      MethodResponses:
-
-        - StatusCode: 200
-
-          ResponseModels:
-
-            application/json:
-              Empty
-
-
-  # ========================================================
+  # ==========================================================
   # POST /products
-  # ========================================================
+  # ==========================================================
 
   PostProductsMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductsResource
-
-      HttpMethod:
-        POST
-
-      AuthorizationType:
-        CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductsResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-        Type:
-          MOCK
-
-        RequestTemplates:
-
-          application/json: |
-            {
-              "statusCode": 200
-            }
-
-      MethodResponses:
-
-        - StatusCode: 200
-
-          ResponseModels:
-
-            application/json:
-              Empty
-
-
-  # ========================================================
+  # ==========================================================
   # GET /products/{id}
-  # ========================================================
+  # ==========================================================
 
   GetProductMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductByIdResource
-
-      HttpMethod:
-        GET
-
-      AuthorizationType:
-        CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductByIdResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-        Type:
-          MOCK
-
-        RequestTemplates:
-
-          application/json: |
-            {
-              "statusCode": 200
-            }
-
-      MethodResponses:
-
-        - StatusCode: 200
-
-          ResponseModels:
-
-            application/json:
-              Empty
-
-
-  # ========================================================
+  # ==========================================================
   # PUT /products/{id}
-  # ========================================================
+  # ==========================================================
 
   PutProductMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductByIdResource
-
-      HttpMethod:
-        PUT
-
-      AuthorizationType:
-        CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductByIdResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-        Type:
-          MOCK
-
-        RequestTemplates:
-
-          application/json: |
-            {
-              "statusCode": 200
-            }
-
-      MethodResponses:
-
-        - StatusCode: 200
-
-          ResponseModels:
-
-            application/json:
-              Empty
-
-
-  # ========================================================
+  # ==========================================================
   # DELETE /products/{id}
-  # ========================================================
+  # ==========================================================
 
   DeleteProductMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductByIdResource
-
-      HttpMethod:
-        DELETE
-
-      AuthorizationType:
-        CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductByIdResource
+      HttpMethod: DELETE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-        Type:
-          MOCK
-
-        RequestTemplates:
-
-          application/json: |
-            {
-              "statusCode": 200
-            }
-
-      MethodResponses:
-
-        - StatusCode: 200
-
-          ResponseModels:
-
-            application/json:
-              Empty
-
-
-  # ========================================================
+  # ==========================================================
   # API GATEWAY DEPLOYMENT
-  # ========================================================
-  #
-  # IMPORTANT:
-  #
-  # The deployment MUST depend on the API methods.
-  #
-  # Otherwise CloudFormation can attempt to create the
-  # deployment before API Gateway contains any methods.
-  #
-  # That caused:
-  #
-  # "The REST API doesn't contain any methods"
-  #
-  # ========================================================
+  # ==========================================================
 
   ApiGatewayDeployment:
     Type: AWS::ApiGateway::Deployment
-
     DependsOn:
-
       - ApiGatewayAuthorizer
-
       - GetProductsMethod
       - PostProductsMethod
       - GetProductMethod
       - PutProductMethod
       - DeleteProductMethod
-
     Properties:
+      RestApiId: !Ref CloudMartRestApi
+      Description: !Sub "CloudMart ${Environment} API deployment"
 
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      Description:
-        !Sub "CloudMart ${Environment} API deployment"
-
-
-  # ========================================================
-  # API GATEWAY STAGE
-  # ========================================================
-  #
-  # Environment=dev
-  #
-  # Result:
-  #
-  # https://API-ID.execute-api.REGION.amazonaws.com/dev
-  #
-  # ========================================================
+  # ==========================================================
+  # DEV STAGE
+  # ==========================================================
 
   ApiGatewayStage:
     Type: AWS::ApiGateway::Stage
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      DeploymentId:
-        !Ref ApiGatewayDeployment
-
-      StageName:
-        !Ref Environment
-
-      Description:
-        !Sub "CloudMart ${Environment} API Gateway stage"
-
+      RestApiId: !Ref CloudMartRestApi
+      DeploymentId: !Ref ApiGatewayDeployment
+      StageName: !Ref Environment
+      Description: !Sub "CloudMart ${Environment} API Gateway stage"
       Tags:
-
-        - Key: Name
-          Value:
-            !Sub "${ProjectName}-${Environment}-stage"
-
         - Key: Project
-          Value:
-            CloudMart
-
+          Value: CloudMart
         - Key: Environment
-          Value:
-            !Ref Environment
-
-
-# ==========================================================
-# OUTPUTS
-# ==========================================================
+          Value: !Ref Environment
 
 Outputs:
 
-
-  # ========================================================
-  # API ID
-  # ========================================================
-
   RestApiId:
-
-    Description:
-      CloudMart API Gateway REST API ID
-
-    Value:
-      !Ref CloudMartRestApi
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiId"
-
-
-  # ========================================================
-  # ROOT RESOURCE ID
-  # ========================================================
-
-  RestApiRootResourceId:
-
-    Description:
-      CloudMart API Gateway root resource ID
-
-    Value:
-      !GetAtt CloudMartRestApi.RootResourceId
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiRootResourceId"
-
-
-  # ========================================================
-  # BASE API URL
-  # ========================================================
+    Description: API Gateway REST API ID
+    Value: !Ref CloudMartRestApi
 
   RestApiUrl:
+    Description: API Gateway URL
+    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
 
-    Description:
-      CloudMart API Gateway regional endpoint
+  ProductLambdaArn:
+    Description: Product Lambda ARN
+    Value: !GetAtt ProductFunction.Arn
 
-    Value:
-      !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+  ProductLambdaName:
+    Description: Product Lambda name
+    Value: !Ref ProductFunction
 
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiUrl"
-
-
-  # ========================================================
-  # STAGE URL
-  # ========================================================
-
-  RestApiStageUrl:
-
-    Description:
-      CloudMart API Gateway environment stage URL
-
-    Value:
-      !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-RestApiStageUrl"
-
-
-  # ========================================================
-  # LAMBDA AUTHORIZER ARN
-  # ========================================================
-
-  LambdaAuthorizerArn:
-
-    Description:
-      Lambda Authorizer ARN
-
-    Value:
-      !GetAtt LambdaAuthorizer.Arn
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-LambdaAuthorizerArn"
-
-
-  # ========================================================
-  # AUTHORIZER ROLE ARN
-  # ========================================================
-
-  LambdaAuthorizerRoleArn:
-
-    Description:
-      Lambda Authorizer IAM Role ARN
-
-    Value:
-      !Ref LambdaAuthorizerRoleArn
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-LambdaAuthorizerRoleArn"
-
-
-  # ========================================================
-  # API GATEWAY AUTHORIZER ID
-  # ========================================================
+  AuthorizerLambdaArn:
+    Description: Lambda Authorizer ARN
+    Value: !GetAtt LambdaAuthorizer.Arn
 
   ApiGatewayAuthorizerId:
-
-    Description:
-      API Gateway Lambda Authorizer ID
-
-    Value:
-      !Ref ApiGatewayAuthorizer
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-ApiGatewayAuthorizerId"
-
-
-  # ========================================================
-  # API GATEWAY STAGE NAME
-  # ========================================================
-
-  ApiGatewayStageName:
-
-    Description:
-      API Gateway stage name
-
-    Value:
-      !Ref ApiGatewayStage
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-ApiGatewayStageName"
-
-
-  # ========================================================
-  # TOKEN PARAMETER
-  # ========================================================
-
-  TokenParameterName:
-
-    Description:
-      SSM SecureString parameter name
-
-    Value:
-      !Ref TokenParameterName
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-TokenParameterName"
-
-
-  # ========================================================
-  # AUTHORIZER CACHE TTL
-  # ========================================================
+    Description: API Gateway Authorizer ID
+    Value: !Ref ApiGatewayAuthorizer
 
   AuthorizerCacheTTL:
-
-    Description:
-      Authorizer cache TTL in seconds
-
-    Value:
-      !Ref AuthorizerCacheTTL
-
-    Export:
-
-      Name:
-        !Sub "${ProjectName}-${Environment}-AuthorizerCacheTTL"
+    Description: Authorizer cache TTL
+    Value: !Ref AuthorizerCacheTTL
