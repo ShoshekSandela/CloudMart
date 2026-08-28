@@ -120,9 +120,10 @@ def lambda_handler(event, context):
         )
     )
 
+    api_arn = method_arn.split("/", 2)[0]
 
     return generate_policy(
         principal_id="cloudmart-user",
         effect="Allow",
-        resource=method_arn
+        resource=f"{api_arn}/*/*"
     )
