@@ -78,32 +78,58 @@ def lambda_handler(event, context):
             # GET /products
             if method == "GET" and not product_id:
                 cursor.execute("""
-                    SELECT id, name, description, price, stock, created_at, updated_at
+                    SELECT
+                        product_id,
+                        name,
+                        description,
+                        price,
+                        stock_quantity,
+                        low_stock_threshold,
+                        status,
+                        created_at,
+                        updated_at
                     FROM products
-                    ORDER BY id
+                    ORDER BY product_id
                 """)
-                rows = cursor.fetchall()
 
+                rows = cursor.fetchall()
                 return response(200, rows)
 
             # GET /products/{id}
             if method == "GET" and product_id:
                 cursor.execute("""
-                    SELECT id, name, description, price, stock, created_at, updated_at
+                    SELECT
+                        product_id,
+                        name,
+                        description,
+                        price,
+                        stock_quantity,
+                        low_stock_threshold,
+                        status,
+                        created_at,
+                        updated_at
                     FROM products
-                    WHERE id = %s
+                    WHERE product_id = %s
                 """, (product_id,))
 
                 row = cursor.fetchone()
 
                 if not row:
-                    return response(404, {"message": "Product not found"})
+                    return response(404, {
+                        "message": "Product not found"
+                    })
 
                 return response(200, row)
 
             # POST /products
             if method == "POST":
-                required = ["name", "description", "price", "stock"]
+                required = [
+                    "name",
+                    "price",
+                    "stock_quantity",
+                    "low_stock_threshold",
+                    "status"
+                ]
 
                 missing = [
                     field for field in required
@@ -117,29 +143,53 @@ def lambda_handler(event, context):
                     })
 
                 cursor.execute("""
-                    INSERT INTO products
-                    (name, description, price, stock)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO products (
+                        name,
+                        description,
+                        price,
+                        stock_quantity,
+                        low_stock_threshold,
+                        status
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
                 """, (
                     payload["name"],
-                    payload["description"],
+                    payload.get("description"),
                     payload["price"],
-                    payload["stock"]
+                    payload["stock_quantity"],
+                    payload["low_stock_threshold"],
+                    payload["status"]
                 ))
 
                 new_id = cursor.lastrowid
 
                 cursor.execute("""
-                    SELECT id, name, description, price, stock, created_at, updated_at
+                    SELECT
+                        product_id,
+                        name,
+                        description,
+                        price,
+                        stock_quantity,
+                        low_stock_threshold,
+                        status,
+                        created_at,
+                        updated_at
                     FROM products
-                    WHERE id = %s
+                    WHERE product_id = %s
                 """, (new_id,))
 
                 return response(201, cursor.fetchone())
 
             # PUT /products/{id}
             if method == "PUT" and product_id:
-                allowed = ["name", "description", "price", "stock"]
+                allowed = [
+                    "name",
+                    "description",
+                    "price",
+                    "stock_quantity",
+                    "low_stock_threshold",
+                    "status"
+                ]
 
                 fields = []
                 values = []
@@ -160,18 +210,29 @@ def lambda_handler(event, context):
                     f"""
                     UPDATE products
                     SET {", ".join(fields)}
-                    WHERE id = %s
+                    WHERE product_id = %s
                     """,
                     values
                 )
 
                 if cursor.rowcount == 0:
-                    return response(404, {"message": "Product not found"})
+                    return response(404, {
+                        "message": "Product not found"
+                    })
 
                 cursor.execute("""
-                    SELECT id, name, description, price, stock, created_at, updated_at
+                    SELECT
+                        product_id,
+                        name,
+                        description,
+                        price,
+                        stock_quantity,
+                        low_stock_threshold,
+                        status,
+                        created_at,
+                        updated_at
                     FROM products
-                    WHERE id = %s
+                    WHERE product_id = %s
                 """, (product_id,))
 
                 return response(200, cursor.fetchone())
@@ -180,15 +241,17 @@ def lambda_handler(event, context):
             if method == "DELETE" and product_id:
                 cursor.execute("""
                     DELETE FROM products
-                    WHERE id = %s
+                    WHERE product_id = %s
                 """, (product_id,))
 
                 if cursor.rowcount == 0:
-                    return response(404, {"message": "Product not found"})
+                    return response(404, {
+                        "message": "Product not found"
+                    })
 
                 return response(200, {
                     "message": "Product deleted",
-                    "id": product_id
+                    "product_id": product_id
                 })
 
             return response(405, {
@@ -203,13 +266,15 @@ def lambda_handler(event, context):
     except pymysql.MySQLError as exc:
         logger.exception("Database operation failed")
         return response(500, {
-            "message": "Database operation failed"
+            "message": "Database operation failed",
+            "error": str(exc)
         })
 
-    except Exception:
+    except Exception as exc:
         logger.exception("Product Lambda failed")
         return response(500, {
-            "message": "Internal server error"
+            "message": "Internal server error",
+            "error": str(exc)
         })
 
     finally:
