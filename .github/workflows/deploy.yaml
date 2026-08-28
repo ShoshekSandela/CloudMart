@@ -183,6 +183,97 @@ jobs:
           esac
 
 
+      # =====================================================
+      # CREATE DATABASE SSM PARAMETERS
+      # =====================================================
+
+      - name: Create or Update Database SSM Parameters
+        env:
+          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Reading RDS outputs from Data Stack..."
+
+          DB_HOST=$(aws cloudformation describe-stacks             --stack-name cloudmart-data-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue | [0]"             --output text)
+
+          DB_PORT=$(aws cloudformation describe-stacks             --stack-name cloudmart-data-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='DBPort'].OutputValue | [0]"             --output text)
+
+          DB_NAME=$(aws cloudformation describe-stacks             --stack-name cloudmart-data-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]"             --output text)
+
+          if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
+            echo "ERROR: DBEndpoint output is missing."
+            exit 1
+          fi
+
+          if [ -z "$DB_PORT" ] || [ "$DB_PORT" = "None" ]; then
+            echo "ERROR: DBPort output is missing."
+            exit 1
+          fi
+
+          if [ -z "$DB_NAME" ] || [ "$DB_NAME" = "None" ]; then
+            echo "ERROR: DBName output is missing."
+            exit 1
+          fi
+
+          if [ -z "$DB_USERNAME" ]; then
+            echo "ERROR: CLOUDMART_DB_USERNAME secret is missing."
+            exit 1
+          fi
+
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD secret is missing."
+            exit 1
+          fi
+
+          echo "RDS endpoint: $DB_HOST"
+          echo "RDS port: $DB_PORT"
+          echo "Database: $DB_NAME"
+
+          aws ssm put-parameter             --name "/cloudmart/dev/database/host"             --type "String"             --value "$DB_HOST"             --overwrite             --region "$AWS_REGION"
+
+          aws ssm put-parameter             --name "/cloudmart/dev/database/port"             --type "String"             --value "$DB_PORT"             --overwrite             --region "$AWS_REGION"
+
+          aws ssm put-parameter             --name "/cloudmart/dev/database/name"             --type "String"             --value "$DB_NAME"             --overwrite             --region "$AWS_REGION"
+
+          aws ssm put-parameter             --name "/cloudmart/dev/database/username"             --type "String"             --value "$DB_USERNAME"             --overwrite             --region "$AWS_REGION"
+
+          aws ssm put-parameter             --name "/cloudmart/dev/database/password"             --type "SecureString"             --value "$DB_PASSWORD"             --overwrite             --region "$AWS_REGION"
+
+          echo "Database SSM parameters created/updated."
+
+
+      # =====================================================
+      # VERIFY DATABASE SSM PARAMETERS
+      # =====================================================
+
+      - name: Verify Database SSM Parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Verifying database SSM parameters..."
+
+          aws ssm get-parameter             --name "/cloudmart/dev/database/host"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+
+          aws ssm get-parameter             --name "/cloudmart/dev/database/port"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+
+          aws ssm get-parameter             --name "/cloudmart/dev/database/name"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+
+          aws ssm get-parameter             --name "/cloudmart/dev/database/username"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+
+          PASSWORD_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/password"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
+
+          if [ "$PASSWORD_TYPE" != "SecureString" ]; then
+            echo "ERROR: Database password is not SecureString."
+            exit 1
+          fi
+
+          echo "Database SSM parameter verification passed."
+
+
   # =========================================================
   # IAM STACK
   # =========================================================
