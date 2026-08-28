@@ -136,6 +136,10 @@ Resources:
 
   ProductFunction:
     Type: AWS::Serverless::Function
+
+    Metadata:
+      BuildMethod: python3.12
+
     Properties:
       FunctionName: !Sub "${ProjectName}-${Environment}-product"
       Runtime: python3.12

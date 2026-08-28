@@ -12,6 +12,7 @@ on:
       - "cloudformation/iam-stack.yaml"
       - "cloudformation/application-stack.yaml"
       - "lambdas/**"
+      - "lambdas/product/requirements.txt"
       - ".github/workflows/deploy.yaml"
 
 permissions:
@@ -906,21 +907,76 @@ jobs:
       # =====================================================
 
       - name: Verify Lambda source code
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "Checking Lambda source files..."
+
           if [ ! -f "lambdas/authorizer/index.py" ]; then
             echo "ERROR: lambdas/authorizer/index.py is missing."
             exit 1
           fi
-          echo "Lambda Python source found."
+
+          if [ ! -f "lambdas/product/index.py" ]; then
+            echo "ERROR: lambdas/product/index.py is missing."
+            exit 1
+          fi
+
+          if [ ! -f "lambdas/product/requirements.txt" ]; then
+            echo "ERROR: lambdas/product/requirements.txt is missing."
+            exit 1
+          fi
+
+          echo "Product Lambda requirements.txt:"
+          cat lambdas/product/requirements.txt
+
+          if ! grep -qi '^PyMySQL==' lambdas/product/requirements.txt; then
+            echo "ERROR: PyMySQL is not pinned in lambdas/product/requirements.txt."
+            exit 1
+          fi
+
+          echo "All required Lambda source files are present."
 
       - name: Build Lambda application
+        shell: bash
         run: |
+          set -euo pipefail
+
+          echo "Starting SAM build..."
 
           sam build \
-            --template-file cloudformation/application-stack.yaml
+            --template-file cloudformation/application-stack.yaml \
+            --build-dir .aws-sam/build
 
           echo "SAM build completed successfully."
 
+          echo "Checking Product Lambda build output..."
+
+          if [ ! -d ".aws-sam/build/ProductFunction" ]; then
+            echo "ERROR: ProductFunction was not created by SAM build."
+            exit 1
+          fi
+
+          if [ ! -d ".aws-sam/build/ProductFunction/pymysql" ]; then
+            echo "ERROR: PyMySQL was not included in ProductFunction."
+            echo "The Lambda cannot be deployed safely."
+            exit 1
+          fi
+
+          echo "PyMySQL is included in the Product Lambda build."
+
+      - name: Verify SAM build output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f ".aws-sam/build/template.yaml" ]; then
+            echo "ERROR: SAM build template was not generated."
+            exit 1
+          fi
+
+          echo "SAM build output is ready for deployment."
 
       # =====================================================
       # SAM DEPLOY APPLICATION STACK
