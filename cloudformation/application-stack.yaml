@@ -3,18 +3,15 @@ Transform: AWS::Serverless-2016-10-31
 
 Description: >
   CloudMart Application Stack.
-  API Gateway REST API with Lambda TOKEN Authorizer and Product Lambda
-  integrated with the private RDS MySQL database.
+  API Gateway with Lambda TOKEN Authorizer, Product Lambda,
+  EventBridge inventory events and SNS low-stock notifications.
 
 Parameters:
 
   Environment:
     Type: String
     Default: dev
-    AllowedValues:
-      - dev
-      - test
-      - prod
+    AllowedValues: [dev, test, prod]
 
   ProjectName:
     Type: String
@@ -44,27 +41,31 @@ Parameters:
 
   TokenParameterName:
     Type: String
-    Default: /cloudmart/dev/auth/token
 
   DBHostParameterName:
     Type: String
-    Default: /cloudmart/dev/database/host
 
   DBPortParameterName:
     Type: String
-    Default: /cloudmart/dev/database/port
 
   DBNameParameterName:
     Type: String
-    Default: /cloudmart/dev/database/name
 
   DBUsernameParameterName:
     Type: String
-    Default: /cloudmart/dev/database/username
 
   DBPasswordParameterName:
     Type: String
-    Default: /cloudmart/dev/database/password
+
+  NotificationEmail:
+    Type: String
+    Description: Email address that receives low-stock notifications.
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+
+  ApiDeploymentVersion:
+    Type: String
+    Default: "1"
+    Description: Change this value to force a new API Gateway deployment.
 
 Resources:
 
@@ -78,13 +79,66 @@ Resources:
       Name: !Sub "${ProjectName}-${Environment}-api"
       Description: !Sub "CloudMart ${Environment} REST API"
       EndpointConfiguration:
-        Types:
-          - REGIONAL
+        Types: [REGIONAL]
       Tags:
         - Key: Project
           Value: CloudMart
         - Key: Environment
           Value: !Ref Environment
+
+  # ==========================================================
+  # EVENTBRIDGE EVENT BUS
+  # ==========================================================
+
+  CloudMartEventBus:
+    Type: AWS::Events::EventBus
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-event-bus"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ==========================================================
+  # SNS LOW-STOCK TOPIC
+  # ==========================================================
+
+  CloudMartLowStockTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudMartLowStockSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref CloudMartLowStockTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # EventBridge must be allowed to publish to the SNS topic.
+  CloudMartLowStockTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref CloudMartLowStockTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgePublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref CloudMartLowStockTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
   # ==========================================================
   # AUTHORIZER LAMBDA
@@ -114,11 +168,11 @@ Resources:
       FunctionName: !Ref LambdaAuthorizer
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*"
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
-    DependsOn:
-      - LambdaAuthorizerPermission
+    DependsOn: LambdaAuthorizerPermission
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
       RestApiId: !Ref CloudMartRestApi
@@ -136,10 +190,8 @@ Resources:
 
   ProductFunction:
     Type: AWS::Serverless::Function
-
     Metadata:
       BuildMethod: python3.12
-
     Properties:
       FunctionName: !Sub "${ProjectName}-${Environment}-product"
       Runtime: python3.12
@@ -148,12 +200,10 @@ Resources:
       Role: !Ref ProductLambdaRoleArn
       Timeout: 15
       MemorySize: 256
-
       VpcConfig:
         SecurityGroupIds:
           - !Ref LambdaSecurityGroupId
         SubnetIds: !Ref PrivateSubnetIds
-
       Environment:
         Variables:
           DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
@@ -161,7 +211,7 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
           DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
           DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
-
+          EVENT_BUS_NAME: !Ref CloudMartEventBus
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -173,6 +223,45 @@ Resources:
       FunctionName: !Ref ProductFunction
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
+
+  # ==========================================================
+  # EVENTBRIDGE INVENTORY CHANGE RULE
+  # ==========================================================
+
+  InventoryChangedEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-inventory-changed"
+      Description: !Sub "Routes ${ProjectName} inventory change events."
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.product
+        detail-type:
+          - Inventory Changed
+
+  # Low-stock notification is a separate rule so normal inventory
+  # events can exist without generating an email.
+  LowStockEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-low-stock"
+      Description: !Sub "Sends low-stock inventory events to SNS."
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.product
+        detail-type:
+          - Inventory Changed
+        detail:
+          low_stock:
+            - true
+      Targets:
+        - Id: LowStockSnsTarget
+          Arn: !Ref CloudMartLowStockTopic
 
   # ==========================================================
   # /products
@@ -197,7 +286,7 @@ Resources:
       PathPart: "{id}"
 
   # ==========================================================
-  # GET /products
+  # API METHODS
   # ==========================================================
 
   GetProductsMethod:
@@ -216,10 +305,6 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-  # ==========================================================
-  # POST /products
-  # ==========================================================
-
   PostProductsMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -235,10 +320,6 @@ Resources:
           Fn::Sub:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  # ==========================================================
-  # GET /products/{id}
-  # ==========================================================
 
   GetProductMethod:
     Type: AWS::ApiGateway::Method
@@ -256,10 +337,6 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-  # ==========================================================
-  # PUT /products/{id}
-  # ==========================================================
-
   PutProductMethod:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -275,10 +352,6 @@ Resources:
           Fn::Sub:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  # ==========================================================
-  # DELETE /products/{id}
-  # ==========================================================
 
   DeleteProductMethod:
     Type: AWS::ApiGateway::Method
@@ -297,7 +370,7 @@ Resources:
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
   # ==========================================================
-  # API GATEWAY DEPLOYMENT
+  # API DEPLOYMENT
   # ==========================================================
 
   ApiGatewayDeployment:
@@ -311,11 +384,7 @@ Resources:
       - DeleteProductMethod
     Properties:
       RestApiId: !Ref CloudMartRestApi
-      Description: !Sub "CloudMart ${Environment} API deployment"
-
-  # ==========================================================
-  # DEV STAGE
-  # ==========================================================
+      Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"
 
   ApiGatewayStage:
     Type: AWS::ApiGateway::Stage
@@ -337,8 +406,8 @@ Outputs:
     Value: !Ref CloudMartRestApi
 
   RestApiUrl:
-    Description: API Gateway URL
-    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}"
+    Description: API Gateway base URL
+    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
 
   ProductLambdaArn:
     Description: Product Lambda ARN
@@ -359,3 +428,23 @@ Outputs:
   AuthorizerCacheTTL:
     Description: Authorizer cache TTL
     Value: !Ref AuthorizerCacheTTL
+
+  EventBusName:
+    Description: CloudMart EventBridge event bus name
+    Value: !Ref CloudMartEventBus
+
+  EventBusArn:
+    Description: CloudMart EventBridge event bus ARN
+    Value: !GetAtt CloudMartEventBus.Arn
+
+  LowStockTopicArn:
+    Description: CloudMart low-stock SNS topic ARN
+    Value: !Ref CloudMartLowStockTopic
+
+  InventoryChangedRuleArn:
+    Description: Inventory change EventBridge rule ARN
+    Value: !GetAtt InventoryChangedEventRule.Arn
+
+  LowStockRuleArn:
+    Description: Low-stock EventBridge rule ARN
+    Value: !GetAtt LowStockEventRule.Arn

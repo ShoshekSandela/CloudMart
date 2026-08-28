@@ -17,6 +17,11 @@ ssm = boto3.client("ssm")
 events = boto3.client("events")
 
 
+def log_json(level, message, **fields):
+    record = {"message": message, **fields}
+    getattr(logger, level)(json.dumps(record, default=json_serializer))
+
+
 # ============================================================
 # RESPONSE
 # ============================================================
@@ -81,7 +86,8 @@ def get_db_connection():
     )
 
     username = get_parameter(
-        os.environ["DB_USERNAME_PARAMETER_NAME"]
+        os.environ["DB_USERNAME_PARAMETER_NAME"],
+        decrypt=True
     )
 
     password = get_parameter(
@@ -249,25 +255,17 @@ def publish_inventory_event(
 
         if result.get("FailedEntryCount", 0) > 0:
 
-            logger.error(
-                "EventBridge failed: %s",
-                json.dumps(result)
-            )
+            log_json("error", "EventBridge failed", result=result)
 
             return False
 
-        logger.info(
-            "Inventory event published: %s",
-            json.dumps(event_detail)
-        )
+        log_json("info", "Inventory event published", **event_detail)
 
         return True
 
     except Exception:
 
-        logger.exception(
-            "Unable to publish inventory event"
-        )
+        log_json("error", "Unable to publish inventory event")
 
         return False
 
@@ -562,12 +560,12 @@ def delete_product(cursor, product_id, payload):
 
 def lambda_handler(event, context):
 
-    logger.info(
-        json.dumps({
-            "message": "Product request received",
-            "httpMethod": event.get("httpMethod"),
-            "path": event.get("path")
-        })
+    log_json(
+        "info",
+        "Product request received",
+        httpMethod=event.get("httpMethod"),
+        path=event.get("path"),
+        requestId=getattr(context, "aws_request_id", None)
     )
 
     connection = None
@@ -699,14 +697,7 @@ def lambda_handler(event, context):
                     product_id
                 )
 
-                logger.info(
-                    json.dumps({
-                        "message":
-                            "Product created",
-                        "product_id":
-                            product_id
-                    })
-                )
+                log_json("info", "Product created", product_id=int(product_id))
 
                 return response(
                     201,
@@ -757,24 +748,14 @@ def lambda_handler(event, context):
                         result["threshold"]
                     )
 
-                logger.info(
-                    json.dumps({
-                        "message":
-                            "Product updated",
-                        "product_id":
-                            int(product_id),
-                        "old_stock":
-                            result["old_stock"],
-                        "new_stock":
-                            result["new_stock"],
-                        "threshold":
-                            result["threshold"],
-                        "low_stock":
-                            (
-                                result["new_stock"]
-                                <= result["threshold"]
-                            )
-                    })
+                log_json(
+                    "info",
+                    "Product updated",
+                    product_id=int(product_id),
+                    old_stock=int(result["old_stock"]),
+                    new_stock=int(result["new_stock"]),
+                    threshold=int(result["threshold"]),
+                    low_stock=(result["new_stock"] <= result["threshold"])
                 )
 
                 return response(
@@ -831,9 +812,7 @@ def lambda_handler(event, context):
         if connection:
             connection.rollback()
 
-        logger.exception(
-            "Invalid JSON body"
-        )
+        log_json("error", "Invalid JSON body")
 
         return response(
             400,
@@ -848,10 +827,7 @@ def lambda_handler(event, context):
         if connection:
             connection.rollback()
 
-        logger.warning(
-            "Validation error: %s",
-            str(exc)
-        )
+        log_json("warning", "Validation error", error=str(exc))
 
         return response(
             400,
@@ -866,9 +842,7 @@ def lambda_handler(event, context):
         if connection:
             connection.rollback()
 
-        logger.exception(
-            "Database operation failed"
-        )
+        log_json("error", "Database operation failed", error=str(exc))
 
         return response(
             500,
@@ -885,9 +859,7 @@ def lambda_handler(event, context):
         if connection:
             connection.rollback()
 
-        logger.exception(
-            "Product Lambda failed"
-        )
+        log_json("error", "Product Lambda failed", error=str(exc))
 
         return response(
             500,

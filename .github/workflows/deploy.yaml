@@ -13,6 +13,7 @@ on:
       - "cloudformation/application-stack.yaml"
       - "lambdas/**"
       - "lambdas/product/requirements.txt"
+      - "database/schema.sql"
       - ".github/workflows/deploy.yaml"
 
 permissions:
@@ -239,7 +240,7 @@ jobs:
 
           aws ssm put-parameter             --name "/cloudmart/dev/database/name"             --type "String"             --value "$DB_NAME"             --overwrite             --region "$AWS_REGION"
 
-          aws ssm put-parameter             --name "/cloudmart/dev/database/username"             --type "String"             --value "$DB_USERNAME"             --overwrite             --region "$AWS_REGION"
+          aws ssm put-parameter             --name "/cloudmart/dev/database/username"             --type "SecureString"             --value "$DB_USERNAME"             --overwrite             --region "$AWS_REGION"
 
           aws ssm put-parameter             --name "/cloudmart/dev/database/password"             --type "SecureString"             --value "$DB_PASSWORD"             --overwrite             --region "$AWS_REGION"
 
@@ -263,7 +264,12 @@ jobs:
 
           aws ssm get-parameter             --name "/cloudmart/dev/database/name"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
 
-          aws ssm get-parameter             --name "/cloudmart/dev/database/username"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+          USERNAME_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/username"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
+
+          if [ "$USERNAME_TYPE" != "SecureString" ]; then
+            echo "ERROR: Database username is not SecureString."
+            exit 1
+          fi
 
           PASSWORD_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/password"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
 
@@ -1021,12 +1027,20 @@ jobs:
             --resolve-s3 \
             --parameter-overrides \
               Environment=dev \
+              ProjectName=cloudmart \
               PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
               ProductLambdaRoleArn="$PRODUCT_ROLE_ARN" \
               AuthorizerCacheTTL=300 \
-              TokenParameterName="/cloudmart/dev/auth/token"
+              TokenParameterName="/cloudmart/dev/auth/token" \
+              DBHostParameterName="/cloudmart/dev/database/host" \
+              DBPortParameterName="/cloudmart/dev/database/port" \
+              DBNameParameterName="/cloudmart/dev/database/name" \
+              DBUsernameParameterName="/cloudmart/dev/database/username" \
+              DBPasswordParameterName="/cloudmart/dev/database/password" \
+              NotificationEmail="$NOTIFICATION_EMAIL" \
+              ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"
 
           echo "Application Stack deployment completed successfully."
 
@@ -1056,6 +1070,35 @@ jobs:
               ;;
           esac
 
+
+      # =====================================================
+      # CREATE EVENTBRIDGE / SNS SSM PARAMETERS
+      # =====================================================
+
+      - name: Create Event and Notification SSM Parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENT_BUS_ARN=$(aws cloudformation describe-stacks             --stack-name cloudmart-application-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='EventBusArn'].OutputValue | [0]"             --output text)
+
+          SNS_TOPIC_ARN=$(aws cloudformation describe-stacks             --stack-name cloudmart-application-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]"             --output text)
+
+          if [ -z "$EVENT_BUS_ARN" ] || [ "$EVENT_BUS_ARN" = "None" ]; then
+            echo "ERROR: EventBusArn output is missing."
+            exit 1
+          fi
+
+          if [ -z "$SNS_TOPIC_ARN" ] || [ "$SNS_TOPIC_ARN" = "None" ]; then
+            echo "ERROR: LowStockTopicArn output is missing."
+            exit 1
+          fi
+
+          aws ssm put-parameter             --name "/cloudmart/dev/events/event-bus-arn"             --type "String"             --value "$EVENT_BUS_ARN"             --overwrite             --region "$AWS_REGION"
+
+          aws ssm put-parameter             --name "/cloudmart/dev/notifications/sns-topic-arn"             --type "String"             --value "$SNS_TOPIC_ARN"             --overwrite             --region "$AWS_REGION"
+
+          echo "EventBridge and SNS SSM parameters created/updated."
 
       # =====================================================
       # VERIFY AUTHORIZER LAMBDA
