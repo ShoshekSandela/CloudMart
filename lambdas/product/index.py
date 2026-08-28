@@ -4,6 +4,7 @@ import re
 import logging
 from decimal import Decimal
 from pathlib import Path
+from datetime import date, datetime
 
 import boto3
 import pymysql
@@ -20,6 +21,16 @@ events = boto3.client("events")
 # RESPONSE
 # ============================================================
 
+def json_serializer(value):
+    if isinstance(value, Decimal):
+        return float(value)
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+
+    return str(value)
+
+
 def response(status_code, body):
     return {
         "statusCode": status_code,
@@ -31,9 +42,7 @@ def response(status_code, body):
         },
         "body": json.dumps(
             body,
-            default=lambda x: float(x)
-            if isinstance(x, Decimal)
-            else x
+            default=json_serializer
         )
     }
 
