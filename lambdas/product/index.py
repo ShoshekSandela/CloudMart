@@ -31,10 +31,24 @@ def get_parameter(name, decrypt=False):
 
 
 def get_db_connection():
-    host = get_parameter(os.environ["DB_HOST_PARAMETER_NAME"])
-    port = int(get_parameter(os.environ["DB_PORT_PARAMETER_NAME"]))
-    database = get_parameter(os.environ["DB_NAME_PARAMETER_NAME"])
-    username = get_parameter(os.environ["DB_USERNAME_PARAMETER_NAME"])
+    host = get_parameter(
+        os.environ["DB_HOST_PARAMETER_NAME"]
+    )
+
+    port = int(
+        get_parameter(
+            os.environ["DB_PORT_PARAMETER_NAME"]
+        )
+    )
+
+    database = get_parameter(
+        os.environ["DB_NAME_PARAMETER_NAME"]
+    )
+
+    username = get_parameter(
+        os.environ["DB_USERNAME_PARAMETER_NAME"]
+    )
+
     password = get_parameter(
         os.environ["DB_PASSWORD_PARAMETER_NAME"],
         decrypt=True
@@ -55,28 +69,39 @@ def get_db_connection():
 
 
 def lambda_handler(event, context):
-    logger.info(json.dumps({
-        "message": "Product request received",
-        "httpMethod": event.get("httpMethod"),
-        "path": event.get("path")
-    }))
+
+    logger.info(
+        json.dumps({
+            "message": "Product request received",
+            "httpMethod": event.get("httpMethod"),
+            "path": event.get("path")
+        })
+    )
 
     connection = None
 
     try:
+
         method = event.get("httpMethod", "").upper()
+
         path_parameters = event.get("pathParameters") or {}
+
         product_id = path_parameters.get("id")
 
         body = event.get("body")
+
         payload = json.loads(body) if body else {}
 
         connection = get_db_connection()
 
         with connection.cursor() as cursor:
 
+            # ==================================================
             # GET /products
+            # ==================================================
+
             if method == "GET" and not product_id:
+
                 cursor.execute("""
                     SELECT
                         product_id,
@@ -93,10 +118,15 @@ def lambda_handler(event, context):
                 """)
 
                 rows = cursor.fetchall()
+
                 return response(200, rows)
 
+            # ==================================================
             # GET /products/{id}
+            # ==================================================
+
             if method == "GET" and product_id:
+
                 cursor.execute("""
                     SELECT
                         product_id,
@@ -115,14 +145,21 @@ def lambda_handler(event, context):
                 row = cursor.fetchone()
 
                 if not row:
-                    return response(404, {
-                        "message": "Product not found"
-                    })
+                    return response(
+                        404,
+                        {
+                            "message": "Product not found"
+                        }
+                    )
 
                 return response(200, row)
 
+            # ==================================================
             # POST /products
+            # ==================================================
+
             if method == "POST":
+
                 required = [
                     "name",
                     "price",
@@ -132,15 +169,19 @@ def lambda_handler(event, context):
                 ]
 
                 missing = [
-                    field for field in required
+                    field
+                    for field in required
                     if field not in payload
                 ]
 
                 if missing:
-                    return response(400, {
-                        "message": "Missing required fields",
-                        "fields": missing
-                    })
+                    return response(
+                        400,
+                        {
+                            "message": "Missing required fields",
+                            "fields": missing
+                        }
+                    )
 
                 cursor.execute("""
                     INSERT INTO products (
@@ -178,10 +219,17 @@ def lambda_handler(event, context):
                     WHERE product_id = %s
                 """, (new_id,))
 
-                return response(201, cursor.fetchone())
+                return response(
+                    201,
+                    cursor.fetchone()
+                )
 
+            # ==================================================
             # PUT /products/{id}
+            # ==================================================
+
             if method == "PUT" and product_id:
+
                 allowed = [
                     "name",
                     "description",
@@ -195,14 +243,26 @@ def lambda_handler(event, context):
                 values = []
 
                 for field in allowed:
+
                     if field in payload:
-                        fields.append(f"{field} = %s")
-                        values.append(payload[field])
+
+                        fields.append(
+                            f"{field} = %s"
+                        )
+
+                        values.append(
+                            payload[field]
+                        )
 
                 if not fields:
-                    return response(400, {
-                        "message": "No fields supplied for update"
-                    })
+
+                    return response(
+                        400,
+                        {
+                            "message":
+                                "No fields supplied for update"
+                        }
+                    )
 
                 values.append(product_id)
 
@@ -216,9 +276,14 @@ def lambda_handler(event, context):
                 )
 
                 if cursor.rowcount == 0:
-                    return response(404, {
-                        "message": "Product not found"
-                    })
+
+                    return response(
+                        404,
+                        {
+                            "message":
+                                "Product not found"
+                        }
+                    )
 
                 cursor.execute("""
                     SELECT
@@ -235,48 +300,102 @@ def lambda_handler(event, context):
                     WHERE product_id = %s
                 """, (product_id,))
 
-                return response(200, cursor.fetchone())
+                return response(
+                    200,
+                    cursor.fetchone()
+                )
 
+            # ==================================================
             # DELETE /products/{id}
+            # ==================================================
+
             if method == "DELETE" and product_id:
+
                 cursor.execute("""
                     DELETE FROM products
                     WHERE product_id = %s
                 """, (product_id,))
 
                 if cursor.rowcount == 0:
-                    return response(404, {
-                        "message": "Product not found"
-                    })
 
-                return response(200, {
-                    "message": "Product deleted",
-                    "product_id": product_id
-                })
+                    return response(
+                        404,
+                        {
+                            "message":
+                                "Product not found"
+                        }
+                    )
 
-            return response(405, {
-                "message": "Method not allowed"
-            })
+                return response(
+                    200,
+                    {
+                        "message":
+                            "Product deleted",
+                        "product_id":
+                            product_id
+                    }
+                )
+
+            # ==================================================
+            # METHOD NOT ALLOWED
+            # ==================================================
+
+            return response(
+                405,
+                {
+                    "message":
+                        "Method not allowed"
+                }
+            )
 
     except json.JSONDecodeError:
-        return response(400, {
-            "message": "Invalid JSON body"
-        })
+
+        logger.exception(
+            "Invalid JSON body"
+        )
+
+        return response(
+            400,
+            {
+                "message":
+                    "Invalid JSON body"
+            }
+        )
 
     except pymysql.MySQLError as exc:
-        logger.exception("Database operation failed")
-        return response(500, {
-            "message": "Database operation failed",
-            "error": str(exc)
-        })
+
+        logger.exception(
+            "Database operation failed"
+        )
+
+        return response(
+            500,
+            {
+                "message":
+                    "Database operation failed",
+                "error":
+                    str(exc)
+            }
+        )
 
     except Exception as exc:
-        logger.exception("Product Lambda failed")
-        return response(500, {
-            "message": "Internal server error",
-            "error": str(exc)
-        })
+
+        logger.exception(
+            "Product Lambda failed"
+        )
+
+        return response(
+            500,
+            {
+                "message":
+                    "Internal server error",
+                "error":
+                    str(exc)
+            }
+        )
 
     finally:
+
         if connection:
+
             connection.close()
