@@ -324,7 +324,7 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub >
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/${ApiGatewayAuthorizer}
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*
 
 
   # ==========================================================
