@@ -334,6 +334,9 @@ Resources:
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
 
+    DependsOn:
+      - LambdaAuthorizerPermission
+
     Properties:
 
       Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
@@ -341,9 +344,6 @@ Resources:
       RestApiId: !Ref CloudMartRestApi
 
       Type: TOKEN
-
-      DependsOn:
-      - LambdaAuthorizerPermission
 
       IdentitySource: method.request.header.Authorization
 
