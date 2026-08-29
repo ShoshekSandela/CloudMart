@@ -406,7 +406,6 @@ Outputs:
   InventoryChangedRuleArn:
     Description: Inventory change EventBridge rule ARN
     Value: ""
-
   LowStockRuleArn:
     Description: Low-stock EventBridge rule ARN
     Value: !GetAtt LowStockEventRule.Arn
