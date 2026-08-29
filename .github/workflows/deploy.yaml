@@ -1121,55 +1121,51 @@ jobs:
 
 
       # =====================================================
-      # VERIFY INVENTORY EVENT LAMBDA
+      # VERIFY INVENTORY CHANGED EVENTBRIDGE RULE
       # =====================================================
 
-      - name: Verify Inventory Event Lambda
+      - name: Verify Inventory Changed EventBridge Rule
         shell: bash
         run: |
           set -euo pipefail
 
-          INVENTORY_LAMBDA=$(aws lambda get-function \
-            --region "$AWS_REGION" \
-            --query "Configuration.FunctionArn" \
-            --output text)
+          RULE_NAME="cloudmart-dev-inventory-changed"
+          EVENT_BUS="cloudmart-dev-event-bus"
 
+          echo "Checking Inventory Changed EventBridge rule..."
 
-      - name: Verify EventBridge Inventory Target
-        shell: bash
-        run: |
-          set -euo pipefail
+          RULE_STATE=$(aws events describe-rule             --name "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "State"             --output text)
 
-          EVENT_BUS_NAME=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='EventBusName'].OutputValue | [0]" \
-            --output text)
+          echo "Rule state: $RULE_STATE"
 
-          EVENT_LAMBDA_ARN=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='InventoryEventLambdaArn'].OutputValue | [0]" \
-            --output text)
-
-          TARGET_ARN=$(aws events list-targets-by-rule \
-            --rule "cloudmart-dev-inventory-changed" \
-            --event-bus-name "$EVENT_BUS_NAME" \
-            --region "$AWS_REGION" \
-            --query "Targets[0].Arn" \
-            --output text)
-
-          echo "Expected target: $EVENT_LAMBDA_ARN"
-          echo "Actual target:   $TARGET_ARN"
-
-          if [ -z "$TARGET_ARN" ] || [ "$TARGET_ARN" = "None" ]; then
-            echo "ERROR: Inventory Changed rule has no target."
+          if [ "$RULE_STATE" != "ENABLED" ]; then
+            echo "ERROR: Inventory Changed EventBridge rule is not enabled."
             exit 1
           fi
 
-          if [ "$TARGET_ARN" != "$EVENT_LAMBDA_ARN" ]; then
+          EVENT_PATTERN=$(aws events describe-rule             --name "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "EventPattern"             --output text)
 
-          echo "EventBridge inventory target verified successfully."
+          echo "Event pattern: $EVENT_PATTERN"
+
+          case "$EVENT_PATTERN" in
+            *"cloudmart.product"* )
+              ;;
+            *)
+              echo "ERROR: Inventory Changed rule does not match source cloudmart.product."
+              exit 1
+              ;;
+          esac
+
+          case "$EVENT_PATTERN" in
+            *"Inventory Changed"* )
+              ;;
+            *)
+              echo "ERROR: Inventory Changed rule does not match detail-type Inventory Changed."
+              exit 1
+              ;;
+          esac
+
+          echo "Inventory Changed EventBridge rule verified successfully."
 
 
       # =====================================================

@@ -141,43 +141,6 @@ Resources:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
   # ==========================================================
-  # EVENTBRIDGE RULE - INVENTORY CHANGED
-  # ==========================================================
-
-  InventoryChangedEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-inventory-changed"
-      Description: !Sub "${ProjectName} inventory change events."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - "Inventory Changed"
-
-  # ==========================================================
-  # EVENTBRIDGE RULE - LOW STOCK -> SNS
-  # ==========================================================
-
-  LowStockEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: !Sub "Routes ${ProjectName} low-stock events to SNS."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - "Low Stock"
-      Targets:
-        - Id: LowStockSNSTarget
-          Arn: !Ref CloudMartLowStockTopic
-
-  # ==========================================================
   # AUTHORIZER LAMBDA
   # ==========================================================
 
