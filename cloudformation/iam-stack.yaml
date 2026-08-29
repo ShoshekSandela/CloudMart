@@ -384,29 +384,6 @@ Resources:
   # Allows the GitHub Actions role to publish the automated
   # smoke-test event to the CloudMart custom EventBridge bus.
   # =========================================================
-
-  GitHubActionsEventBridgePolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: CloudMartGitHubActionsEventBridgePolicy
-      Roles:
-        - CloudMart-GitHubActions-Role
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowCloudMartEventBridgeSmokeTest
-            Effect: Allow
-            Action:
-              - events:PutEvents
-            Resource:
-              - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
-
-Outputs:
-
-  # =========================================================
-  # PRODUCT LAMBDA
-  # =========================================================
-
   ProductLambdaRoleArn:
     Description: Product Lambda IAM Role ARN
 
