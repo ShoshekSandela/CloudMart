@@ -1238,7 +1238,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN  }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify EventBridge low-stock SNS target
@@ -1246,26 +1246,111 @@ jobs:
         run: |
           set -euo pipefail
 
+          STACK_NAME="cloudmart-application-dev"
           RULE_NAME="cloudmart-dev-low-stock"
           EVENT_BUS="cloudmart-dev-event-bus"
 
-          echo "Checking low-stock EventBridge SNS target..."
+          echo "=========================================="
+          echo "VERIFY EVENTBRIDGE LOW-STOCK SNS TARGET"
+          echo "=========================================="
+          echo "Stack     : $STACK_NAME"
+          echo "Event Bus : $EVENT_BUS"
+          echo "Rule      : $RULE_NAME"
+          echo ""
 
-          TARGETS=$(aws events list-targets-by-rule             --rule "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query 'Targets[*].Arn'             --output text)
+          # Get the exact SNS topic ARN created by CloudFormation.
+          EXPECTED_SNS_ARN=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]"             --output text)
 
-          echo "Targets: $TARGETS"
+          echo "Expected SNS ARN:"
+          echo "$EXPECTED_SNS_ARN"
+          echo ""
 
-          if [ -z "$TARGETS" ] || [ "$TARGETS" = "None" ]; then
+          if [ -z "$EXPECTED_SNS_ARN" ] || [ "$EXPECTED_SNS_ARN" = "None" ]; then
+            echo "ERROR: LowStockTopicArn CloudFormation output is missing."
+            exit 1
+          fi
+
+          # Verify the EventBridge rule exists and is enabled.
+          RULE_STATE=$(aws events describe-rule             --name "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "State"             --output text)
+
+          echo "Rule state:"
+          echo "$RULE_STATE"
+          echo ""
+
+          if [ "$RULE_STATE" != "ENABLED" ]; then
+            echo "ERROR: EventBridge low-stock rule is not ENABLED."
+            exit 1
+          fi
+
+          # Verify the rule event pattern.
+          EVENT_PATTERN=$(aws events describe-rule             --name "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "EventPattern"             --output text)
+
+          echo "Event pattern:"
+          echo "$EVENT_PATTERN"
+          echo ""
+
+          case "$EVENT_PATTERN" in
+            *"cloudmart.product"*) ;;
+            *)
+              echo "ERROR: Rule does not contain source cloudmart.product."
+              exit 1
+              ;;
+          esac
+
+          case "$EVENT_PATTERN" in
+            *"Inventory Changed"*) ;;
+            *)
+              echo "ERROR: Rule does not contain detail-type Inventory Changed."
+              exit 1
+              ;;
+          esac
+
+          case "$EVENT_PATTERN" in
+            *"low_stock"*) ;;
+            *)
+              echo "ERROR: Rule does not contain low_stock condition."
+              exit 1
+              ;;
+          esac
+
+          # Get the actual EventBridge target ARN.
+          TARGET_COUNT=$(aws events list-targets-by-rule             --rule "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "length(Targets)"             --output text)
+
+          echo "Target count: $TARGET_COUNT"
+          echo ""
+
+          if [ "$TARGET_COUNT" -eq 0 ]; then
             echo "ERROR: Low-stock EventBridge rule has no target."
             exit 1
           fi
 
-          case "$TARGETS" in
-            *:sns:cloudmart-dev-low-stock*)
-              echo "EventBridge low-stock SNS target verified."
-              ;;
-            *)
-              echo "ERROR: Low-stock rule target is not the CloudMart low-stock SNS topic."
-              exit 1
-              ;;
-          esac
+          ACTUAL_SNS_ARN=$(aws events list-targets-by-rule             --rule "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "Targets[0].Arn"             --output text)
+
+          echo "Actual EventBridge target ARN:"
+          echo "$ACTUAL_SNS_ARN"
+          echo ""
+
+          if [ -z "$ACTUAL_SNS_ARN" ] || [ "$ACTUAL_SNS_ARN" = "None" ]; then
+            echo "ERROR: EventBridge target ARN is missing."
+            exit 1
+          fi
+
+          # Compare the actual target with the CloudFormation-created topic ARN.
+          if [ "$ACTUAL_SNS_ARN" != "$EXPECTED_SNS_ARN" ]; then
+            echo "ERROR: EventBridge target does not match the CloudMart low-stock SNS topic."
+            echo ""
+            echo "Expected:"
+            echo "$EXPECTED_SNS_ARN"
+            echo ""
+            echo "Actual:"
+            echo "$ACTUAL_SNS_ARN"
+            exit 1
+          fi
+
+          echo "=========================================="
+          echo "SUCCESS"
+          echo "=========================================="
+          echo "EventBridge low-stock rule is ENABLED."
+          echo "Event pattern is correct."
+          echo "SNS target is correct."
+          echo "EventBridge -> SNS verification passed."
