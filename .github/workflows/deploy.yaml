@@ -1353,19 +1353,30 @@ jobs:
               .Statement
               | if type == "array" then . else [.] end
               | any(
+                  ((.Effect // "") == "Allow")
+                  and
                   ((.Principal.Service // "") == "events.amazonaws.com")
                   and
                   (
-                    ((.Action // "") == "SNS:Publish")
+                    (
+                      (.Action // "")
+                      | if type == "string"
+                        then ascii_downcase == "sns:publish"
+                        else false
+                        end
+                    )
                     or
-                    ((.Action // []) | if type == "array"
-                       then index("SNS:Publish") != null
-                       else false
-                       end)
+                    (
+                      (.Action // [])
+                      | if type == "array"
+                        then any(.[]; (type == "string" and ascii_downcase == "sns:publish"))
+                        else false
+                        end
+                    )
                   )
                 )
             ) catch false
-          ')
+          )
 
           if [ "$POLICY_OK" != "true" ]; then
             echo "ERROR: SNS topic policy does not grant events.amazonaws.com SNS:Publish."
