@@ -880,6 +880,30 @@ jobs:
 
           echo "Application template validation completed."
 
+      # =====================================================
+      # CHECK FOR REMOVED INVENTORY LAMBDA REFERENCES
+      # =====================================================
+
+      - name: Check Application Template Consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEMPLATE="cloudformation/application-stack.yaml"
+
+          echo "Checking application template for obsolete Inventory Event Lambda references..."
+
+          if grep -nE \
+            'InventoryEventFunction|InventoryEventLambdaArn|InventoryEventLambdaRoleArn|InventoryEventLambdaPermission|INVENTORY_EVENT_ROLE_ARN' \
+            "$TEMPLATE"; then
+            echo ""
+            echo "ERROR: Obsolete Inventory Event Lambda reference found in $TEMPLATE."
+            echo "The current CloudMart architecture has no Inventory Event Lambda."
+            echo "Keep EventBridge and SNS resources; remove only stale Inventory Event Lambda references."
+            exit 1
+          fi
+
+          echo "No obsolete Inventory Event Lambda references found."
 
       # =====================================================
       # SAM BUILD
@@ -1212,7 +1236,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
