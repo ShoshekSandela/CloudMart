@@ -1354,3 +1354,121 @@ jobs:
           echo "Event pattern is correct."
           echo "SNS target is correct."
           echo "EventBridge -> SNS verification passed."
+
+      - name: Automated EventBridge to SNS smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-application-dev"
+          RULE_NAME="cloudmart-dev-low-stock"
+          EVENT_BUS="cloudmart-dev-event-bus"
+
+          echo "=========================================="
+          echo "AUTOMATED EVENTBRIDGE -> SNS SMOKE TEST"
+          echo "=========================================="
+
+          SNS_ARN=$(aws cloudformation describe-stacks \\
+            --stack-name "$STACK_NAME" \\
+            --region "$AWS_REGION" \\
+            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \\
+            --output text)
+
+          if [ -z "$SNS_ARN" ] || [ "$SNS_ARN" = "None" ]; then
+            echo "ERROR: LowStockTopicArn CloudFormation output is missing."
+            exit 1
+          fi
+
+          echo "SNS topic: $SNS_ARN"
+
+          # Verify that the SNS topic has at least one subscription.
+          SUBSCRIPTION_COUNT=$(aws sns list-subscriptions-by-topic \\
+            --topic-arn "$SNS_ARN" \\
+            --region "$AWS_REGION" \\
+            --query "length(Subscriptions)" \\
+            --output text)
+
+          echo "SNS subscription count: $SUBSCRIPTION_COUNT"
+
+          if [ "$SUBSCRIPTION_COUNT" -lt 1 ]; then
+            echo "ERROR: Low-stock SNS topic has no subscription."
+            exit 1
+          fi
+
+          # Send a real test event through the deployed custom event bus.
+          TEST_PRODUCT_ID="CI-LOW-STOCK-$(date +%s)"
+
+          PUT_RESULT=$(aws events put-events \\
+            --event-bus-name "$EVENT_BUS" \\
+            --region "$AWS_REGION" \\
+            --entries "[{\"Source\":\"cloudmart.product\",\"DetailType\":\"Inventory Changed\",\"Detail\":\"{\\\"low_stock\\\":true,\\\"product_id\\\":\\\"$TEST_PRODUCT_ID\\\",\\\"quantity\\\":1}\"}]" \\
+            --output json)
+
+          echo "$PUT_RESULT"
+
+          FAILED_COUNT=$(printf '%s' "$PUT_RESULT" | jq -r '.FailedEntryCount')
+
+          if [ "$FAILED_COUNT" != "0" ]; then
+            echo "ERROR: EventBridge rejected the test event."
+            exit 1
+          fi
+
+          echo "EventBridge accepted the test event."
+
+          # EventBridge CloudWatch metrics can take a short time to appear.
+          # Poll for up to 2 minutes for a matched event and an SNS invocation.
+          for ATTEMPT in $(seq 1 12); do
+            START_TIME=$(date -u -d "10 minutes ago" '+%Y-%m-%dT%H:%M:%SZ')
+            END_TIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+            echo "Checking EventBridge metrics (attempt $ATTEMPT/12)..."
+
+            MATCHED=$(aws cloudwatch get-metric-statistics \\
+              --namespace AWS/Events \\
+              --metric-name MatchedEvents \\
+              --dimensions Name=RuleName,Value="$RULE_NAME" Name=EventBusName,Value="$EVENT_BUS" \\
+              --start-time "$START_TIME" \\
+              --end-time "$END_TIME" \\
+              --period 60 \\
+              --statistics Sum \\
+              --region "$AWS_REGION" \\
+              --query "sum(Datapoints[].Sum)" \\
+              --output text 2>/dev/null || true)
+
+            INVOCATIONS=$(aws cloudwatch get-metric-statistics \\
+              --namespace AWS/Events \\
+              --metric-name Invocations \\
+              --dimensions Name=RuleName,Value="$RULE_NAME" Name=EventBusName,Value="$EVENT_BUS" \\
+              --start-time "$START_TIME" \\
+              --end-time "$END_TIME" \\
+              --period 60 \\
+              --statistics Sum \\
+              --region "$AWS_REGION" \\
+              --query "sum(Datapoints[].Sum)" \\
+              --output text 2>/dev/null || true)
+
+            MATCHED=${MATCHED:-0}
+            INVOCATIONS=${INVOCATIONS:-0}
+
+            echo "MatchedEvents: $MATCHED"
+            echo "Invocations:   $INVOCATIONS"
+
+            if [[ "$MATCHED" =~ ^[0-9]+([.][0-9]+)?$ ]] && \\
+               [[ "$INVOCATIONS" =~ ^[0-9]+([.][0-9]+)?$ ]] && \\
+               awk "BEGIN {exit !($MATCHED > 0 && $INVOCATIONS > 0)}"; then
+              echo "=========================================="
+              echo "AUTOMATED SMOKE TEST PASSED"
+              echo "=========================================="
+              echo "EventBridge accepted the event."
+              echo "Low-stock rule matched the event."
+              echo "EventBridge invoked the SNS target."
+              exit 0
+            fi
+
+            sleep 10
+          done
+
+          echo "ERROR: EventBridge metrics did not confirm rule matching and target invocation within the timeout."
+          echo "MatchedEvents: $MATCHED"
+          echo "Invocations: $INVOCATIONS"
+          exit 1
