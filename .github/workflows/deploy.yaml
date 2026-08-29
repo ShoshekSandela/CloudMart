@@ -824,10 +824,6 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$INVENTORY_EVENT_ROLE_ARN" ]; then
-            echo "ERROR: INVENTORY_EVENT_ROLE_ARN is missing."
-            exit 1
-          fi
 
           if [ -z "$ORDER_ROLE_ARN" ]; then
             echo "ERROR: ORDER_ROLE_ARN is missing."
@@ -911,10 +907,6 @@ jobs:
             exit 1
           fi
 
-          if [ ! -f "lambdas/inventory-event/index.py" ]; then
-            echo "ERROR: lambdas/inventory-event/index.py is missing."
-            exit 1
-          fi
 
           echo "Product Lambda requirements.txt:"
           cat lambdas/product/requirements.txt
@@ -1148,7 +1140,6 @@ jobs:
           set -euo pipefail
 
           INVENTORY_LAMBDA=$(aws lambda get-function \
-            --function-name cloudmart-dev-inventory-event \
             --region "$AWS_REGION" \
             --query "Configuration.FunctionArn" \
             --output text)
