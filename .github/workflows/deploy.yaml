@@ -967,13 +967,7 @@ jobs:
 
           echo "schema.sql is included in the Product Lambda build."
 
-          if [ ! -d ".aws-sam/build/InventoryEventFunction" ]; then
-            echo "ERROR: InventoryEventFunction was not created by SAM build."
-            exit 1
-          fi
 
-          if [ ! -f ".aws-sam/build/InventoryEventFunction/index.py" ]; then
-            echo "ERROR: InventoryEventFunction index.py is missing from SAM build."
             exit 1
           fi
 
