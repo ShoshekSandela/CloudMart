@@ -1238,7 +1238,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
-          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN  }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify EventBridge low-stock SNS target
