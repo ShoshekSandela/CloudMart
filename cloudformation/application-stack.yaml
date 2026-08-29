@@ -294,21 +294,15 @@ Resources:
   # API GATEWAY -> AUTHORIZER PERMISSION
   # ==========================================================
 
-  LambdaAuthorizerPermission:
+    LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
-
     Properties:
-
       Action: lambda:InvokeFunction
-
       FunctionName: !Ref LambdaAuthorizer
-
       Principal: apigateway.amazonaws.com
-
       SourceAccount: !Ref AWS::AccountId
-
       SourceArn: !Sub >
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*
+        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/${ApiGatewayAuthorizer}
 
 
   # ==========================================================
