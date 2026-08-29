@@ -25,6 +25,10 @@ Parameters:
     Type: String
     Description: IAM role ARN for the Product Lambda.
 
+  InventoryEventLambdaRoleArn:
+    Type: String
+    Description: IAM role ARN for the Inventory Event Lambda.
+
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: Private subnet IDs used by Product Lambda.
@@ -226,6 +230,27 @@ Resources:
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
 
   # ==========================================================
+  # INVENTORY EVENT TARGET LAMBDA
+  # ==========================================================
+
+  InventoryEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-inventory-event"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/inventory-event/
+      Role: !Ref InventoryEventLambdaRoleArn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref CloudMartLowStockTopic
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  # ==========================================================
   # EVENTBRIDGE INVENTORY CHANGE RULE
   # ==========================================================
 
@@ -241,6 +266,18 @@ Resources:
           - cloudmart.product
         detail-type:
           - Inventory Changed
+      Targets:
+        - Id: InventoryEventLambdaTarget
+          Arn: !GetAtt InventoryEventFunction.Arn
+
+  InventoryEventLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref InventoryEventFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt InventoryChangedEventRule.Arn
 
   # Low-stock notification is a separate rule so normal inventory
   # events can exist without generating an email.
@@ -416,6 +453,10 @@ Outputs:
   ProductLambdaName:
     Description: Product Lambda name
     Value: !Ref ProductFunction
+
+  InventoryEventLambdaArn:
+    Description: Inventory Event Lambda ARN
+    Value: !GetAtt InventoryEventFunction.Arn
 
   AuthorizerLambdaArn:
     Description: Lambda Authorizer ARN

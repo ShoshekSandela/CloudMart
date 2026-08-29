@@ -244,10 +244,7 @@ def publish_inventory_event(
                 {
                     "Source": "cloudmart.product",
                     "DetailType": "Inventory Changed",
-                    "EventBusName": os.environ.get(
-                        "EVENT_BUS_NAME",
-                        "default"
-                    ),
+                    "EventBusName": os.environ["EVENT_BUS_NAME"],
                     "Detail": json.dumps(event_detail)
                 }
             ]

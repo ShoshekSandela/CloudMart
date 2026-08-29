@@ -702,6 +702,12 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='ProductLambdaRoleArn'].OutputValue | [0]" \
             --output text)
 
+          INVENTORY_EVENT_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-iam-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='InventoryEventLambdaRoleArn'].OutputValue | [0]" \
+            --output text)
+
           ORDER_ROLE=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
@@ -716,6 +722,7 @@ jobs:
 
           echo "Authorizer Role: $AUTHORIZER_ROLE"
           echo "Product Role: $PRODUCT_ROLE"
+          echo "Inventory Event Role: $INVENTORY_EVENT_ROLE"
           echo "Order Role: $ORDER_ROLE"
           echo "Report Role: $REPORT_ROLE"
 
@@ -726,6 +733,11 @@ jobs:
 
           if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
             echo "ERROR: ProductLambdaRoleArn output is missing."
+            exit 1
+          fi
+
+          if [ -z "$INVENTORY_EVENT_ROLE" ] || [ "$INVENTORY_EVENT_ROLE" = "None" ]; then
+            echo "ERROR: InventoryEventLambdaRoleArn output is missing."
             exit 1
           fi
 
@@ -742,6 +754,8 @@ jobs:
           echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
 
           echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE" >> "$GITHUB_ENV"
+
+          echo "INVENTORY_EVENT_ROLE_ARN=$INVENTORY_EVENT_ROLE" >> "$GITHUB_ENV"
 
           echo "ORDER_ROLE_ARN=$ORDER_ROLE" >> "$GITHUB_ENV"
 
@@ -852,6 +866,11 @@ jobs:
             exit 1
           fi
 
+          if [ -z "$INVENTORY_EVENT_ROLE_ARN" ]; then
+            echo "ERROR: INVENTORY_EVENT_ROLE_ARN is missing."
+            exit 1
+          fi
+
           if [ -z "$ORDER_ROLE_ARN" ]; then
             echo "ERROR: ORDER_ROLE_ARN is missing."
             exit 1
@@ -934,6 +953,13 @@ jobs:
             exit 1
           fi
 
+          if [ ! -f "lambdas/inventory-event/index.py" ]; then
+            echo "ERROR: lambdas/inventory-event/index.py is missing."
+            exit 1
+          fi
+
+          echo "Inventory Event Lambda source is present."
+
           echo "Product Lambda requirements.txt:"
           cat lambdas/product/requirements.txt
 
@@ -993,6 +1019,18 @@ jobs:
 
           echo "schema.sql is included in the Product Lambda build."
 
+          if [ ! -d ".aws-sam/build/InventoryEventFunction" ]; then
+            echo "ERROR: InventoryEventFunction was not created by SAM build."
+            exit 1
+          fi
+
+          if [ ! -f ".aws-sam/build/InventoryEventFunction/index.py" ]; then
+            echo "ERROR: InventoryEventFunction index.py is missing from SAM build."
+            exit 1
+          fi
+
+          echo "Inventory Event Lambda is included in the SAM build."
+
       - name: Verify SAM build output
         shell: bash
         run: |
@@ -1032,6 +1070,7 @@ jobs:
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
               ProductLambdaRoleArn="$PRODUCT_ROLE_ARN" \
+              InventoryEventLambdaRoleArn="$INVENTORY_EVENT_ROLE_ARN" \
               AuthorizerCacheTTL=300 \
               TokenParameterName="/cloudmart/dev/auth/token" \
               DBHostParameterName="/cloudmart/dev/database/host" \
@@ -1144,6 +1183,75 @@ jobs:
           fi
 
           echo "Product Lambda verified successfully."
+
+
+      # =====================================================
+      # VERIFY INVENTORY EVENT LAMBDA
+      # =====================================================
+
+      - name: Verify Inventory Event Lambda
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          INVENTORY_LAMBDA=$(aws lambda get-function \
+            --function-name cloudmart-dev-inventory-event \
+            --region "$AWS_REGION" \
+            --query "Configuration.FunctionArn" \
+            --output text)
+
+          echo "Inventory Event Lambda: $INVENTORY_LAMBDA"
+
+          if [ -z "$INVENTORY_LAMBDA" ] || [ "$INVENTORY_LAMBDA" = "None" ]; then
+            echo "ERROR: Inventory Event Lambda was not found."
+            exit 1
+          fi
+
+          echo "Inventory Event Lambda verified successfully."
+
+
+      # =====================================================
+      # VERIFY EVENTBRIDGE INVENTORY TARGET
+      # =====================================================
+
+      - name: Verify EventBridge Inventory Target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENT_BUS_NAME=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-application-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='EventBusName'].OutputValue | [0]" \
+            --output text)
+
+          EVENT_LAMBDA_ARN=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-application-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='InventoryEventLambdaArn'].OutputValue | [0]" \
+            --output text)
+
+          TARGET_ARN=$(aws events list-targets-by-rule \
+            --rule "cloudmart-dev-inventory-changed" \
+            --event-bus-name "$EVENT_BUS_NAME" \
+            --region "$AWS_REGION" \
+            --query "Targets[0].Arn" \
+            --output text)
+
+          echo "Expected target: $EVENT_LAMBDA_ARN"
+          echo "Actual target:   $TARGET_ARN"
+
+          if [ -z "$TARGET_ARN" ] || [ "$TARGET_ARN" = "None" ]; then
+            echo "ERROR: Inventory Changed rule has no target."
+            exit 1
+          fi
+
+          if [ "$TARGET_ARN" != "$EVENT_LAMBDA_ARN" ]; then
+            echo "ERROR: Inventory Changed rule target does not match Inventory Event Lambda."
+            exit 1
+          fi
+
+          echo "EventBridge inventory target verified successfully."
 
 
       # =====================================================
