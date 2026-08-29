@@ -342,18 +342,16 @@ Resources:
 
       Type: TOKEN
 
+      DependsOn:
+      - LambdaAuthorizerPermission
+
       IdentitySource: method.request.header.Authorization
 
-      AuthorizerUri:
-        Fn::Sub:
-          - >
-            arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+      AuthorizerUri: !Sub
+        - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerLambdaArn}/invocations
+        - AuthorizerLambdaArn: !GetAtt LambdaAuthorizer.Arn
 
-          - LambdaAuthorizerArn:
-              !GetAtt LambdaAuthorizer.Arn
-
-      AuthorizerResultTtlInSeconds:
-        !Ref AuthorizerCacheTTL
+      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
 
 
   # ==========================================================
