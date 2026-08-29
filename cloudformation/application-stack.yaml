@@ -24,7 +24,6 @@ Parameters:
   ProductLambdaRoleArn:
     Type: String
     Description: IAM role ARN for the Product Lambda.
-    Description: IAM role ARN for the Inventory Event Lambda.
 
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
@@ -227,48 +226,6 @@ Resources:
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
 
   # ==========================================================
-  # INVENTORY EVENT TARGET LAMBDA
-  # ==========================================================
-
-
-  InventoryChangedEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-inventory-changed"
-      Description: !Sub "Routes ${ProjectName} inventory change events."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - Inventory Changed
-      Targets:
-        - Id: InventoryEventLambdaTarget
-          Arn: !GetAtt InventoryEventFunction.Arn
-
-
-  LowStockEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: !Sub "Sends low-stock inventory events to SNS."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - Inventory Changed
-        detail:
-          low_stock:
-            - true
-      Targets:
-        - Id: LowStockSNSTarget
-          Arn: !Ref CloudMartLowStockTopic
-          Arn: !Ref CloudMartLowStockTopic
-
-  # ==========================================================
   # /products
   # ==========================================================
 
@@ -421,10 +378,6 @@ Outputs:
   ProductLambdaName:
     Description: Product Lambda name
     Value: !Ref ProductFunction
-
-  InventoryEventLambdaArn:
-    Description: Inventory Event Lambda ARN
-    Value: !GetAtt InventoryEventFunction.Arn
 
   AuthorizerLambdaArn:
     Description: Lambda Authorizer ARN
