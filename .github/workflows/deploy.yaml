@@ -1263,11 +1263,13 @@ jobs:
           echo "Rule      : $RULE_NAME"
           echo ""
 
-          EXPECTED_SNS_ARN=$(aws cloudformation describe-stacks \
+          echo "Getting SNS ARN from CloudFormation..."
+
+          EXPECTED_SNS_ARN="$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
-            --output text)
+            --output text)"
 
           if [ -z "$EXPECTED_SNS_ARN" ] || [ "$EXPECTED_SNS_ARN" = "None" ]; then
             echo "ERROR: LowStockTopicArn CloudFormation output is missing."
@@ -1278,36 +1280,39 @@ jobs:
           echo "$EXPECTED_SNS_ARN"
           echo ""
 
-          RULE_JSON=$(aws events describe-rule \
+          echo "Checking EventBridge rule..."
+
+          RULE_JSON="$(aws events describe-rule \
             --name "$RULE_NAME" \
             --event-bus-name "$EVENT_BUS" \
             --region "$AWS_REGION" \
-            --output json)
+            --output json)"
 
-          RULE_STATE=$(printf '%s' "$RULE_JSON" | jq -r '.State')
-          EVENT_PATTERN=$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')
+          RULE_STATE="$(printf '%s' "$RULE_JSON" | jq -r '.State')"
+          EVENT_PATTERN="$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')"
 
           echo "Rule state: $RULE_STATE"
           echo "Event pattern: $EVENT_PATTERN"
-          echo ""
 
           if [ "$RULE_STATE" != "ENABLED" ]; then
             echo "ERROR: EventBridge low-stock rule is not ENABLED."
             exit 1
           fi
 
-          TARGET_JSON=$(aws events list-targets-by-rule \
+          echo ""
+          echo "Checking EventBridge target..."
+
+          TARGET_JSON="$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
             --event-bus-name "$EVENT_BUS" \
             --region "$AWS_REGION" \
-            --output json)
+            --output json)"
 
-          TARGET_COUNT=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')
-          ACTUAL_SNS_ARN=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')
+          TARGET_COUNT="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')"
+          ACTUAL_SNS_ARN="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')"
 
           echo "Target count: $TARGET_COUNT"
           echo "Actual target ARN: $ACTUAL_SNS_ARN"
-          echo ""
 
           if [ "$TARGET_COUNT" -lt 1 ]; then
             echo "ERROR: Low-stock EventBridge rule has no target."
@@ -1320,17 +1325,20 @@ jobs:
           fi
 
           if [ "$ACTUAL_SNS_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target does not match the CloudFormation SNS topic."
+            echo "ERROR: EventBridge target does not match CloudFormation SNS topic."
             echo "Expected: $EXPECTED_SNS_ARN"
             echo "Actual:   $ACTUAL_SNS_ARN"
             exit 1
           fi
 
-          SUBSCRIPTION_COUNT=$(aws sns list-subscriptions-by-topic \
+          echo ""
+          echo "Checking SNS subscription..."
+
+          SUBSCRIPTION_COUNT="$(aws sns list-subscriptions-by-topic \
             --topic-arn "$EXPECTED_SNS_ARN" \
             --region "$AWS_REGION" \
             --query "length(Subscriptions)" \
-            --output text)
+            --output text)"
 
           echo "SNS subscription count: $SUBSCRIPTION_COUNT"
 
@@ -1342,44 +1350,49 @@ jobs:
           echo ""
           echo "Checking SNS topic policy for EventBridge publish permission..."
 
-          TOPIC_POLICY=$(aws sns get-topic-attributes \
+          TOPIC_POLICY="$(aws sns get-topic-attributes \
             --topic-arn "$EXPECTED_SNS_ARN" \
             --region "$AWS_REGION" \
             --query "Attributes.Policy" \
-            --output text)
+            --output text)"
 
-          POLICY_OK=$(printf '%s' "$TOPIC_POLICY" | jq -r '
-            try (
-              .Statement
-              | if type == "array" then . else [.] end
-              | any(
-                  ((.Effect // "") == "Allow")
-                  and
-                  ((.Principal.Service // "") == "events.amazonaws.com")
-                  and
-                  (
+          # SNS returns the policy as a JSON string. Parse that string once,
+          # then inspect Statement safely. AWS action names are compared
+          # case-insensitively so sns:Publish is accepted correctly.
+          POLICY_OK="$(
+            printf '%s' "$TOPIC_POLICY" |
+              jq -r '
+                fromjson
+                | .Statement
+                | if type == "array" then . else [.] end
+                | any(
+                    (.Effect == "Allow")
+                    and
+                    (.Principal.Service == "events.amazonaws.com")
+                    and
                     (
-                      (.Action // "")
-                      | if type == "string"
-                        then ascii_downcase == "sns:publish"
-                        else false
-                        end
-                    )
-                    or
-                    (
-                      (.Action // [])
-                      | if type == "array"
-                        then any(.[]; (type == "string" and ascii_downcase == "sns:publish"))
-                        else false
-                        end
+                      (
+                        (.Action // "")
+                        | if type == "string"
+                          then ascii_downcase == "sns:publish"
+                          else false
+                          end
+                      )
+                      or
+                      (
+                        (.Action // [])
+                        | if type == "array"
+                          then any(.[]; type == "string" and ascii_downcase == "sns:publish")
+                          else false
+                          end
+                      )
                     )
                   )
-                )
-            ) catch false
-          )
+              '
+          )"
 
           if [ "$POLICY_OK" != "true" ]; then
-            echo "ERROR: SNS topic policy does not grant events.amazonaws.com SNS:Publish."
+            echo "ERROR: SNS topic policy does not grant events.amazonaws.com sns:Publish."
             echo "Current topic policy:"
             printf '%s' "$TOPIC_POLICY" | jq .
             exit 1
@@ -1390,7 +1403,7 @@ jobs:
           echo ""
           echo "Testing the deployed EventBridge event pattern..."
 
-          TEST_EVENT=$(jq -nc '{
+          TEST_EVENT="$(jq -nc '{
             source:"cloudmart.product",
             "detail-type":"Inventory Changed",
             detail:{
@@ -1398,14 +1411,14 @@ jobs:
               product_id:"CI-LOW-STOCK-PATTERN",
               quantity:1
             }
-          }')
+          }')"
 
-          PATTERN_MATCH=$(aws events test-event-pattern \
+          PATTERN_MATCH="$(aws events test-event-pattern \
             --event-pattern "$EVENT_PATTERN" \
             --event "$TEST_EVENT" \
             --region "$AWS_REGION" \
             --query "Result" \
-            --output text)
+            --output text)"
 
           echo "Pattern match result: $PATTERN_MATCH"
 
