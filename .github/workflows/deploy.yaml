@@ -687,78 +687,44 @@ jobs:
       - name: Get Lambda IAM Role ARNs
         shell: bash
         run: |
+          set -euo pipefail
 
           echo "Getting Lambda IAM role ARNs..."
 
-          AUTHORIZER_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LambdaAuthorizerRoleArn'].OutputValue | [0]" \
-            --output text)
+          get_role_arn() {
+            local role_name="$1"
+            aws iam get-role               --role-name "$role_name"               --query 'Role.Arn'               --output text
+          }
 
-          PRODUCT_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='ProductLambdaRoleArn'].OutputValue | [0]" \
-            --output text)
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='InventoryEventLambdaRoleArn'].OutputValue | [0]" \
-            --output text)
+          AUTHORIZE_ROLE="cloudmart-dev-lambda-authorizer-role"
+          PRODUCT_ROLE="cloudmart-dev-lambda-product-role"
+          ORDER_ROLE="cloudmart-dev-lambda-order-role"
+          REPORT_ROLE="cloudmart-dev-lambda-report-role"
 
-          ORDER_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='OrderLambdaRoleArn'].OutputValue | [0]" \
-            --output text)
+          AUTHORIZER_ROLE_ARN="$(get_role_arn "$AUTHORIZE_ROLE")"
+          PRODUCT_ROLE_ARN="$(get_role_arn "$PRODUCT_ROLE")"
+          ORDER_ROLE_ARN="$(get_role_arn "$ORDER_ROLE")"
+          REPORT_ROLE_ARN="$(get_role_arn "$REPORT_ROLE")"
 
-          REPORT_ROLE=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='ReportLambdaRoleArn'].OutputValue | [0]" \
-            --output text)
+          echo "Authorizer Role: $AUTHORIZER_ROLE_ARN"
+          echo "Product Role: $PRODUCT_ROLE_ARN"
+          echo "Order Role: $ORDER_ROLE_ARN"
+          echo "Report Role: $REPORT_ROLE_ARN"
 
-          echo "Authorizer Role: $AUTHORIZER_ROLE"
-          echo "Product Role: $PRODUCT_ROLE"
-          echo "Order Role: $ORDER_ROLE"
-          echo "Report Role: $REPORT_ROLE"
+          for role_arn in             "$AUTHORIZER_ROLE_ARN"             "$PRODUCT_ROLE_ARN"             "$ORDER_ROLE_ARN"             "$REPORT_ROLE_ARN"
+          do
+            if [ -z "$role_arn" ] || [ "$role_arn" = "None" ]; then
+              echo "ERROR: A required Lambda IAM role ARN is missing."
+              exit 1
+            fi
+          done
 
-          if [ -z "$AUTHORIZER_ROLE" ] || [ "$AUTHORIZER_ROLE" = "None" ]; then
-            echo "ERROR: LambdaAuthorizerRoleArn output is missing."
-            exit 1
-          fi
-
-          if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
-            echo "ERROR: ProductLambdaRoleArn output is missing."
-            exit 1
-          fi
-
-          if [ -z "$ORDER_ROLE" ] || [ "$ORDER_ROLE" = "None" ]; then
-            echo "ERROR: OrderLambdaRoleArn output is missing."
-            exit 1
-          fi
-
-          if [ -z "$REPORT_ROLE" ] || [ "$REPORT_ROLE" = "None" ]; then
-            echo "ERROR: ReportLambdaRoleArn output is missing."
-            exit 1
-          fi
-
-          echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE" >> "$GITHUB_ENV"
-
-          echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE" >> "$GITHUB_ENV"
-
-          echo "INVENTORY_EVENT_ROLE_ARN=$INVENTORY_EVENT_ROLE" >> "$GITHUB_ENV"
-
-          echo "ORDER_ROLE_ARN=$ORDER_ROLE" >> "$GITHUB_ENV"
-
-          echo "REPORT_ROLE_ARN=$REPORT_ROLE" >> "$GITHUB_ENV"
-
-          echo "All Lambda IAM role ARNs loaded successfully."
-
-
-      # =====================================================
-      # GET DATA STACK OUTPUTS
-      # =====================================================
+          {
+            echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE_ARN"
+            echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE_ARN"
+            echo "ORDER_ROLE_ARN=$ORDER_ROLE_ARN"
+            echo "REPORT_ROLE_ARN=$REPORT_ROLE_ARN"
+          } >> "$GITHUB_ENV"
 
       - name: Get Data Stack Outputs
         shell: bash
