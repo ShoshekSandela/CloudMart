@@ -184,6 +184,48 @@ def initialize_database(connection):
 
 
 # ============================================================
+# AUTOMATIC DATABASE SCHEMA CHECK
+#
+# The deployment workflow packages schema.sql with this Lambda,
+# but packaging the file does NOT execute it against RDS.
+#
+# On the first Product API request, check for the products table.
+# If it does not exist, apply the packaged schema automatically.
+# This removes the need for any manual MySQL commands.
+# ============================================================
+
+def ensure_database_schema(connection):
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT COUNT(*)
+            FROM information_schema.tables
+            WHERE table_schema = DATABASE()
+              AND table_name = 'products'
+        """)
+        exists = cursor.fetchone()["COUNT(*)"] > 0
+
+    if exists:
+        return False
+
+    logger.info(
+        json.dumps({
+            "message": "Products table is missing; applying packaged schema automatically"
+        })
+    )
+
+    result = initialize_database(connection)
+
+    logger.info(
+        json.dumps({
+            "message": "Automatic database schema initialization completed",
+            "statements_executed": result["statements_executed"]
+        })
+    )
+
+    return True
+
+
+# ============================================================
 # INVENTORY VALIDATION
 #
 # Inventory is stored directly in PRODUCTS.
@@ -613,6 +655,19 @@ def lambda_handler(event, context):
             payload = {}
 
         connection = get_db_connection()
+
+        # ---------------------------------------------------------
+        # AUTOMATIC DATABASE INITIALIZATION
+        #
+        # If the RDS database has not been initialized yet, apply
+        # the schema.sql bundled into this Lambda package.
+        # No manual database setup is required.
+        #
+        # The explicit action below is retained for CI/CD or
+        # troubleshooting, but normal API requests also self-heal
+        # a missing products table.
+        # ---------------------------------------------------------
+        ensure_database_schema(connection)
 
         # ---------------------------------------------------------
         # ONE-TIME DATABASE INITIALIZATION
