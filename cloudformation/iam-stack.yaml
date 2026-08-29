@@ -105,6 +105,67 @@ Resources:
 
 
   # =========================================================
+  # INVENTORY EVENT LAMBDA ROLE
+  # =========================================================
+
+  InventoryEventLambdaRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-inventory-event-role
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: CloudMartInventoryEventLambdaPolicy
+
+          PolicyDocument:
+            Version: "2012-10-17"
+
+            Statement:
+
+              # CloudWatch Logs
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+
+              # Publish low-stock notifications to SNS
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock
+
+              # Read CloudMart application configuration from SSM
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
+
+      Tags:
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # =========================================================
   # ORDER LAMBDA ROLE
   # =========================================================
 
@@ -400,6 +461,28 @@ Outputs:
 
     Export:
       Name: !Sub CloudMart-${Environment}-ProductLambdaRoleName
+
+
+  # =========================================================
+  # INVENTORY EVENT LAMBDA
+  # =========================================================
+
+  InventoryEventLambdaRoleArn:
+    Description: Inventory Event Lambda IAM Role ARN
+
+    Value: !GetAtt InventoryEventLambdaRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-InventoryEventLambdaRoleArn
+
+
+  InventoryEventLambdaRoleName:
+    Description: Inventory Event Lambda IAM Role Name
+
+    Value: !Ref InventoryEventLambdaRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-InventoryEventLambdaRoleName
 
 
   # =========================================================
