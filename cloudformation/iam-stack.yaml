@@ -379,6 +379,8 @@ Resources:
 # OUTPUTS
 # =========================================================
 
+Outputs:
+
   # =========================================================
   # GITHUB ACTIONS EVENTBRIDGE SMOKE TEST PERMISSION
   # Allows the GitHub Actions role to publish the automated
