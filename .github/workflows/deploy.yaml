@@ -967,10 +967,6 @@ jobs:
 
           echo "schema.sql is included in the Product Lambda build."
 
-
-            exit 1
-          fi
-
       - name: Verify SAM build output
         shell: bash
         run: |
