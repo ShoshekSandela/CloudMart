@@ -701,8 +701,6 @@ jobs:
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='ProductLambdaRoleArn'].OutputValue | [0]" \
             --output text)
-
-          INVENTORY_EVENT_ROLE=$(aws cloudformation describe-stacks \
             --stack-name cloudmart-iam-dev \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='InventoryEventLambdaRoleArn'].OutputValue | [0]" \
@@ -722,7 +720,6 @@ jobs:
 
           echo "Authorizer Role: $AUTHORIZER_ROLE"
           echo "Product Role: $PRODUCT_ROLE"
-          echo "Inventory Event Role: $INVENTORY_EVENT_ROLE"
           echo "Order Role: $ORDER_ROLE"
           echo "Report Role: $REPORT_ROLE"
 
@@ -733,11 +730,6 @@ jobs:
 
           if [ -z "$PRODUCT_ROLE" ] || [ "$PRODUCT_ROLE" = "None" ]; then
             echo "ERROR: ProductLambdaRoleArn output is missing."
-            exit 1
-          fi
-
-          if [ -z "$INVENTORY_EVENT_ROLE" ] || [ "$INVENTORY_EVENT_ROLE" = "None" ]; then
-            echo "ERROR: InventoryEventLambdaRoleArn output is missing."
             exit 1
           fi
 
@@ -958,8 +950,6 @@ jobs:
             exit 1
           fi
 
-          echo "Inventory Event Lambda source is present."
-
           echo "Product Lambda requirements.txt:"
           cat lambdas/product/requirements.txt
 
@@ -1029,8 +1019,6 @@ jobs:
             exit 1
           fi
 
-          echo "Inventory Event Lambda is included in the SAM build."
-
       - name: Verify SAM build output
         shell: bash
         run: |
@@ -1070,7 +1058,6 @@ jobs:
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
               ProductLambdaRoleArn="$PRODUCT_ROLE_ARN" \
-              InventoryEventLambdaRoleArn="$INVENTORY_EVENT_ROLE_ARN" \
               AuthorizerCacheTTL=300 \
               TokenParameterName="/cloudmart/dev/auth/token" \
               DBHostParameterName="/cloudmart/dev/database/host" \
@@ -1200,19 +1187,6 @@ jobs:
             --query "Configuration.FunctionArn" \
             --output text)
 
-          echo "Inventory Event Lambda: $INVENTORY_LAMBDA"
-
-          if [ -z "$INVENTORY_LAMBDA" ] || [ "$INVENTORY_LAMBDA" = "None" ]; then
-            echo "ERROR: Inventory Event Lambda was not found."
-            exit 1
-          fi
-
-          echo "Inventory Event Lambda verified successfully."
-
-
-      # =====================================================
-      # VERIFY EVENTBRIDGE INVENTORY TARGET
-      # =====================================================
 
       - name: Verify EventBridge Inventory Target
         shell: bash
@@ -1247,9 +1221,6 @@ jobs:
           fi
 
           if [ "$TARGET_ARN" != "$EVENT_LAMBDA_ARN" ]; then
-            echo "ERROR: Inventory Changed rule target does not match Inventory Event Lambda."
-            exit 1
-          fi
 
           echo "EventBridge inventory target verified successfully."
 
@@ -1292,3 +1263,42 @@ jobs:
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
 
+  verify-eventbridge-sns:
+    name: Verify EventBridge SNS Target
+    needs: deploy-application
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify EventBridge low-stock SNS target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RULE_NAME="cloudmart-dev-low-stock"
+          EVENT_BUS="cloudmart-dev-event-bus"
+
+          echo "Checking low-stock EventBridge SNS target..."
+
+          TARGETS=$(aws events list-targets-by-rule             --rule "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query 'Targets[*].Arn'             --output text)
+
+          echo "Targets: $TARGETS"
+
+          if [ -z "$TARGETS" ] || [ "$TARGETS" = "None" ]; then
+            echo "ERROR: Low-stock EventBridge rule has no target."
+            exit 1
+          fi
+
+          case "$TARGETS" in
+            *:sns:cloudmart-dev-low-stock*)
+              echo "EventBridge low-stock SNS target verified."
+              ;;
+            *)
+              echo "ERROR: Low-stock rule target is not the CloudMart low-stock SNS topic."
+              exit 1
+              ;;
+          esac

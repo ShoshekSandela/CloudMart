@@ -24,9 +24,6 @@ Parameters:
   ProductLambdaRoleArn:
     Type: String
     Description: IAM role ARN for the Product Lambda.
-
-  InventoryEventLambdaRoleArn:
-    Type: String
     Description: IAM role ARN for the Inventory Event Lambda.
 
   PrivateSubnetIds:
@@ -233,26 +230,6 @@ Resources:
   # INVENTORY EVENT TARGET LAMBDA
   # ==========================================================
 
-  InventoryEventFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-inventory-event"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      CodeUri: ../lambdas/inventory-event/
-      Role: !Ref InventoryEventLambdaRoleArn
-      Timeout: 10
-      MemorySize: 128
-      Environment:
-        Variables:
-          SNS_TOPIC_ARN: !Ref CloudMartLowStockTopic
-      Tags:
-        Project: CloudMart
-        Environment: !Ref Environment
-
-  # ==========================================================
-  # EVENTBRIDGE INVENTORY CHANGE RULE
-  # ==========================================================
 
   InventoryChangedEventRule:
     Type: AWS::Events::Rule
@@ -270,17 +247,7 @@ Resources:
         - Id: InventoryEventLambdaTarget
           Arn: !GetAtt InventoryEventFunction.Arn
 
-  InventoryEventLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref InventoryEventFunction
-      Principal: events.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !GetAtt InventoryChangedEventRule.Arn
 
-  # Low-stock notification is a separate rule so normal inventory
-  # events can exist without generating an email.
   LowStockEventRule:
     Type: AWS::Events::Rule
     Properties:
@@ -297,7 +264,8 @@ Resources:
           low_stock:
             - true
       Targets:
-        - Id: LowStockSnsTarget
+        - Id: LowStockSNSTarget
+          Arn: !Ref CloudMartLowStockTopic
           Arn: !Ref CloudMartLowStockTopic
 
   # ==========================================================
