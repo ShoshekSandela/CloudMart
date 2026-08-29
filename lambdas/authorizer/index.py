@@ -94,5 +94,5 @@ def lambda_handler(event, context):
     return generate_policy(
         principal_id="cloudmart-user",
         effect="Allow",
-        resource=f"{api_arn}/*/*"
+        resource=f"{api_arn}/*/*/*"
     )
