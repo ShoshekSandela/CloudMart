@@ -146,6 +146,8 @@ Resources:
 
   LowStockEventRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartLowStockTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
       Description: Routes every inventory change event to SNS notifications.
@@ -156,6 +158,9 @@ Resources:
           - cloudmart.product
         detail-type:
           - Inventory Changed
+        detail:
+          low_stock:
+            - exists: true
       Targets:
         - Id: LowStockSNSTarget
           Arn: !Ref CloudMartLowStockTopic
