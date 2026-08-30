@@ -141,6 +141,46 @@ Resources:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
   # ==========================================================
+  # LOW-STOCK EVENTBRIDGE RULE
+  # ==========================================================
+
+  LowStockEventRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartLowStockTopicPolicy
+
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-low-stock"
+      Description: Routes low-stock inventory events to SNS notifications.
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+
+      EventPattern:
+        source:
+          - cloudmart.product
+        detail-type:
+          - "Inventory Changed"
+        detail:
+          low_stock:
+            - true
+
+      Targets:
+        - Id: LowStockSNSTarget
+          Arn: !Ref CloudMartLowStockTopic
+
+          InputTransformer:
+            InputPathsMap:
+              productId: "$.detail.product_id"
+              productName: "$.detail.product_name"
+              oldStock: "$.detail.old_stock"
+              newStock: "$.detail.new_stock"
+              threshold: "$.detail.low_stock_threshold"
+
+            # EventBridge InputTemplate must be a valid JSON string.
+            # The escaped newlines keep the SNS email readable.
+            InputTemplate: '"CLOUDMART LOW STOCK ALERT\n\nA product has reached its low-stock threshold.\n\nPRODUCT DETAILS\n--------------------------------\nProduct ID       : <productId>\nProduct Name     : <productName>\nPrevious Stock   : <oldStock>\nCurrent Stock    : <newStock>\nLow-Stock Limit  : <threshold>\n\nACTION REQUIRED\n--------------------\nPlease review the inventory and replenish stock.\n\nThis notification was generated automatically by CloudMart."'
+
+  # ==========================================================
   # AUTHORIZER LAMBDA
   # ==========================================================
 
@@ -403,9 +443,6 @@ Outputs:
     Description: CloudMart low-stock SNS topic ARN
     Value: !Ref CloudMartLowStockTopic
 
-  InventoryChangedRuleArn:
-    Description: Inventory change EventBridge rule ARN
-    Value: ""
 
   LowStockRuleArn:
     Description: Low-stock EventBridge rule ARN

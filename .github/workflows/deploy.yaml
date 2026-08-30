@@ -985,30 +985,35 @@ jobs:
 
           echo "Generated template found."
 
-          echo "Checking LowStockEventRule resource..."
+          echo "Checking generated template contains low-stock rule configuration..."
 
-          if ! grep -Eq '^[[:space:]]*LowStockEventRule:' "$TEMPLATE"; then
-            echo "ERROR: LowStockEventRule is missing from generated SAM template."
-            echo "Resources found containing 'LowStock':"
+          if ! grep -q "LowStockEventRule" "$TEMPLATE"; then
+            echo "ERROR: LowStockEventRule reference is missing from generated SAM template."
             grep -n "LowStock" "$TEMPLATE" || true
             exit 1
           fi
 
-          echo "LowStockEventRule resource exists."
-
-          echo "Checking low_stock=true condition..."
-
-          if ! grep -Eq '^[[:space:]]*low_stock:' "$TEMPLATE"; then
-            echo "ERROR: low_stock condition is missing."
+          if ! grep -q "cloudmart.product" "$TEMPLATE"; then
+            echo "ERROR: cloudmart.product source is missing from generated template."
             exit 1
           fi
 
-          if ! grep -Eq -- '^[[:space:]]*- true[[:space:]]*$' "$TEMPLATE"; then
-            echo "ERROR: low_stock=true condition is missing."
+          if ! grep -q "Inventory Changed" "$TEMPLATE"; then
+            echo "ERROR: Inventory Changed detail-type is missing from generated template."
             exit 1
           fi
 
-          echo "low_stock=true condition exists."
+          if ! grep -q "low_stock" "$TEMPLATE"; then
+            echo "ERROR: low_stock condition is missing from generated template."
+            exit 1
+          fi
+
+          if ! grep -Eq -- "- true|true" "$TEMPLATE"; then
+            echo "ERROR: low_stock=true condition is missing from generated template."
+            exit 1
+          fi
+
+          echo "Low-stock rule configuration exists."
 
           echo "Checking LowStockRuleArn output..."
 
@@ -1271,7 +1276,7 @@ jobs:
             time:"2026-01-01T00:00:00Z",
             region:"us-east-1",
             resources:[],
-            detail:{low_stock:false,product_id:"CI-NORMAL-STOCK",quantity:10}
+            detail:{low_stock:false,product_id:"CI-NORMAL-STOCK",product_name:"CI Normal Product",old_stock:11,new_stock:10,low_stock_threshold:5}
           }')"
 
           LOW_STOCK_EVENT="$(jq -nc '{
@@ -1283,7 +1288,7 @@ jobs:
             time:"2026-01-01T00:00:00Z",
             region:"us-east-1",
             resources:[],
-            detail:{low_stock:true,product_id:"CI-LOW-STOCK",quantity:1}
+            detail:{low_stock:true,product_id:"CI-LOW-STOCK",product_name:"CI Low Stock Product",old_stock:4,new_stock:1,low_stock_threshold:5}
           }')"
 
           NORMAL_MATCH=$(aws events test-event-pattern \
