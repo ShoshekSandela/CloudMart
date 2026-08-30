@@ -941,7 +941,8 @@ jobs:
 
           sam build \
             --template-file cloudformation/application-stack.yaml \
-            --build-dir .aws-sam/build
+            --build-dir .aws-sam/build \
+            --clean
 
           echo "SAM build completed successfully."
 
@@ -972,12 +973,55 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ ! -f ".aws-sam/build/template.yaml" ]; then
+          TEMPLATE=".aws-sam/build/template.yaml"
+
+          echo "Checking generated SAM template..."
+
+          if [ ! -f "$TEMPLATE" ]; then
             echo "ERROR: SAM build template was not generated."
             exit 1
           fi
 
-          echo "SAM build output is ready for deployment."
+          echo "Generated template found."
+
+          echo "Checking LowStockEventRule resource..."
+
+          if ! grep -q "LowStockEventRule:" "$TEMPLATE"; then
+            echo "ERROR: LowStockEventRule is missing from generated SAM template."
+            exit 1
+          fi
+
+          echo "LowStockEventRule resource exists."
+
+          echo "Checking low_stock=true condition..."
+
+          if ! grep -q "low_stock:" "$TEMPLATE"; then
+            echo "ERROR: low_stock condition is missing."
+            exit 1
+          fi
+
+          if ! grep -q -- "- true" "$TEMPLATE"; then
+            echo "ERROR: low_stock=true condition is missing."
+            exit 1
+          fi
+
+          echo "low_stock=true condition exists."
+
+          echo "Checking LowStockRuleArn reference..."
+
+          if ! grep -q "LowStockRuleArn:" "$TEMPLATE"; then
+            echo "ERROR: LowStockRuleArn output is missing."
+            exit 1
+          fi
+
+          echo "LowStockRuleArn output exists."
+
+          echo "Validating generated template..."
+
+          sam validate \
+            --template-file "$TEMPLATE"
+
+          echo "Generated SAM template verification passed."
 
       # =====================================================
       # SAM DEPLOY APPLICATION STACK
@@ -1374,6 +1418,9 @@ jobs:
     name: Verify EventBridge SNS Target
     needs: deploy-application
     runs-on: ubuntu-latest
+
+    env:
+      NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
 
     steps:
 
