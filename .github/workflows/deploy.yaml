@@ -1386,6 +1386,55 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Ensure SNS email subscription exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-application-dev"
+
+          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
+            echo "ERROR: NOTIFICATION_EMAIL is not configured."
+            exit 1
+          fi
+
+          TOPIC_ARN="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
+            --output text)"
+
+          if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
+            echo "ERROR: LowStockTopicArn output is missing."
+            exit 1
+          fi
+
+          echo "SNS topic: $TOPIC_ARN"
+          echo "Configured email: $NOTIFICATION_EMAIL"
+
+          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --output json)"
+
+          EMAIL_SUBSCRIPTION_ARN="$(
+            printf '%s' "$SUBSCRIPTIONS_JSON" |
+              jq -r --arg email "$NOTIFICATION_EMAIL" '
+                [.Subscriptions[]
+                  | select(.Protocol == "email" and .Endpoint == $email)
+                  | .SubscriptionArn][0] // empty
+              '
+          )"
+
+          if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
+            echo "ERROR: SNS email subscription is missing."
+            echo "The application stack must create the email subscription."
+            echo "Do not create it manually in Cloud Shell."
+            exit 1
+          fi
+
+          echo "SNS email subscription exists: $EMAIL_SUBSCRIPTION_ARN"
+
       - name: Verify EventBridge inventory change SNS target
         shell: bash
         run: |
