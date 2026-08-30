@@ -1229,14 +1229,12 @@ jobs:
             --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
-
-  verify-eventbridge-sns:
+ verify-eventbridge-sns:
     name: Verify EventBridge SNS Target
     needs: deploy-application
     runs-on: ubuntu-latest
 
     steps:
-
       - name: Checkout repository
         uses: actions/checkout@v5
 
@@ -1258,12 +1256,6 @@ jobs:
           echo "=========================================="
           echo "VERIFY EVENTBRIDGE LOW-STOCK SNS TARGET"
           echo "=========================================="
-          echo "Stack     : $STACK_NAME"
-          echo "Event Bus : $EVENT_BUS"
-          echo "Rule      : $RULE_NAME"
-          echo ""
-
-          echo "Getting SNS ARN from CloudFormation..."
 
           EXPECTED_SNS_ARN="$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -1276,11 +1268,7 @@ jobs:
             exit 1
           fi
 
-          echo "Expected SNS ARN:"
-          echo "$EXPECTED_SNS_ARN"
-          echo ""
-
-          echo "Checking EventBridge rule..."
+          echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
 
           RULE_JSON="$(aws events describe-rule \
             --name "$RULE_NAME" \
@@ -1294,114 +1282,10 @@ jobs:
           echo "Rule state: $RULE_STATE"
           echo "Event pattern: $EVENT_PATTERN"
 
-          if [ "$RULE_STATE" != "ENABLED" ]; then
-            echo "ERROR: EventBridge low-stock rule is not ENABLED."
+          [ "$RULE_STATE" = "ENABLED" ] || {
+            echo "ERROR: EventBridge rule is not ENABLED."
             exit 1
-          fi
-
-          echo ""
-          echo "Checking EventBridge target..."
-
-          TARGET_JSON="$(aws events list-targets-by-rule \
-            --rule "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
-            --region "$AWS_REGION" \
-            --output json)"
-
-          TARGET_COUNT="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')"
-          ACTUAL_SNS_ARN="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')"
-
-          echo "Target count: $TARGET_COUNT"
-          echo "Actual target ARN: $ACTUAL_SNS_ARN"
-
-          if [ "$TARGET_COUNT" -lt 1 ]; then
-            echo "ERROR: Low-stock EventBridge rule has no target."
-            exit 1
-          fi
-
-          if [ -z "$ACTUAL_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target ARN is missing."
-            exit 1
-          fi
-
-          if [ "$ACTUAL_SNS_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target does not match CloudFormation SNS topic."
-            echo "Expected: $EXPECTED_SNS_ARN"
-            echo "Actual:   $ACTUAL_SNS_ARN"
-            exit 1
-          fi
-
-          echo ""
-          echo "Checking SNS subscription..."
-
-          SUBSCRIPTION_COUNT="$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$EXPECTED_SNS_ARN" \
-            --region "$AWS_REGION" \
-            --query "length(Subscriptions)" \
-            --output text)"
-
-          echo "SNS subscription count: $SUBSCRIPTION_COUNT"
-
-          if ! [[ "$SUBSCRIPTION_COUNT" =~ ^[0-9]+$ ]] || [ "$SUBSCRIPTION_COUNT" -lt 1 ]; then
-            echo "ERROR: Low-stock SNS topic has no subscription."
-            exit 1
-          fi
-
-          echo ""
-          echo "Checking SNS topic policy for EventBridge publish permission..."
-
-          TOPIC_POLICY="$(aws sns get-topic-attributes \
-            --topic-arn "$EXPECTED_SNS_ARN" \
-            --region "$AWS_REGION" \
-            --query "Attributes.Policy" \
-            --output text)"
-
-          # SNS returns the policy as a JSON string. Parse that string once,
-          # then inspect Statement safely. AWS action names are compared
-          # case-insensitively so sns:Publish is accepted correctly.
-          POLICY_OK="$(
-            printf '%s' "$TOPIC_POLICY" |
-              jq -r '
-                fromjson
-                | .Statement
-                | if type == "array" then . else [.] end
-                | any(
-                    (.Effect == "Allow")
-                    and
-                    (.Principal.Service == "events.amazonaws.com")
-                    and
-                    (
-                      (
-                        (.Action // "")
-                        | if type == "string"
-                          then ascii_downcase == "sns:publish"
-                          else false
-                          end
-                      )
-                      or
-                      (
-                        (.Action // [])
-                        | if type == "array"
-                          then any(.[]; type == "string" and ascii_downcase == "sns:publish")
-                          else false
-                          end
-                      )
-                    )
-                  )
-              '
-          )"
-
-          if [ "$POLICY_OK" != "true" ]; then
-            echo "ERROR: SNS topic policy does not grant events.amazonaws.com sns:Publish."
-            echo "Current topic policy:"
-            printf '%s' "$TOPIC_POLICY" | jq .
-            exit 1
-          fi
-
-          echo "SNS EventBridge publish permission verified."
-
-          echo ""
-          echo "Testing the deployed EventBridge event pattern..."
+          }
 
           TEST_EVENT="$(jq -nc '{
             source:"cloudmart.product",
@@ -1422,20 +1306,112 @@ jobs:
 
           echo "Pattern match result: $PATTERN_MATCH"
 
-          if [ "$PATTERN_MATCH" != "True" ]; then
+          [ "$PATTERN_MATCH" = "True" ] || {
             echo "ERROR: Test event does not match the deployed EventBridge rule."
             exit 1
-          fi
+          }
+
+          TARGET_JSON="$(aws events list-targets-by-rule \
+            --rule "$RULE_NAME" \
+            --event-bus-name "$EVENT_BUS" \
+            --region "$AWS_REGION" \
+            --output json)"
+
+          TARGET_COUNT="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')"
+          ACTUAL_SNS_ARN="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')"
+
+          echo "Target count: $TARGET_COUNT"
+          echo "Actual target ARN: $ACTUAL_SNS_ARN"
+
+          [ "$TARGET_COUNT" -ge 1 ] || {
+            echo "ERROR: Low-stock EventBridge rule has no target."
+            exit 1
+          }
+
+          [ "$ACTUAL_SNS_ARN" = "$EXPECTED_SNS_ARN" ] || {
+            echo "ERROR: EventBridge target does not match CloudFormation SNS topic."
+            echo "Expected: $EXPECTED_SNS_ARN"
+            echo "Actual:   $ACTUAL_SNS_ARN"
+            exit 1
+          }
+
+          SUBSCRIPTION_COUNT="$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$EXPECTED_SNS_ARN" \
+            --region "$AWS_REGION" \
+            --query "length(Subscriptions)" \
+            --output text)"
+
+          echo "SNS subscription count: $SUBSCRIPTION_COUNT"
+
+          [ "$SUBSCRIPTION_COUNT" -ge 1 ] || {
+            echo "ERROR: Low-stock SNS topic has no subscription."
+            exit 1
+          }
+
+          echo "Checking SNS topic policy..."
+
+          TOPIC_POLICY="$(aws sns get-topic-attributes \
+            --topic-arn "$EXPECTED_SNS_ARN" \
+            --region "$AWS_REGION" \
+            --query "Attributes.Policy" \
+            --output text)"
+
+          POLICY_JSON="$(printf '%s' "$TOPIC_POLICY" | jq -c 'fromjson')"
+
+          ACCOUNT_ID="$(aws sts get-caller-identity \
+            --query Account \
+            --output text)"
+
+          RULE_ARN="arn:aws:events:${AWS_REGION}:${ACCOUNT_ID}:rule/${EVENT_BUS}/${RULE_NAME}"
+
+          POLICY_OK="$(printf '%s' "$POLICY_JSON" | jq -r \
+            --arg rule_arn "$RULE_ARN" \
+            --arg sns_arn "$EXPECTED_SNS_ARN" '
+              [
+                (.Statement // [])
+                | if type == "array" then .[] else . end
+                | select(.Effect == "Allow")
+                | select(
+                    (.Principal.Service == "events.amazonaws.com")
+                    or (
+                      (.Principal.Service | type) == "array"
+                      and (.Principal.Service | index("events.amazonaws.com")) != null
+                    )
+                  )
+                | select(
+                    (.Action == "sns:Publish")
+                    or (.Action == "SNS:Publish")
+                    or (
+                      (.Action | type) == "array"
+                      and (
+                        (.Action | index("sns:Publish")) != null
+                        or (.Action | index("SNS:Publish")) != null
+                      )
+                    )
+                  )
+                | select(.Resource == $sns_arn)
+                | select(
+                    (.Condition.ArnEquals."aws:SourceArn" // "") == $rule_arn
+                    or
+                    (.Condition.ArnLike."aws:SourceArn" // "") == $rule_arn
+                  )
+              ]
+              | length > 0
+            ')"
+
+          echo "SNS policy check: $POLICY_OK"
+
+          [ "$POLICY_OK" = "true" ] || {
+            echo "ERROR: SNS topic policy does not allow this EventBridge rule to publish."
+            echo "Current policy:"
+            printf '%s' "$POLICY_JSON" | jq .
+            exit 1
+          }
 
           echo ""
           echo "=========================================="
           echo "EVENTBRIDGE -> SNS CONFIGURATION PASSED"
           echo "=========================================="
-          echo "Rule is ENABLED."
-          echo "Event pattern matches the low-stock event."
-          echo "SNS target is attached to the rule."
-          echo "SNS subscription exists."
-          echo "SNS policy allows EventBridge to publish."
 
       - name: Automated EventBridge to SNS smoke test
         shell: bash
@@ -1443,15 +1419,13 @@ jobs:
           set -euo pipefail
 
           EVENT_BUS="cloudmart-dev-event-bus"
-          RULE_NAME="cloudmart-dev-low-stock"
+          TEST_PRODUCT_ID="CI-LOW-STOCK-$(date +%s)"
 
           echo "=========================================="
           echo "AUTOMATED EVENTBRIDGE -> SNS SMOKE TEST"
           echo "=========================================="
 
-          TEST_PRODUCT_ID="CI-LOW-STOCK-$(date +%s)"
-
-          TEST_ENTRY=$(jq -nc \
+          TEST_ENTRY="$(jq -nc \
             --arg bus "$EVENT_BUS" \
             --arg id "$TEST_PRODUCT_ID" \
             '[
@@ -1465,27 +1439,26 @@ jobs:
                   quantity:1
                 } | tojson)
               }
-            ]')
+            ]')"
 
-          echo "Sending test event to EventBridge bus: $EVENT_BUS"
           echo "EventBridge request:"
-          echo "$TEST_ENTRY" | jq .
+          printf '%s' "$TEST_ENTRY" | jq .
 
           # IMPORTANT:
-          # EventBusName is a field INSIDE the PutEvents entry.
-          # aws events put-events does NOT have an --event-bus-name option.
-          PUT_RESULT=$(aws events put-events \
+          # Do NOT use --event-bus-name with put-events.
+          # EventBusName is part of the PutEvents entry.
+          PUT_RESULT="$(aws events put-events \
             --region "$AWS_REGION" \
             --entries "$TEST_ENTRY" \
-            --output json)
+            --output json)"
 
           echo "EventBridge response:"
-          echo "$PUT_RESULT" | jq .
+          printf '%s' "$PUT_RESULT" | jq .
 
-          FAILED_COUNT=$(printf '%s' "$PUT_RESULT" | jq -r '.FailedEntryCount // 0')
-          EVENT_ID=$(printf '%s' "$PUT_RESULT" | jq -r '.Entries[0].EventId // empty')
-          ERROR_CODE=$(printf '%s' "$PUT_RESULT" | jq -r '.Entries[0].ErrorCode // empty')
-          ERROR_MESSAGE=$(printf '%s' "$PUT_RESULT" | jq -r '.Entries[0].ErrorMessage // empty')
+          FAILED_COUNT="$(printf '%s' "$PUT_RESULT" | jq -r '.FailedEntryCount // 0')"
+          EVENT_ID="$(printf '%s' "$PUT_RESULT" | jq -r '.Entries[0].EventId // empty')"
+          ERROR_CODE="$(printf '%s' "$PUT_RESULT" | jq -r '.Entries[0].ErrorCode // empty')"
+          ERROR_MESSAGE="$(printf '%s' "$PUT_RESULT" | jq -r '.Entries[0].ErrorMessage // empty')"
 
           if [ "$FAILED_COUNT" != "0" ] || [ -z "$EVENT_ID" ]; then
             echo "ERROR: EventBridge rejected the test event."
@@ -1495,47 +1468,9 @@ jobs:
           fi
 
           echo ""
-          echo "EventBridge accepted the test event."
-          echo "Event ID: $EVENT_ID"
-
-          echo ""
-          echo "Re-checking deployed rule and target after test event..."
-
-          FINAL_STATE=$(aws events describe-rule \
-            --name "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
-            --region "$AWS_REGION" \
-            --query "State" \
-            --output text)
-
-          FINAL_TARGET=$(aws events list-targets-by-rule \
-            --rule "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
-            --region "$AWS_REGION" \
-            --query "Targets[0].Arn" \
-            --output text)
-
-          echo "Rule state: $FINAL_STATE"
-          echo "Target ARN: $FINAL_TARGET"
-
-          if [ "$FINAL_STATE" != "ENABLED" ]; then
-            echo "ERROR: Rule became disabled after test event."
-            exit 1
-          fi
-
-          if [ -z "$FINAL_TARGET" ] || [ "$FINAL_TARGET" = "None" ]; then
-            echo "ERROR: SNS target is missing after test event."
-            exit 1
-          fi
-
-          echo ""
           echo "=========================================="
           echo "AUTOMATED EVENTBRIDGE -> SNS SMOKE TEST PASSED"
           echo "=========================================="
-          echo "EventBridge accepted the low-stock event."
-          echo "Low-stock rule is ENABLED."
-          echo "SNS target remains attached."
-          echo ""
-          echo "NOTE: EventBridge/CloudWatch delivery metrics are"
-          echo "asynchronous and are intentionally not used as a"
-          echo "hard CI pass/fail condition."
+          echo "EventBridge accepted the test event."
+          echo "Event ID: $EVENT_ID"
+          echo "CloudWatch metrics are not used as a hard pass/fail condition."
