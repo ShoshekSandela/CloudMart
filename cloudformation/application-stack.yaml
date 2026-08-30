@@ -144,19 +144,25 @@ Resources:
   # LOW-STOCK EVENTBRIDGE RULE
   # ==========================================================
 
-  LowStockEventRule:
+    LowStockEventRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartLowStockTopicPolicy
+
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: !Sub "Routes ${ProjectName} low-stock inventory events to SNS."
+
+      Description: Routes low-stock inventory events to SNS notifications.
+
       EventBusName: !Ref CloudMartEventBus
+
       State: ENABLED
 
       EventPattern:
         source:
           - cloudmart.product
         detail-type:
-          - "Inventory Changed"
+          - Inventory Changed
         detail:
           low_stock:
             - true
@@ -164,6 +170,35 @@ Resources:
       Targets:
         - Id: LowStockSNSTarget
           Arn: !Ref CloudMartLowStockTopic
+
+          InputTransformer:
+            InputPathsMap:
+              productId: "$.detail.product_id"
+              productName: "$.detail.product_name"
+              oldStock: "$.detail.old_stock"
+              newStock: "$.detail.new_stock"
+              threshold: "$.detail.low_stock_threshold"
+
+            InputTemplate: |
+              CLOUDMART LOW STOCK ALERT
+
+              A product has reached its low-stock threshold.
+
+              PRODUCT DETAILS
+              --------------------------------
+              Product ID       : <productId>
+              Product Name     : <productName>
+
+              Previous Stock   : <oldStock>
+              Current Stock    : <newStock>
+              Low-Stock Limit  : <threshold>
+
+              
+              ACTION REQUIRED
+              --------------------
+              Please review the inventory and replenish stock.
+
+              This notification was generated automatically by CloudMart.
 
   # ==========================================================
   # AUTHORIZER LAMBDA
