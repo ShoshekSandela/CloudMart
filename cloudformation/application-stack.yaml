@@ -1,22 +1,17 @@
 AWSTemplateFormatVersion: "2010-09-09"
-
 Transform: AWS::Serverless-2016-10-31
 
 Description: >
   CloudMart Application Stack.
-  API Gateway REST API with Lambda TOKEN Authorizer,
-  Product Lambda, EventBridge Event Bus and SNS low-stock
-  notifications integrated with the private RDS MySQL database.
+  API Gateway with Lambda TOKEN Authorizer, Product Lambda,
+  EventBridge inventory events and SNS low-stock notifications.
 
 Parameters:
 
   Environment:
     Type: String
     Default: dev
-    AllowedValues:
-      - dev
-      - test
-      - prod
+    AllowedValues: [dev, test, prod]
 
   ProjectName:
     Type: String
@@ -46,27 +41,21 @@ Parameters:
 
   TokenParameterName:
     Type: String
-    Default: /cloudmart/dev/auth/token
 
   DBHostParameterName:
     Type: String
-    Default: /cloudmart/dev/database/host
 
   DBPortParameterName:
     Type: String
-    Default: /cloudmart/dev/database/port
 
   DBNameParameterName:
     Type: String
-    Default: /cloudmart/dev/database/name
 
   DBUsernameParameterName:
     Type: String
-    Default: /cloudmart/dev/database/username
 
   DBPasswordParameterName:
     Type: String
-    Default: /cloudmart/dev/database/password
 
   NotificationEmail:
     Type: String
@@ -76,8 +65,7 @@ Parameters:
   ApiDeploymentVersion:
     Type: String
     Default: "1"
-    Description: >
-      Change this value to force a new API Gateway deployment.
+    Description: Change this value to force a new API Gateway deployment.
 
 Resources:
 
@@ -87,24 +75,16 @@ Resources:
 
   CloudMartRestApi:
     Type: AWS::ApiGateway::RestApi
-
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-api"
-
-      Description: !Sub >
-        CloudMart ${Environment} REST API
-
+      Description: !Sub "CloudMart ${Environment} REST API"
       EndpointConfiguration:
-        Types:
-          - REGIONAL
-
+        Types: [REGIONAL]
       Tags:
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
-
 
   # ==========================================================
   # EVENTBRIDGE EVENT BUS
@@ -112,17 +92,13 @@ Resources:
 
   CloudMartEventBus:
     Type: AWS::Events::EventBus
-
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-event-bus"
-
       Tags:
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
-
 
   # ==========================================================
   # SNS LOW-STOCK TOPIC
@@ -130,150 +106,39 @@ Resources:
 
   CloudMartLowStockTopic:
     Type: AWS::SNS::Topic
-
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
-
       Tags:
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
 
-
-  # ==========================================================
-  # SNS EMAIL SUBSCRIPTION
-  # ==========================================================
-
   CloudMartLowStockSubscription:
     Type: AWS::SNS::Subscription
-
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
-
       Protocol: email
-
       Endpoint: !Ref NotificationEmail
 
-
-  # ==========================================================
-  # SNS TOPIC POLICY
-  #
-  # Allows EventBridge to publish to SNS.
-  # ==========================================================
-
+  # EventBridge must be allowed to publish to the SNS topic.
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
-
     Properties:
-
       Topics:
         - !Ref CloudMartLowStockTopic
-
       PolicyDocument:
-
         Version: "2012-10-17"
-
         Statement:
-
           - Sid: AllowEventBridgePublish
-
             Effect: Allow
-
             Principal:
-              Service:
-                - events.amazonaws.com
-
-            Action:
-              - sns:Publish
-
-            Resource:
-              - !Ref CloudMartLowStockTopic
-
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref CloudMartLowStockTopic
             Condition:
               ArnEquals:
-                aws:SourceArn: !Sub
-                  - "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${EventBusName}/${RuleName}"
-                  - EventBusName: !Ref CloudMartEventBus
-                    RuleName: !Sub "${ProjectName}-${Environment}-low-stock"
-
-
-  # ==========================================================
-  # EVENTBRIDGE LOW-STOCK RULE
-  #
-  # IMPORTANT:
-  # Product Lambda publishes:
-  #
-  # Source:
-  #   cloudmart.product
-  #
-  # DetailType:
-  #   Inventory Changed
-  #
-  # Detail:
-  #   low_stock: true
-  #
-  # Therefore this rule must match those values.
-  #
-  # There is NO Inventory Event Lambda.
-  # EventBridge sends the event directly to SNS.
-  # ==========================================================
-
-  LowStockEventRule:
-    Type: AWS::Events::Rule
-
-    Properties:
-
-      Name: !Sub "${ProjectName}-${Environment}-low-stock"
-
-      Description: !Sub >
-        Routes ${ProjectName} low-stock inventory events to SNS.
-
-      EventBusName: !Ref CloudMartEventBus
-
-      State: ENABLED
-
-      EventPattern:
-
-        source:
-          - cloudmart.product
-
-        detail-type:
-          - "Inventory Changed"
-
-        detail:
-          low_stock:
-            - true
-
-      Targets:
-
-        - Id: LowStockSNSTarget
-
-          Arn: !Ref CloudMartLowStockTopic
-
-
-  # ==========================================================
-  # EVENTBRIDGE INVENTORY-CHANGED RULE
-  #
-  # There is NO Inventory Event Lambda.
-  # This rule only captures the inventory-changed event on the
-  # CloudMart event bus. The low-stock rule below handles the
-  # notification path directly to SNS.
-  # ==========================================================
-
-  InventoryChangedEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-inventory-changed"
-      Description: !Sub "Routes ${ProjectName} inventory change events."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - "Inventory Changed"
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
   # ==========================================================
   # AUTHORIZER LAMBDA
@@ -281,40 +146,20 @@ Resources:
 
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
-
     Properties:
-
       FunctionName: !Sub "${ProjectName}-${Environment}-authorizer"
-
       Runtime: python3.12
-
       Handler: index.lambda_handler
-
       CodeUri: ../lambdas/authorizer/
-
       Role: !Ref LambdaAuthorizerRoleArn
-
       Timeout: 5
-
       MemorySize: 128
-
       Environment:
-
         Variables:
-
-          TOKEN_PARAMETER_NAME:
-            !Ref TokenParameterName
-
+          TOKEN_PARAMETER_NAME: !Ref TokenParameterName
       Tags:
-
         Project: CloudMart
-
         Environment: !Ref Environment
-
-
-  # ==========================================================
-  # API GATEWAY -> AUTHORIZER PERMISSION
-  # ==========================================================
 
   LambdaAuthorizerPermission:
     Type: AWS::Lambda::Permission
@@ -323,36 +168,21 @@ Resources:
       FunctionName: !Ref LambdaAuthorizer
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub >
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/authorizers/*
-
-
-  # ==========================================================
-  # API GATEWAY TOKEN AUTHORIZER
-  # ==========================================================
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*"
 
   ApiGatewayAuthorizer:
     Type: AWS::ApiGateway::Authorizer
-
-    DependsOn:
-      - LambdaAuthorizerPermission
-
+    DependsOn: LambdaAuthorizerPermission
     Properties:
-
       Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
-
       RestApiId: !Ref CloudMartRestApi
-
       Type: TOKEN
-
       IdentitySource: method.request.header.Authorization
-
-      AuthorizerUri: !Sub
-        - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerLambdaArn}/invocations
-        - AuthorizerLambdaArn: !GetAtt LambdaAuthorizer.Arn
-
+      AuthorizerUri:
+        Fn::Sub:
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+          - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
       AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
-
 
   # ==========================================================
   # PRODUCT LAMBDA
@@ -360,83 +190,40 @@ Resources:
 
   ProductFunction:
     Type: AWS::Serverless::Function
-
     Metadata:
       BuildMethod: python3.12
-
     Properties:
-
       FunctionName: !Sub "${ProjectName}-${Environment}-product"
-
       Runtime: python3.12
-
       Handler: index.lambda_handler
-
       CodeUri: ../lambdas/product/
-
       Role: !Ref ProductLambdaRoleArn
-
       Timeout: 15
-
       MemorySize: 256
-
       VpcConfig:
-
         SecurityGroupIds:
           - !Ref LambdaSecurityGroupId
-
-        SubnetIds:
-          !Ref PrivateSubnetIds
-
+        SubnetIds: !Ref PrivateSubnetIds
       Environment:
-
         Variables:
-
-          DB_HOST_PARAMETER_NAME:
-            !Ref DBHostParameterName
-
-          DB_PORT_PARAMETER_NAME:
-            !Ref DBPortParameterName
-
-          DB_NAME_PARAMETER_NAME:
-            !Ref DBNameParameterName
-
-          DB_USERNAME_PARAMETER_NAME:
-            !Ref DBUsernameParameterName
-
-          DB_PASSWORD_PARAMETER_NAME:
-            !Ref DBPasswordParameterName
-
-          EVENT_BUS_NAME:
-            !Ref CloudMartEventBus
-
+          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
+          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
+          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
+          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
+          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
+          EVENT_BUS_NAME: !Ref CloudMartEventBus
       Tags:
-
         Project: CloudMart
-
         Environment: !Ref Environment
-
-
-  # ==========================================================
-  # API GATEWAY -> PRODUCT LAMBDA PERMISSION
-  # ==========================================================
 
   ProductLambdaPermission:
     Type: AWS::Lambda::Permission
-
     Properties:
-
       Action: lambda:InvokeFunction
-
       FunctionName: !Ref ProductFunction
-
       Principal: apigateway.amazonaws.com
-
       SourceAccount: !Ref AWS::AccountId
-
-      SourceArn: !Sub >
-        arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*/*
-
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
 
   # ==========================================================
   # /products
@@ -444,17 +231,10 @@ Resources:
 
   ProductsResource:
     Type: AWS::ApiGateway::Resource
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ParentId:
-        !GetAtt CloudMartRestApi.RootResourceId
-
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !GetAtt CloudMartRestApi.RootResourceId
       PathPart: products
-
 
   # ==========================================================
   # /products/{id}
@@ -462,352 +242,171 @@ Resources:
 
   ProductByIdResource:
     Type: AWS::ApiGateway::Resource
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ParentId:
-        !Ref ProductsResource
-
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !Ref ProductsResource
       PathPart: "{id}"
 
-
   # ==========================================================
-  # GET /products
+  # API METHODS
   # ==========================================================
 
   GetProductsMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductsResource
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductsResource
       HttpMethod: GET
-
       AuthorizationType: CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
-
         Type: AWS_PROXY
-
         IntegrationHttpMethod: POST
-
         Uri:
           Fn::Sub:
-            - >
-              arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-
-            - ProductLambdaArn:
-                !GetAtt ProductFunction.Arn
-
-
-  # ==========================================================
-  # POST /products
-  # ==========================================================
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
   PostProductsMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductsResource
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductsResource
       HttpMethod: POST
-
       AuthorizationType: CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
-
         Type: AWS_PROXY
-
         IntegrationHttpMethod: POST
-
         Uri:
           Fn::Sub:
-            - >
-              arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-
-            - ProductLambdaArn:
-                !GetAtt ProductFunction.Arn
-
-
-  # ==========================================================
-  # GET /products/{id}
-  # ==========================================================
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
   GetProductMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductByIdResource
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductByIdResource
       HttpMethod: GET
-
       AuthorizationType: CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
-
         Type: AWS_PROXY
-
         IntegrationHttpMethod: POST
-
         Uri:
           Fn::Sub:
-            - >
-              arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-
-            - ProductLambdaArn:
-                !GetAtt ProductFunction.Arn
-
-
-  # ==========================================================
-  # PUT /products/{id}
-  # ==========================================================
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
   PutProductMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductByIdResource
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductByIdResource
       HttpMethod: PUT
-
       AuthorizationType: CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
-
         Type: AWS_PROXY
-
         IntegrationHttpMethod: POST
-
         Uri:
           Fn::Sub:
-            - >
-              arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-
-            - ProductLambdaArn:
-                !GetAtt ProductFunction.Arn
-
-
-  # ==========================================================
-  # DELETE /products/{id}
-  # ==========================================================
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
   DeleteProductMethod:
     Type: AWS::ApiGateway::Method
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      ResourceId:
-        !Ref ProductByIdResource
-
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref ProductByIdResource
       HttpMethod: DELETE
-
       AuthorizationType: CUSTOM
-
-      AuthorizerId:
-        !Ref ApiGatewayAuthorizer
-
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
-
         Type: AWS_PROXY
-
         IntegrationHttpMethod: POST
-
         Uri:
           Fn::Sub:
-            - >
-              arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-
-            - ProductLambdaArn:
-                !GetAtt ProductFunction.Arn
-
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
   # ==========================================================
-  # API GATEWAY DEPLOYMENT
+  # API DEPLOYMENT
   # ==========================================================
 
   ApiGatewayDeployment:
     Type: AWS::ApiGateway::Deployment
-
     DependsOn:
-
       - ApiGatewayAuthorizer
-
       - GetProductsMethod
-
       - PostProductsMethod
-
       - GetProductMethod
-
       - PutProductMethod
-
       - DeleteProductMethod
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      Description: !Sub >
-        CloudMart ${Environment} API deployment ${ApiDeploymentVersion}
-
-
-  # ==========================================================
-  # API GATEWAY STAGE
-  # ==========================================================
+      RestApiId: !Ref CloudMartRestApi
+      Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"
 
   ApiGatewayStage:
     Type: AWS::ApiGateway::Stage
-
     Properties:
-
-      RestApiId:
-        !Ref CloudMartRestApi
-
-      DeploymentId:
-        !Ref ApiGatewayDeployment
-
-      StageName:
-        !Ref Environment
-
-      Description: !Sub >
-        CloudMart ${Environment} API Gateway stage
-
+      RestApiId: !Ref CloudMartRestApi
+      DeploymentId: !Ref ApiGatewayDeployment
+      StageName: !Ref Environment
+      Description: !Sub "CloudMart ${Environment} API Gateway stage"
       Tags:
-
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
-
-
-# ============================================================
-# OUTPUTS
-# ============================================================
 
 Outputs:
 
   RestApiId:
-
     Description: API Gateway REST API ID
-
-    Value:
-      !Ref CloudMartRestApi
-
+    Value: !Ref CloudMartRestApi
 
   RestApiUrl:
-
     Description: API Gateway base URL
-
-    Value: !Sub >
-      https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}
-
+    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
 
   ProductLambdaArn:
-
     Description: Product Lambda ARN
-
-    Value:
-      !GetAtt ProductFunction.Arn
-
+    Value: !GetAtt ProductFunction.Arn
 
   ProductLambdaName:
-
     Description: Product Lambda name
-
-    Value:
-      !Ref ProductFunction
-
+    Value: !Ref ProductFunction
 
   AuthorizerLambdaArn:
-
     Description: Lambda Authorizer ARN
-
-    Value:
-      !GetAtt LambdaAuthorizer.Arn
-
+    Value: !GetAtt LambdaAuthorizer.Arn
 
   ApiGatewayAuthorizerId:
-
     Description: API Gateway Authorizer ID
-
-    Value:
-      !Ref ApiGatewayAuthorizer
-
+    Value: !Ref ApiGatewayAuthorizer
 
   AuthorizerCacheTTL:
-
     Description: Authorizer cache TTL
-
-    Value:
-      !Ref AuthorizerCacheTTL
-
+    Value: !Ref AuthorizerCacheTTL
 
   EventBusName:
-
     Description: CloudMart EventBridge event bus name
-
-    Value:
-      !Ref CloudMartEventBus
-
+    Value: !Ref CloudMartEventBus
 
   EventBusArn:
-
     Description: CloudMart EventBridge event bus ARN
-
-    Value:
-      !GetAtt CloudMartEventBus.Arn
-
+    Value: !GetAtt CloudMartEventBus.Arn
 
   LowStockTopicArn:
-
     Description: CloudMart low-stock SNS topic ARN
+    Value: !Ref CloudMartLowStockTopic
 
-    Value:
-      !Ref CloudMartLowStockTopic
-
+  InventoryChangedRuleArn:
+    Description: Inventory change EventBridge rule ARN
+    Value: ""
 
   LowStockRuleArn:
-
     Description: Low-stock EventBridge rule ARN
-
-    Value:
-      !GetAtt LowStockEventRule.Arn
+    Value: !GetAtt LowStockEventRule.Arn
