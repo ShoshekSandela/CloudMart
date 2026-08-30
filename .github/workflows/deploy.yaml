@@ -1358,13 +1358,30 @@ jobs:
             exit 1
           fi
 
+          echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
+
+          # SNS returns the literal value "PendingConfirmation" for an
+          # unconfirmed email subscription. That value is NOT an ARN, so do
+          # not pass it to get-subscription-attributes.
+          if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+            echo "ERROR: SNS email subscription is pending confirmation."
+            echo "Open the SNS confirmation email sent to $NOTIFICATION_EMAIL"
+            echo "and click the confirmation link, then rerun the workflow."
+            exit 1
+          fi
+
+          if [[ "$EMAIL_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+            echo "ERROR: Invalid SNS subscription ARN returned."
+            echo "Actual value: $EMAIL_SUBSCRIPTION_ARN"
+            exit 1
+          fi
+
           PENDING_CONFIRMATION=$(aws sns get-subscription-attributes \
             --subscription-arn "$EMAIL_SUBSCRIPTION_ARN" \
             --region "$AWS_REGION" \
             --query "Attributes.PendingConfirmation" \
             --output text)
 
-          echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
           echo "PendingConfirmation: $PENDING_CONFIRMATION"
 
           if [ "$PENDING_CONFIRMATION" != "false" ]; then
