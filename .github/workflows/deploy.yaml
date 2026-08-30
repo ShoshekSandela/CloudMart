@@ -1287,10 +1287,7 @@ jobs:
             exit 1
           }
 
-          # TestEventPattern requires a complete EventBridge event envelope.
-          # The previous test event only contained source/detail-type/detail,
-          # which caused:
-          # ValidationException: Parameter Event is not valid.
+          # TestEventPattern requires a valid EventBridge event envelope.
           TEST_EVENT="$(jq -nc '{
             id:"00000000-0000-0000-0000-000000000001",
             source:"cloudmart.product",
@@ -1309,7 +1306,12 @@ jobs:
           echo "Test event:"
           printf '%s' "$TEST_EVENT" | jq .
 
-          PATTERN_MATCH="$(aws events test-event-pattern             --event-pattern "$EVENT_PATTERN"             --event "$TEST_EVENT"             --region "$AWS_REGION"             --query "Result"             --output text)"
+          PATTERN_MATCH="$(aws events test-event-pattern \
+            --event-pattern "$EVENT_PATTERN" \
+            --event "$TEST_EVENT" \
+            --region "$AWS_REGION" \
+            --query "Result" \
+            --output text)"
 
           echo "Pattern match result: $PATTERN_MATCH"
 
@@ -1317,8 +1319,6 @@ jobs:
             echo "ERROR: Test event does not match the deployed EventBridge rule."
             exit 1
           }
-
-          echo "EventBridge event pattern test passed."
 
           TARGET_JSON="$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
@@ -1359,13 +1359,24 @@ jobs:
 
           echo "Checking SNS topic policy..."
 
+          # IMPORTANT:
+          # The AWS CLI --query Attributes.Policy --output text already returns
+          # the SNS policy as raw JSON text. Do NOT pipe it through fromjson.
+          # fromjson expects a JSON STRING and fails when the input is already
+          # a JSON object, which caused:
+          # jq: error ... only strings can be parsed
           TOPIC_POLICY="$(aws sns get-topic-attributes \
             --topic-arn "$EXPECTED_SNS_ARN" \
             --region "$AWS_REGION" \
             --query "Attributes.Policy" \
             --output text)"
 
-          POLICY_JSON="$(printf '%s' "$TOPIC_POLICY" | jq -c 'fromjson')"
+          if ! printf '%s' "$TOPIC_POLICY" | jq -e . >/dev/null 2>&1; then
+            echo "ERROR: SNS topic policy returned by AWS is not valid JSON."
+            echo "Raw policy:"
+            printf '%s\n' "$TOPIC_POLICY"
+            exit 1
+          fi
 
           ACCOUNT_ID="$(aws sts get-caller-identity \
             --query Account \
@@ -1373,7 +1384,7 @@ jobs:
 
           RULE_ARN="arn:aws:events:${AWS_REGION}:${ACCOUNT_ID}:rule/${EVENT_BUS}/${RULE_NAME}"
 
-          POLICY_OK="$(printf '%s' "$POLICY_JSON" | jq -r \
+          POLICY_OK="$(printf '%s' "$TOPIC_POLICY" | jq -r \
             --arg rule_arn "$RULE_ARN" \
             --arg sns_arn "$EXPECTED_SNS_ARN" '
               [
@@ -1412,10 +1423,14 @@ jobs:
 
           [ "$POLICY_OK" = "true" ] || {
             echo "ERROR: SNS topic policy does not allow this EventBridge rule to publish."
+            echo "Expected rule ARN: $RULE_ARN"
+            echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
             echo "Current policy:"
-            printf '%s' "$POLICY_JSON" | jq .
+            printf '%s' "$TOPIC_POLICY" | jq .
             exit 1
           }
+
+          echo "SNS EventBridge publish permission verified."
 
           echo ""
           echo "=========================================="
