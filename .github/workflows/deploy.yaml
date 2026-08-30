@@ -1287,9 +1287,18 @@ jobs:
             exit 1
           }
 
+          # TestEventPattern requires a complete EventBridge event envelope.
+          # The previous test event only contained source/detail-type/detail,
+          # which caused:
+          # ValidationException: Parameter Event is not valid.
           TEST_EVENT="$(jq -nc '{
+            id:"00000000-0000-0000-0000-000000000001",
             source:"cloudmart.product",
             "detail-type":"Inventory Changed",
+            account:"000000000000",
+            time:"2026-01-01T00:00:00Z",
+            region:"us-east-1",
+            resources:[],
             detail:{
               low_stock:true,
               product_id:"CI-LOW-STOCK-PATTERN",
@@ -1297,12 +1306,10 @@ jobs:
             }
           }')"
 
-          PATTERN_MATCH="$(aws events test-event-pattern \
-            --event-pattern "$EVENT_PATTERN" \
-            --event "$TEST_EVENT" \
-            --region "$AWS_REGION" \
-            --query "Result" \
-            --output text)"
+          echo "Test event:"
+          printf '%s' "$TEST_EVENT" | jq .
+
+          PATTERN_MATCH="$(aws events test-event-pattern             --event-pattern "$EVENT_PATTERN"             --event "$TEST_EVENT"             --region "$AWS_REGION"             --query "Result"             --output text)"
 
           echo "Pattern match result: $PATTERN_MATCH"
 
@@ -1310,6 +1317,8 @@ jobs:
             echo "ERROR: Test event does not match the deployed EventBridge rule."
             exit 1
           }
+
+          echo "EventBridge event pattern test passed."
 
           TARGET_JSON="$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
