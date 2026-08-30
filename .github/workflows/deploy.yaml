@@ -1270,7 +1270,12 @@ jobs:
     name: Verify EventBridge SNS Target
     needs: deploy-application
     runs-on: ubuntu-latest
+
     steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -1282,26 +1287,228 @@ jobs:
         run: |
           set -euo pipefail
 
+          STACK_NAME="cloudmart-application-dev"
           RULE_NAME="cloudmart-dev-low-stock"
           EVENT_BUS="cloudmart-dev-event-bus"
 
-          echo "Checking inventory change EventBridge SNS target..."
+          echo "=========================================="
+          echo "VERIFY EVENTBRIDGE -> SNS"
+          echo "=========================================="
 
-          TARGETS=$(aws events list-targets-by-rule             --rule "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query 'Targets[*].Arn'             --output text)
+          echo "Checking CloudFormation stack..."
 
-          echo "Targets: $TARGETS"
+          STACK_STATUS="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text)"
 
-          if [ -z "$TARGETS" ] || [ "$TARGETS" = "None" ]; then
-            echo "ERROR: Inventory Change EventBridge rule has no target."
-            exit 1
-          fi
+          echo "Application stack status: $STACK_STATUS"
 
-          case "$TARGETS" in
-            *:sns:cloudmart-dev-low-stock*)
-              echo "EventBridge inventory change SNS target verified."
+          case "$STACK_STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
               ;;
             *)
-              echo "ERROR: Inventory change rule target is not the CloudMart SNS topic."
+              echo "ERROR: Application stack is not ready."
               exit 1
               ;;
           esac
+
+          EXPECTED_SNS_ARN="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
+            --output text)"
+
+          if [ -z "$EXPECTED_SNS_ARN" ] || [ "$EXPECTED_SNS_ARN" = "None" ]; then
+            echo "ERROR: LowStockTopicArn CloudFormation output is missing."
+            exit 1
+          fi
+
+          echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
+
+          echo ""
+          echo "Checking EventBridge rule..."
+
+          RULE_JSON="$(aws events describe-rule \
+            --name "$RULE_NAME" \
+            --event-bus-name "$EVENT_BUS" \
+            --region "$AWS_REGION" \
+            --output json)"
+
+          RULE_STATE="$(printf '%s' "$RULE_JSON" | jq -r '.State')"
+          EVENT_PATTERN="$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')"
+
+          echo "Rule state: $RULE_STATE"
+          echo "Event pattern: $EVENT_PATTERN"
+
+          if [ "$RULE_STATE" != "ENABLED" ]; then
+            echo "ERROR: EventBridge rule is not ENABLED."
+            exit 1
+          fi
+
+          if [[ "$EVENT_PATTERN" != *'"cloudmart.product"'* ]]; then
+            echo "ERROR: EventBridge rule does not contain source cloudmart.product."
+            exit 1
+          fi
+
+          if [[ "$EVENT_PATTERN" != *'"Inventory Changed"'* ]]; then
+            echo "ERROR: EventBridge rule does not contain detail-type Inventory Changed."
+            exit 1
+          fi
+
+          # The rule intentionally does NOT filter on low_stock=true.
+          # This allows both normal stock updates and low-stock updates
+          # to generate SNS email notifications.
+          if [[ "$EVENT_PATTERN" == *'"low_stock"'* ]]; then
+            echo "ERROR: EventBridge rule incorrectly filters on low_stock."
+            exit 1
+          fi
+
+          echo "EventBridge event pattern is correct."
+
+          echo ""
+          echo "Testing normal inventory-change event..."
+
+          NORMAL_EVENT="$(jq -nc '{
+            version:"0",
+            id:"00000000-0000-0000-0000-000000000001",
+            source:"cloudmart.product",
+            "detail-type":"Inventory Changed",
+            account:"000000000000",
+            time:"2026-01-01T00:00:00Z",
+            region:"us-east-1",
+            resources:[],
+            detail:{
+              low_stock:false,
+              product_id:"CI-NORMAL-STOCK",
+              quantity:10
+            }
+          }')"
+
+          NORMAL_MATCH="$(aws events test-event-pattern \
+            --event-pattern "$EVENT_PATTERN" \
+            --event "$NORMAL_EVENT" \
+            --region "$AWS_REGION" \
+            --query "Result" \
+            --output text)"
+
+          echo "Normal event match: $NORMAL_MATCH"
+
+          if [ "$NORMAL_MATCH" != "True" ]; then
+            echo "ERROR: Normal inventory-change event does not match the rule."
+            exit 1
+          fi
+
+          echo ""
+          echo "Testing low-stock inventory-change event..."
+
+          LOW_STOCK_EVENT="$(jq -nc '{
+            version:"0",
+            id:"00000000-0000-0000-0000-000000000002",
+            source:"cloudmart.product",
+            "detail-type":"Inventory Changed",
+            account:"000000000000",
+            time:"2026-01-01T00:00:00Z",
+            region:"us-east-1",
+            resources:[],
+            detail:{
+              low_stock:true,
+              product_id:"CI-LOW-STOCK",
+              quantity:3
+            }
+          }')"
+
+          LOW_STOCK_MATCH="$(aws events test-event-pattern \
+            --event-pattern "$EVENT_PATTERN" \
+            --event "$LOW_STOCK_EVENT" \
+            --region "$AWS_REGION" \
+            --query "Result" \
+            --output text)"
+
+          echo "Low-stock event match: $LOW_STOCK_MATCH"
+
+          if [ "$LOW_STOCK_MATCH" != "True" ]; then
+            echo "ERROR: Low-stock inventory-change event does not match the rule."
+            exit 1
+          fi
+
+          echo ""
+          echo "Checking EventBridge target..."
+
+          TARGET_COUNT="$(aws events list-targets-by-rule \
+            --rule "$RULE_NAME" \
+            --event-bus-name "$EVENT_BUS" \
+            --region "$AWS_REGION" \
+            --query "length(Targets)" \
+            --output text)"
+
+          echo "Target count: $TARGET_COUNT"
+
+          if ! [[ "$TARGET_COUNT" =~ ^[0-9]+$ ]] || [ "$TARGET_COUNT" -lt 1 ]; then
+            echo "ERROR: EventBridge rule has no target."
+            exit 1
+          fi
+
+          TARGET_ARN="$(aws events list-targets-by-rule \
+            --rule "$RULE_NAME" \
+            --event-bus-name "$EVENT_BUS" \
+            --region "$AWS_REGION" \
+            --query "Targets[0].Arn" \
+            --output text)"
+
+          echo "Actual target ARN: $TARGET_ARN"
+
+          # IMPORTANT:
+          # Compare the complete ARN directly. Do not use the previous
+          # shell wildcard case expression, which incorrectly rejected
+          # the valid SNS ARN.
+          if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
+            echo "ERROR: EventBridge target does not match the CloudMart SNS topic."
+            echo "Expected: $EXPECTED_SNS_ARN"
+            echo "Actual:   $TARGET_ARN"
+            exit 1
+          fi
+
+          echo "EventBridge target matches CloudMart SNS topic."
+
+          echo ""
+          echo "Checking SNS subscription..."
+
+          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$EXPECTED_SNS_ARN" \
+            --region "$AWS_REGION" \
+            --output json)"
+
+          SUBSCRIPTION_COUNT="$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq '.Subscriptions | length')"
+
+          echo "SNS subscription count: $SUBSCRIPTION_COUNT"
+
+          if [ "$SUBSCRIPTION_COUNT" -lt 1 ]; then
+            echo "ERROR: SNS topic has no subscription."
+            exit 1
+          fi
+
+          EMAIL_SUBSCRIPTION_FOUND="$(
+            printf '%s' "$SUBSCRIPTIONS_JSON" |
+              jq -r --arg email "${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}" '
+                [.Subscriptions[]
+                  | select(.Protocol == "email")
+                  | select(.Endpoint == $email)]
+                | length
+              '
+          )"
+
+          if [ "$EMAIL_SUBSCRIPTION_FOUND" -lt 1 ]; then
+            echo "ERROR: Expected email SNS subscription was not found."
+            echo "Check the SNS subscription and confirm the email address."
+            exit 1
+          fi
+
+          echo "Email SNS subscription exists."
+
+          echo ""
+          echo "=========================================="
+          echo "EVENTBRIDGE -> SNS VERIFICATION PASSED"
+          echo "=========================================="
+
