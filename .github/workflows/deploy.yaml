@@ -987,8 +987,10 @@ jobs:
 
           echo "Checking LowStockEventRule resource..."
 
-          if ! grep -q "LowStockEventRule:" "$TEMPLATE"; then
+          if ! grep -Eq '^[[:space:]]*LowStockEventRule:' "$TEMPLATE"; then
             echo "ERROR: LowStockEventRule is missing from generated SAM template."
+            echo "Resources found containing 'LowStock':"
+            grep -n "LowStock" "$TEMPLATE" || true
             exit 1
           fi
 
@@ -996,26 +998,35 @@ jobs:
 
           echo "Checking low_stock=true condition..."
 
-          if ! grep -q "low_stock:" "$TEMPLATE"; then
+          if ! grep -Eq '^[[:space:]]*low_stock:' "$TEMPLATE"; then
             echo "ERROR: low_stock condition is missing."
             exit 1
           fi
 
-          if ! grep -q -- "- true" "$TEMPLATE"; then
+          if ! grep -Eq -- '^[[:space:]]*- true[[:space:]]*$' "$TEMPLATE"; then
             echo "ERROR: low_stock=true condition is missing."
             exit 1
           fi
 
           echo "low_stock=true condition exists."
 
-          echo "Checking LowStockRuleArn reference..."
+          echo "Checking LowStockRuleArn output..."
 
-          if ! grep -q "LowStockRuleArn:" "$TEMPLATE"; then
+          if ! grep -Eq '^[[:space:]]*LowStockRuleArn:' "$TEMPLATE"; then
             echo "ERROR: LowStockRuleArn output is missing."
             exit 1
           fi
 
           echo "LowStockRuleArn output exists."
+
+          echo "Checking obsolete InventoryEventFunction references..."
+
+          if grep -q "InventoryEventFunction" "$TEMPLATE"; then
+            echo "ERROR: Obsolete InventoryEventFunction is still present in generated template."
+            exit 1
+          fi
+
+          echo "No obsolete InventoryEventFunction found."
 
           echo "Validating generated template..."
 
