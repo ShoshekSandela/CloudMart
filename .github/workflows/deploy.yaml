@@ -1217,6 +1217,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          STACK_NAME="cloudmart-application-dev"
           RULE_NAME="cloudmart-dev-low-stock"
           EVENT_BUS="cloudmart-dev-event-bus"
 
@@ -1239,34 +1240,27 @@ jobs:
             exit 1
           fi
 
-          case "$EVENT_PATTERN" in
-            *"cloudmart.product"* ) ;;
-            *) echo "ERROR: Inventory Change rule does not match source cloudmart.product."; exit 1 ;;
-          esac
+          RULE_SOURCE=$(printf '%s' "$EVENT_PATTERN" | jq -r '.source[0] // empty')
+          RULE_DETAIL_TYPE=$(printf '%s' "$EVENT_PATTERN" | jq -r '."detail-type"[0] // empty')
+          LOW_STOCK_FILTER=$(printf '%s' "$EVENT_PATTERN" | jq -c '.detail.low_stock // empty')
 
-          case "$EVENT_PATTERN" in
-            *"Inventory Changed"* ) ;;
-            *) echo "ERROR: Inventory Change rule does not match detail-type Inventory Changed."; exit 1 ;;
-          esac
-
-          # This is a LOW-STOCK alert rule.
-          # It must match low_stock == true.
-          # IMPORTANT: { "exists": true } is NOT sufficient because
-          # it also matches low_stock=false.
-          if [[ "$EVENT_PATTERN" != *'"low_stock"'* ]]; then
-            echo "ERROR: Low-stock EventBridge rule does not contain low_stock condition."
+          if [ "$RULE_SOURCE" != "cloudmart.product" ]; then
+            echo "ERROR: Rule source is incorrect: $RULE_SOURCE"
             exit 1
           fi
 
-          LOW_STOCK_FILTER=$(printf '%s' "$EVENT_PATTERN" | jq -c '.detail.low_stock // empty')
-
-          echo "low_stock filter: $LOW_STOCK_FILTER"
+          if [ "$RULE_DETAIL_TYPE" != "Inventory Changed" ]; then
+            echo "ERROR: Rule detail-type is incorrect: $RULE_DETAIL_TYPE"
+            exit 1
+          fi
 
           if [ "$LOW_STOCK_FILTER" != '[true]' ]; then
             echo "ERROR: Low-stock EventBridge rule must filter low_stock=true."
             echo "Actual low_stock filter: $LOW_STOCK_FILTER"
             exit 1
           fi
+
+          echo "EventBridge event pattern is correct."
 
           NORMAL_STOCK_EVENT="$(jq -nc '{
             version:"0",
@@ -1292,9 +1286,19 @@ jobs:
             detail:{low_stock:true,product_id:"CI-LOW-STOCK",quantity:1}
           }')"
 
-          NORMAL_MATCH=$(aws events test-event-pattern             --event-pattern "$EVENT_PATTERN"             --event "$NORMAL_STOCK_EVENT"             --region "$AWS_REGION"             --query 'Result'             --output text)
+          NORMAL_MATCH=$(aws events test-event-pattern \
+            --event-pattern "$EVENT_PATTERN" \
+            --event "$NORMAL_STOCK_EVENT" \
+            --region "$AWS_REGION" \
+            --query 'Result' \
+            --output text)
 
-          LOW_MATCH=$(aws events test-event-pattern             --event-pattern "$EVENT_PATTERN"             --event "$LOW_STOCK_EVENT"             --region "$AWS_REGION"             --query 'Result'             --output text)
+          LOW_MATCH=$(aws events test-event-pattern \
+            --event-pattern "$EVENT_PATTERN" \
+            --event "$LOW_STOCK_EVENT" \
+            --region "$AWS_REGION" \
+            --query 'Result' \
+            --output text)
 
           echo "Normal stock-change pattern match: $NORMAL_MATCH"
           echo "Low-stock pattern match: $LOW_MATCH"
@@ -1308,6 +1312,7 @@ jobs:
             echo "ERROR: Low-stock event does not match the low-stock rule."
             exit 1
           fi
+
           TARGET_JSON=$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
             --event-bus-name "$EVENT_BUS" \
@@ -1321,12 +1326,12 @@ jobs:
           echo "Target ARN: $TARGET_ARN"
 
           if [ "$TARGET_COUNT" -lt 1 ] || [ -z "$TARGET_ARN" ]; then
-            echo "ERROR: Inventory Change EventBridge rule has no target."
+            echo "ERROR: EventBridge rule has no target."
             exit 1
           fi
 
           EXPECTED_SNS_ARN=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
             --output text)
@@ -1339,19 +1344,20 @@ jobs:
           echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
 
           if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: Inventory Change EventBridge target does not match SNS topic."
+            echo "ERROR: EventBridge target does not match SNS topic."
             echo "Expected: $EXPECTED_SNS_ARN"
             echo "Actual:   $TARGET_ARN"
             exit 1
           fi
 
-          echo "Checking SNS email subscription..."
+          echo "EventBridge target matches CloudMart SNS topic."
 
           if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
-            echo "ERROR: NOTIFICATION_EMAIL environment variable is missing."
+            echo "ERROR: NOTIFICATION_EMAIL is not configured."
             exit 1
           fi
 
+          echo "Checking SNS email subscription..."
           echo "Expected notification email: $NOTIFICATION_EMAIL"
 
           SUBSCRIPTIONS_JSON=$(aws sns list-subscriptions-by-topic \
@@ -1360,24 +1366,27 @@ jobs:
             --output json)
 
           EMAIL_SUBSCRIPTION_ARN=$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r \
-            --arg email "$NOTIFICATION_EMAIL" \
-            '[.Subscriptions[] | select(.Protocol == "email" and .Endpoint == $email) | .SubscriptionArn][0] // empty')
+            --arg email "$NOTIFICATION_EMAIL" '
+              [.Subscriptions[]
+                | select(.Protocol == "email" and .Endpoint == $email)
+                | .SubscriptionArn][0] // empty')
 
           if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
             echo "ERROR: Email subscription was not found for $NOTIFICATION_EMAIL."
-            echo "The SNS subscription must exist and use the configured notification email."
             exit 1
           fi
 
           echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
 
-          # SNS returns the literal value "PendingConfirmation" for an
-          # unconfirmed email subscription. That value is NOT an ARN, so do
-          # not pass it to get-subscription-attributes.
           if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
             echo "ERROR: SNS email subscription is pending confirmation."
-            echo "Open the SNS confirmation email sent to $NOTIFICATION_EMAIL"
-            echo "and click the confirmation link, then rerun the workflow."
+            echo "Confirm the SNS email before rerunning the workflow."
+            exit 1
+          fi
+
+          if [ "$EMAIL_SUBSCRIPTION_ARN" = "Deleted" ]; then
+            echo "ERROR: SNS email subscription is deleted."
+            echo "The application stack must create a new email subscription."
             exit 1
           fi
 
@@ -1397,7 +1406,6 @@ jobs:
 
           if [ "$PENDING_CONFIRMATION" != "false" ]; then
             echo "ERROR: SNS email subscription is not confirmed."
-            echo "Confirm the AWS SNS subscription email before testing notifications."
             exit 1
           fi
 
@@ -1509,7 +1517,36 @@ jobs:
             exit 1
           fi
 
-          echo "SNS email subscription exists: $EMAIL_SUBSCRIPTION_ARN"
+          echo "SNS email subscription: $EMAIL_SUBSCRIPTION_ARN"
+
+          if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+            echo "ERROR: SNS email subscription is pending confirmation."
+            echo "Confirm the SNS email before continuing."
+            exit 1
+          fi
+
+          if [ "$EMAIL_SUBSCRIPTION_ARN" = "Deleted" ]; then
+            echo "ERROR: SNS email subscription is deleted."
+            echo "The application stack must create a new subscription."
+            exit 1
+          fi
+
+          if [[ "$EMAIL_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+            echo "ERROR: Invalid SNS subscription ARN returned."
+            echo "Actual value: $EMAIL_SUBSCRIPTION_ARN"
+            exit 1
+          fi
+
+          PENDING_CONFIRMATION=$(aws sns get-subscription-attributes             --subscription-arn "$EMAIL_SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query "Attributes.PendingConfirmation"             --output text)
+
+          echo "PendingConfirmation: $PENDING_CONFIRMATION"
+
+          if [ "$PENDING_CONFIRMATION" != "false" ]; then
+            echo "ERROR: SNS email subscription is not confirmed."
+            exit 1
+          fi
+
+          echo "Confirmed SNS email subscription exists: $EMAIL_SUBSCRIPTION_ARN"
 
       - name: Verify EventBridge inventory change SNS target
         shell: bash
