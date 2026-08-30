@@ -1121,51 +1121,89 @@ jobs:
 
 
       # =====================================================
-      # VERIFY INVENTORY CHANGED EVENTBRIDGE RULE
+      # VERIFY EVENTBRIDGE LOW-STOCK SNS TARGET
       # =====================================================
 
-      - name: Verify Inventory Changed EventBridge Rule
+      - name: Verify Low-Stock EventBridge Rule
         shell: bash
         run: |
           set -euo pipefail
 
-          RULE_NAME="cloudmart-dev-inventory-changed"
+          RULE_NAME="cloudmart-dev-low-stock"
           EVENT_BUS="cloudmart-dev-event-bus"
 
-          echo "Checking Inventory Changed EventBridge rule..."
+          echo "Checking Low-Stock EventBridge rule..."
 
-          RULE_STATE=$(aws events describe-rule             --name "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "State"             --output text)
+          RULE_JSON=$(aws events describe-rule \
+            --name "$RULE_NAME" \
+            --event-bus-name "$EVENT_BUS" \
+            --region "$AWS_REGION" \
+            --output json)
+
+          RULE_STATE=$(printf '%s' "$RULE_JSON" | jq -r '.State')
+          EVENT_PATTERN=$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')
 
           echo "Rule state: $RULE_STATE"
+          echo "Event pattern: $EVENT_PATTERN"
 
           if [ "$RULE_STATE" != "ENABLED" ]; then
-            echo "ERROR: Inventory Changed EventBridge rule is not enabled."
+            echo "ERROR: Low-stock EventBridge rule is not enabled."
             exit 1
           fi
 
-          EVENT_PATTERN=$(aws events describe-rule             --name "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query "EventPattern"             --output text)
-
-          echo "Event pattern: $EVENT_PATTERN"
-
           case "$EVENT_PATTERN" in
-            *"cloudmart.product"* )
-              ;;
-            *)
-              echo "ERROR: Inventory Changed rule does not match source cloudmart.product."
-              exit 1
-              ;;
+            *"cloudmart.product"* ) ;;
+            *) echo "ERROR: Low-stock rule does not match source cloudmart.product."; exit 1 ;;
           esac
 
           case "$EVENT_PATTERN" in
-            *"Inventory Changed"* )
-              ;;
-            *)
-              echo "ERROR: Inventory Changed rule does not match detail-type Inventory Changed."
-              exit 1
-              ;;
+            *"Inventory Changed"* ) ;;
+            *) echo "ERROR: Low-stock rule does not match detail-type Inventory Changed."; exit 1 ;;
           esac
 
-          echo "Inventory Changed EventBridge rule verified successfully."
+          case "$EVENT_PATTERN" in
+            *"low_stock"* ) ;;
+            *) echo "ERROR: Low-stock rule does not match detail.low_stock."; exit 1 ;;
+          esac
+
+          TARGET_JSON=$(aws events list-targets-by-rule \
+            --rule "$RULE_NAME" \
+            --event-bus-name "$EVENT_BUS" \
+            --region "$AWS_REGION" \
+            --output json)
+
+          TARGET_COUNT=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')
+          TARGET_ARN=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')
+
+          echo "Target count: $TARGET_COUNT"
+          echo "Target ARN: $TARGET_ARN"
+
+          if [ "$TARGET_COUNT" -lt 1 ] || [ -z "$TARGET_ARN" ]; then
+            echo "ERROR: Low-stock EventBridge rule has no target."
+            exit 1
+          fi
+
+          EXPECTED_SNS_ARN=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-application-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
+            --output text)
+
+          if [ -z "$EXPECTED_SNS_ARN" ] || [ "$EXPECTED_SNS_ARN" = "None" ]; then
+            echo "ERROR: LowStockTopicArn CloudFormation output is missing."
+            exit 1
+          fi
+
+          echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
+
+          if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
+            echo "ERROR: Low-stock EventBridge target does not match SNS topic."
+            echo "Expected: $EXPECTED_SNS_ARN"
+            echo "Actual:   $TARGET_ARN"
+            exit 1
+          fi
+
+          echo "Low-Stock EventBridge rule verified successfully."
 
 
       # =====================================================
