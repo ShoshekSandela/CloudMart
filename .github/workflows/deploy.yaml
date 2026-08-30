@@ -1291,14 +1291,33 @@ jobs:
 
           echo "Checking SNS email subscription..."
 
-          EMAIL_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic             --topic-arn "$EXPECTED_SNS_ARN"             --region "$AWS_REGION"             --query "Subscriptions[?Protocol=='email' && Endpoint==$email].SubscriptionArn | [0]"             --output text)
-
-          if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: Confirmed email subscription was not found."
+          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
+            echo "ERROR: NOTIFICATION_EMAIL environment variable is missing."
             exit 1
           fi
 
-          PENDING_CONFIRMATION=$(aws sns get-subscription-attributes             --subscription-arn "$EMAIL_SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query "Attributes.PendingConfirmation"             --output text)
+          echo "Expected notification email: $NOTIFICATION_EMAIL"
+
+          SUBSCRIPTIONS_JSON=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$EXPECTED_SNS_ARN" \
+            --region "$AWS_REGION" \
+            --output json)
+
+          EMAIL_SUBSCRIPTION_ARN=$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r \
+            --arg email "$NOTIFICATION_EMAIL" \
+            '[.Subscriptions[] | select(.Protocol == "email" and .Endpoint == $email) | .SubscriptionArn][0] // empty')
+
+          if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
+            echo "ERROR: Email subscription was not found for $NOTIFICATION_EMAIL."
+            echo "The SNS subscription must exist and use the configured notification email."
+            exit 1
+          fi
+
+          PENDING_CONFIRMATION=$(aws sns get-subscription-attributes \
+            --subscription-arn "$EMAIL_SUBSCRIPTION_ARN" \
+            --region "$AWS_REGION" \
+            --query "Attributes.PendingConfirmation" \
+            --output text)
 
           echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
           echo "PendingConfirmation: $PENDING_CONFIRMATION"
