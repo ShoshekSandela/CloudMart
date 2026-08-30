@@ -17,12 +17,57 @@ Parameters:
       - prod
     Description: Deployment environment
 
+  GitHubActionsRoleName:
+    Type: String
+    Default: CloudMart-GitHubActions-Role
+    Description: Existing IAM role used by GitHub Actions
+
 
 # =========================================================
 # RESOURCES
 # =========================================================
 
 Resources:
+
+  # =========================================================
+  # GITHUB ACTIONS SNS VERIFICATION PERMISSION
+  # =========================================================
+  #
+  # The deployment workflow verifies the low-stock SNS email
+  # subscription after deploying the application stack.
+  # GetSubscriptionAttributes requires permission on the
+  # subscription ARN (not only the topic ARN).
+  #
+  # This attaches the required read-only SNS permissions to the
+  # existing CloudMart-GitHubActions-Role.
+
+  GitHubActionsSnsVerificationPolicy:
+    Type: AWS::IAM::Policy
+
+    Properties:
+      PolicyName: CloudMartGitHubActionsSnsVerificationPolicy
+
+      Roles:
+        - !Ref GitHubActionsRoleName
+
+      PolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Sid: ListLowStockTopicSubscriptions
+            Effect: Allow
+            Action:
+              - sns:ListSubscriptionsByTopic
+            Resource:
+              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock
+
+          - Sid: GetLowStockSubscriptionAttributes
+            Effect: Allow
+            Action:
+              - sns:GetSubscriptionAttributes
+            Resource:
+              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock:*
 
   # =========================================================
   # PRODUCT LAMBDA ROLE
