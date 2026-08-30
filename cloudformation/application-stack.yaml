@@ -59,7 +59,7 @@ Parameters:
 
   NotificationEmail:
     Type: String
-    Description: Email address that receives low-stock notifications.
+    Description: Email address that receives inventory change notifications.
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
 
   ApiDeploymentVersion:
@@ -148,7 +148,7 @@ Resources:
     Type: AWS::Events::Rule
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: Routes inventory change events to SNS notifications.
+      Description: Routes every inventory change event to SNS notifications.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:

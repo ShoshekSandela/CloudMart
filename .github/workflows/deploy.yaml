@@ -1121,10 +1121,10 @@ jobs:
 
 
       # =====================================================
-      # VERIFY EVENTBRIDGE LOW-STOCK SNS TARGET
+      # VERIFY EVENTBRIDGE INVENTORY CHANGE SNS TARGET
       # =====================================================
 
-      - name: Verify Low-Stock EventBridge Rule
+      - name: Verify Inventory Change EventBridge Rule
         shell: bash
         run: |
           set -euo pipefail
@@ -1132,7 +1132,7 @@ jobs:
           RULE_NAME="cloudmart-dev-low-stock"
           EVENT_BUS="cloudmart-dev-event-bus"
 
-          echo "Checking Low-Stock EventBridge rule..."
+          echo "Checking Inventory Change EventBridge rule..."
 
           RULE_JSON=$(aws events describe-rule \
             --name "$RULE_NAME" \
@@ -1147,25 +1147,47 @@ jobs:
           echo "Event pattern: $EVENT_PATTERN"
 
           if [ "$RULE_STATE" != "ENABLED" ]; then
-            echo "ERROR: Low-stock EventBridge rule is not enabled."
+            echo "ERROR: Inventory Change EventBridge rule is not enabled."
             exit 1
           fi
 
           case "$EVENT_PATTERN" in
             *"cloudmart.product"* ) ;;
-            *) echo "ERROR: Low-stock rule does not match source cloudmart.product."; exit 1 ;;
+            *) echo "ERROR: Inventory Change rule does not match source cloudmart.product."; exit 1 ;;
           esac
 
           case "$EVENT_PATTERN" in
             *"Inventory Changed"* ) ;;
-            *) echo "ERROR: Low-stock rule does not match detail-type Inventory Changed."; exit 1 ;;
+            *) echo "ERROR: Inventory Change rule does not match detail-type Inventory Changed."; exit 1 ;;
           esac
 
-          case "$EVENT_PATTERN" in
-            *"low_stock"* ) ;;
-            *) echo "ERROR: Low-stock rule does not match detail.low_stock."; exit 1 ;;
-          esac
+           # The rule must match BOTH normal stock changes and low-stock
+           # changes. This is intentional: the SNS email should be sent
+           # whenever stock is updated, including when low_stock=true.
+           NORMAL_STOCK_EVENT='{"version":"0","id":"00000000-0000-0000-0000-000000000001","source":"cloudmart.product","detail-type":"Inventory Changed","account":"000000000000","time":"2026-01-01T00:00:00Z","region":"us-east-1","resources":[],"detail":{"low_stock":false,"product_id":"CI-NORMAL-STOCK","quantity":10}}'
+           LOW_STOCK_EVENT='{"version":"0","id":"00000000-0000-0000-0000-000000000002","source":"cloudmart.product","detail-type":"Inventory Changed","account":"000000000000","time":"2026-01-01T00:00:00Z","region":"us-east-1","resources":[],"detail":{"low_stock":true,"product_id":"CI-LOW-STOCK","quantity":1}}'
 
+           NORMAL_MATCH=$(aws events test-event-pattern \
+             --event-pattern "$EVENT_PATTERN" \
+             --event "$NORMAL_STOCK_EVENT" \
+             --region "$AWS_REGION" \
+             --query 'Result' \
+             --output text)
+
+           LOW_MATCH=$(aws events test-event-pattern \
+             --event-pattern "$EVENT_PATTERN" \
+             --event "$LOW_STOCK_EVENT" \
+             --region "$AWS_REGION" \
+             --query 'Result' \
+             --output text)
+
+           echo "Normal stock-change pattern match: $NORMAL_MATCH"
+           echo "Low-stock pattern match: $LOW_MATCH"
+
+           if [ "$NORMAL_MATCH" != "True" ] || [ "$LOW_MATCH" != "True" ]; then
+             echo "ERROR: EventBridge pattern must match both normal and low-stock inventory changes."
+             exit 1
+           fi
           TARGET_JSON=$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
             --event-bus-name "$EVENT_BUS" \
@@ -1179,7 +1201,7 @@ jobs:
           echo "Target ARN: $TARGET_ARN"
 
           if [ "$TARGET_COUNT" -lt 1 ] || [ -z "$TARGET_ARN" ]; then
-            echo "ERROR: Low-stock EventBridge rule has no target."
+            echo "ERROR: Inventory Change EventBridge rule has no target."
             exit 1
           fi
 
@@ -1197,13 +1219,13 @@ jobs:
           echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
 
           if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: Low-stock EventBridge target does not match SNS topic."
+            echo "ERROR: Inventory Change EventBridge target does not match SNS topic."
             echo "Expected: $EXPECTED_SNS_ARN"
             echo "Actual:   $TARGET_ARN"
             exit 1
           fi
 
-          echo "Low-Stock EventBridge rule verified successfully."
+          echo "Inventory Change EventBridge SNS rule verified successfully."
 
 
       # =====================================================
@@ -1255,7 +1277,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_GITHUB_ACTIONS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify EventBridge low-stock SNS target
+      - name: Verify EventBridge inventory change SNS target
         shell: bash
         run: |
           set -euo pipefail
@@ -1263,23 +1285,23 @@ jobs:
           RULE_NAME="cloudmart-dev-low-stock"
           EVENT_BUS="cloudmart-dev-event-bus"
 
-          echo "Checking low-stock EventBridge SNS target..."
+          echo "Checking inventory change EventBridge SNS target..."
 
           TARGETS=$(aws events list-targets-by-rule             --rule "$RULE_NAME"             --event-bus-name "$EVENT_BUS"             --region "$AWS_REGION"             --query 'Targets[*].Arn'             --output text)
 
           echo "Targets: $TARGETS"
 
           if [ -z "$TARGETS" ] || [ "$TARGETS" = "None" ]; then
-            echo "ERROR: Low-stock EventBridge rule has no target."
+            echo "ERROR: Inventory Change EventBridge rule has no target."
             exit 1
           fi
 
           case "$TARGETS" in
             *:sns:cloudmart-dev-low-stock*)
-              echo "EventBridge low-stock SNS target verified."
+              echo "EventBridge inventory change SNS target verified."
               ;;
             *)
-              echo "ERROR: Low-stock rule target is not the CloudMart low-stock SNS topic."
+              echo "ERROR: Inventory change rule target is not the CloudMart SNS topic."
               exit 1
               ;;
           esac
