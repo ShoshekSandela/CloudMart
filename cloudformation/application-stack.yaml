@@ -25,6 +25,10 @@ Parameters:
     Type: String
     Description: IAM role ARN for the Product Lambda.
 
+  InventoryEventLambdaRoleArn:
+    Type: String
+    Description: IAM role ARN for the Inventory Event Lambda.
+
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
     Description: Private subnet IDs used by Product Lambda.
@@ -141,66 +145,6 @@ Resources:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
   # ==========================================================
-  # LOW-STOCK EVENTBRIDGE RULE
-  # ==========================================================
-
-  LowStockEventRule:
-    Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartLowStockTopicPolicy
-
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-low-stock"
-
-      Description: Routes low-stock inventory events to SNS notifications.
-
-      EventBusName: !Ref CloudMartEventBus
-
-      State: ENABLED
-
-      EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - Inventory Changed
-        detail:
-          low_stock:
-            - true
-
-      Targets:
-        - Id: LowStockSNSTarget
-          Arn: !Ref CloudMartLowStockTopic
-
-          InputTransformer:
-            InputPathsMap:
-              productId: "$.detail.product_id"
-              productName: "$.detail.product_name"
-              oldStock: "$.detail.old_stock"
-              newStock: "$.detail.new_stock"
-              threshold: "$.detail.low_stock_threshold"
-
-            InputTemplate: |
-              CLOUDMART LOW STOCK ALERT
-
-              A product has reached its low-stock threshold.
-
-              PRODUCT DETAILS
-              --------------------------------
-              Product ID       : <productId>
-              Product Name     : <productName>
-
-              Previous Stock   : <oldStock>
-              Current Stock    : <newStock>
-              Low-Stock Limit  : <threshold>
-
-              
-              ACTION REQUIRED
-              --------------------
-              Please review the inventory and replenish stock.
-
-              This notification was generated automatically by CloudMart.
-
-  # ==========================================================
   # AUTHORIZER LAMBDA
   # ==========================================================
 
@@ -284,6 +228,77 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
+
+  # ==========================================================
+  # INVENTORY EVENT TARGET LAMBDA
+  # ==========================================================
+
+  InventoryEventFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-inventory-event"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/inventory-event/
+      Role: !Ref InventoryEventLambdaRoleArn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref CloudMartLowStockTopic
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  # ==========================================================
+  # EVENTBRIDGE INVENTORY CHANGE RULE
+  # ==========================================================
+
+  InventoryChangedEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-inventory-changed"
+      Description: !Sub "Routes ${ProjectName} inventory change events."
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.product
+        detail-type:
+          - Inventory Changed
+      Targets:
+        - Id: InventoryEventLambdaTarget
+          Arn: !GetAtt InventoryEventFunction.Arn
+
+  InventoryEventLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref InventoryEventFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt InventoryChangedEventRule.Arn
+
+  # Low-stock notification is a separate rule so normal inventory
+  # events can exist without generating an email.
+  LowStockEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-low-stock"
+      Description: !Sub "Sends low-stock inventory events to SNS."
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.product
+        detail-type:
+          - Inventory Changed
+        detail:
+          low_stock:
+            - true
+      Targets:
+        - Id: LowStockSnsTarget
+          Arn: !Ref CloudMartLowStockTopic
 
   # ==========================================================
   # /products
@@ -439,6 +454,10 @@ Outputs:
     Description: Product Lambda name
     Value: !Ref ProductFunction
 
+  InventoryEventLambdaArn:
+    Description: Inventory Event Lambda ARN
+    Value: !GetAtt InventoryEventFunction.Arn
+
   AuthorizerLambdaArn:
     Description: Lambda Authorizer ARN
     Value: !GetAtt LambdaAuthorizer.Arn
@@ -465,8 +484,9 @@ Outputs:
 
   InventoryChangedRuleArn:
     Description: Inventory change EventBridge rule ARN
-    Value: ""
+    Value: !GetAtt InventoryChangedEventRule.Arn
 
   LowStockRuleArn:
     Description: Low-stock EventBridge rule ARN
     Value: !GetAtt LowStockEventRule.Arn
+  
