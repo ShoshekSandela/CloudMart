@@ -1161,31 +1161,31 @@ jobs:
             *) echo "ERROR: Inventory Change rule does not match detail-type Inventory Changed."; exit 1 ;;
           esac
 
-           # The rule must match BOTH normal stock changes and low-stock
-           # changes. This is intentional: the SNS email should be sent
-           # whenever stock is updated, including when low_stock=true.
+           # This is a LOW-STOCK alert rule. It must require the
+           # low_stock field to exist. A normal event with low_stock=false
+           # must not match; a low-stock event with low_stock=true must match.
+           if [[ "$EVENT_PATTERN" != *'"low_stock"'* ]]; then
+             echo "ERROR: Low-stock EventBridge rule does not contain low_stock condition."
+             exit 1
+           fi
+
            NORMAL_STOCK_EVENT='{"version":"0","id":"00000000-0000-0000-0000-000000000001","source":"cloudmart.product","detail-type":"Inventory Changed","account":"000000000000","time":"2026-01-01T00:00:00Z","region":"us-east-1","resources":[],"detail":{"low_stock":false,"product_id":"CI-NORMAL-STOCK","quantity":10}}'
            LOW_STOCK_EVENT='{"version":"0","id":"00000000-0000-0000-0000-000000000002","source":"cloudmart.product","detail-type":"Inventory Changed","account":"000000000000","time":"2026-01-01T00:00:00Z","region":"us-east-1","resources":[],"detail":{"low_stock":true,"product_id":"CI-LOW-STOCK","quantity":1}}'
 
-           NORMAL_MATCH=$(aws events test-event-pattern \
-             --event-pattern "$EVENT_PATTERN" \
-             --event "$NORMAL_STOCK_EVENT" \
-             --region "$AWS_REGION" \
-             --query 'Result' \
-             --output text)
+           NORMAL_MATCH=$(aws events test-event-pattern              --event-pattern "$EVENT_PATTERN"              --event "$NORMAL_STOCK_EVENT"              --region "$AWS_REGION"              --query 'Result'              --output text)
 
-           LOW_MATCH=$(aws events test-event-pattern \
-             --event-pattern "$EVENT_PATTERN" \
-             --event "$LOW_STOCK_EVENT" \
-             --region "$AWS_REGION" \
-             --query 'Result' \
-             --output text)
+           LOW_MATCH=$(aws events test-event-pattern              --event-pattern "$EVENT_PATTERN"              --event "$LOW_STOCK_EVENT"              --region "$AWS_REGION"              --query 'Result'              --output text)
 
            echo "Normal stock-change pattern match: $NORMAL_MATCH"
            echo "Low-stock pattern match: $LOW_MATCH"
 
-           if [ "$NORMAL_MATCH" != "True" ] || [ "$LOW_MATCH" != "True" ]; then
-             echo "ERROR: EventBridge pattern must match both normal and low-stock inventory changes."
+           if [ "$NORMAL_MATCH" != "False" ]; then
+             echo "ERROR: Normal stock event incorrectly matches the low-stock rule."
+             exit 1
+           fi
+
+           if [ "$LOW_MATCH" != "True" ]; then
+             echo "ERROR: Low-stock event does not match the low-stock rule."
              exit 1
            fi
           TARGET_JSON=$(aws events list-targets-by-rule \
@@ -1357,11 +1357,10 @@ jobs:
             exit 1
           fi
 
-          # The rule intentionally does NOT filter on low_stock=true.
-          # This allows both normal stock updates and low-stock updates
-          # to generate SNS email notifications.
-          if [[ "$EVENT_PATTERN" == *'"low_stock"'* ]]; then
-            echo "ERROR: EventBridge rule incorrectly filters on low_stock."
+          # This is the low-stock alert rule, so the event pattern
+          # MUST contain the low_stock condition.
+          if [[ "$EVENT_PATTERN" != *'"low_stock"'* ]]; then
+            echo "ERROR: Low-stock EventBridge rule does not contain low_stock condition."
             exit 1
           fi
 
@@ -1395,8 +1394,8 @@ jobs:
 
           echo "Normal event match: $NORMAL_MATCH"
 
-          if [ "$NORMAL_MATCH" != "True" ]; then
-            echo "ERROR: Normal inventory-change event does not match the rule."
+          if [ "$NORMAL_MATCH" != "False" ]; then
+            echo "ERROR: Normal inventory-change event incorrectly matches the low-stock rule."
             exit 1
           fi
 
