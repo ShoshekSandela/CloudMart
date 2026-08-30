@@ -101,29 +101,29 @@ Resources:
   # SNS LOW-STOCK TOPIC
   # ==========================================================
 
-  CloudMartLowStockTopic:
+  CloudMartLowStockTopicV2:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
+      TopicName: !Sub "${ProjectName}-${Environment}-low-stock-v2"
       Tags:
         - Key: Project
           Value: CloudMart
         - Key: Environment
           Value: !Ref Environment
 
-  CloudMartLowStockSubscription:
+  CloudMartLowStockSubscriptionV2:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: !Ref CloudMartLowStockTopic
+      TopicArn: !Ref CloudMartLowStockTopicV2
       Protocol: email
       Endpoint: !Ref NotificationEmail
 
   # EventBridge must be allowed to publish to the SNS topic.
-  CloudMartLowStockTopicPolicy:
+  CloudMartLowStockTopicPolicyV2:
     Type: AWS::SNS::TopicPolicy
     Properties:
       Topics:
-        - !Ref CloudMartLowStockTopic
+        - !Ref CloudMartLowStockTopicV2
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -132,7 +132,7 @@ Resources:
             Principal:
               Service: events.amazonaws.com
             Action: sns:Publish
-            Resource: !Ref CloudMartLowStockTopic
+            Resource: !Ref CloudMartLowStockTopicV2
             Condition:
               ArnEquals:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
@@ -149,7 +149,7 @@ Resources:
   LowStockEventRule:
     Type: AWS::Events::Rule
     DependsOn:
-      - CloudMartLowStockTopicPolicy
+      - CloudMartLowStockTopicPolicyV2V2
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
       Description: Routes low-stock inventory events to SNS notifications.
@@ -165,7 +165,7 @@ Resources:
             - true
       Targets:
         - Id: LowStockSNSTarget
-          Arn: !Ref CloudMartLowStockTopic
+          Arn: !Ref CloudMartLowStockTopicV2
 
   # ==========================================================
   # AUTHORIZER LAMBDA
@@ -428,4 +428,4 @@ Outputs:
 
   LowStockTopicArn:
     Description: CloudMart low-stock SNS topic ARN
-    Value: !Ref CloudMartLowStockTopic
+    Value: !Ref CloudMartLowStockTopicV2
