@@ -140,11 +140,11 @@ Resources:
               ArnEquals:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
-      # ==========================================================
+  # ==========================================================
   # LOW-STOCK EVENTBRIDGE RULE
   # ==========================================================
 
-    LowStockEventRule:
+  LowStockEventRule:
     Type: AWS::Events::Rule
     DependsOn:
       - CloudMartLowStockTopicPolicy
