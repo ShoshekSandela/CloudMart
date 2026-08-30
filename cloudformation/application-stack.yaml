@@ -20,7 +20,6 @@ Parameters:
   LambdaAuthorizerRoleArn:
     Type: String
     Description: IAM role ARN for the Lambda Authorizer.
-
   ProductLambdaRoleArn:
     Type: String
     Description: IAM role ARN for the Product Lambda.
@@ -41,7 +40,6 @@ Parameters:
 
   TokenParameterName:
     Type: String
-
   DBHostParameterName:
     Type: String
 
@@ -59,7 +57,7 @@ Parameters:
 
   NotificationEmail:
     Type: String
-    Description: Email address that receives inventory change notifications.
+    Description: Email address that receives low-stock notifications.
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
 
   ApiDeploymentVersion:
@@ -72,7 +70,6 @@ Resources:
   # ==========================================================
   # API GATEWAY
   # ==========================================================
-
   CloudMartRestApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
@@ -141,7 +138,12 @@ Resources:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
   # ==========================================================
-  # EVENTBRIDGE INVENTORY -> SNS
+  # EVENTBRIDGE LOW-STOCK -> SNS
+  #
+  # IMPORTANT:
+  # Product Lambda publishes low_stock as a BOOLEAN.
+  # This rule must match low_stock == true, not merely
+  # the existence of the field.
   # ==========================================================
 
   LowStockEventRule:
@@ -150,7 +152,7 @@ Resources:
       - CloudMartLowStockTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: Routes every inventory change event to SNS notifications.
+      Description: Routes low-stock inventory events to SNS notifications.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -160,7 +162,7 @@ Resources:
           - Inventory Changed
         detail:
           low_stock:
-            - exists: true
+            - true
       Targets:
         - Id: LowStockSNSTarget
           Arn: !Ref CloudMartLowStockTopic
@@ -427,4 +429,3 @@ Outputs:
   LowStockTopicArn:
     Description: CloudMart low-stock SNS topic ARN
     Value: !Ref CloudMartLowStockTopic
-

@@ -1020,6 +1020,36 @@ jobs:
 
 
       # =====================================================
+      # VERIFY LOW-STOCK TEMPLATE BEFORE STACK VERIFICATION
+      # =====================================================
+
+      - name: Verify Low-Stock EventBridge Template
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEMPLATE="cloudformation/application-stack.yaml"
+
+          echo "Checking low-stock EventBridge template..."
+
+          if ! grep -qE '^\s+low_stock:' "$TEMPLATE"; then
+            echo "ERROR: low_stock filter is missing from application template."
+            exit 1
+          fi
+
+          if ! grep -qE '^\s+- true\s*$' "$TEMPLATE"; then
+            echo "ERROR: application template must contain low_stock: true."
+            exit 1
+          fi
+
+          if grep -qE 'exists:\s*true' "$TEMPLATE"; then
+            echo "ERROR: application template still contains exists:true."
+            exit 1
+          fi
+
+          echo "Low-stock EventBridge template is correct."
+
+      # =====================================================
       # VERIFY APPLICATION STACK
       # =====================================================
 
@@ -1126,6 +1156,8 @@ jobs:
 
       - name: Verify Inventory Change EventBridge Rule
         shell: bash
+        env:
+          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
         run: |
           set -euo pipefail
 
@@ -1161,33 +1193,65 @@ jobs:
             *) echo "ERROR: Inventory Change rule does not match detail-type Inventory Changed."; exit 1 ;;
           esac
 
-           # This is a LOW-STOCK alert rule. It must require the
-           # low_stock field to exist. A normal event with low_stock=false
-           # must not match; a low-stock event with low_stock=true must match.
-           if [[ "$EVENT_PATTERN" != *'"low_stock"'* ]]; then
-             echo "ERROR: Low-stock EventBridge rule does not contain low_stock condition."
-             exit 1
-           fi
+          # This is a LOW-STOCK alert rule.
+          # It must match low_stock == true.
+          # IMPORTANT: { "exists": true } is NOT sufficient because
+          # it also matches low_stock=false.
+          if [[ "$EVENT_PATTERN" != *'"low_stock"'* ]]; then
+            echo "ERROR: Low-stock EventBridge rule does not contain low_stock condition."
+            exit 1
+          fi
 
-           NORMAL_STOCK_EVENT='{"version":"0","id":"00000000-0000-0000-0000-000000000001","source":"cloudmart.product","detail-type":"Inventory Changed","account":"000000000000","time":"2026-01-01T00:00:00Z","region":"us-east-1","resources":[],"detail":{"low_stock":false,"product_id":"CI-NORMAL-STOCK","quantity":10}}'
-           LOW_STOCK_EVENT='{"version":"0","id":"00000000-0000-0000-0000-000000000002","source":"cloudmart.product","detail-type":"Inventory Changed","account":"000000000000","time":"2026-01-01T00:00:00Z","region":"us-east-1","resources":[],"detail":{"low_stock":true,"product_id":"CI-LOW-STOCK","quantity":1}}'
+          LOW_STOCK_FILTER=$(printf '%s' "$EVENT_PATTERN" | jq -c '.detail.low_stock // empty')
 
-           NORMAL_MATCH=$(aws events test-event-pattern              --event-pattern "$EVENT_PATTERN"              --event "$NORMAL_STOCK_EVENT"              --region "$AWS_REGION"              --query 'Result'              --output text)
+          echo "low_stock filter: $LOW_STOCK_FILTER"
 
-           LOW_MATCH=$(aws events test-event-pattern              --event-pattern "$EVENT_PATTERN"              --event "$LOW_STOCK_EVENT"              --region "$AWS_REGION"              --query 'Result'              --output text)
+          if [ "$LOW_STOCK_FILTER" != '[true]' ]; then
+            echo "ERROR: Low-stock EventBridge rule must filter low_stock=true."
+            echo "Actual low_stock filter: $LOW_STOCK_FILTER"
+            exit 1
+          fi
 
-           echo "Normal stock-change pattern match: $NORMAL_MATCH"
-           echo "Low-stock pattern match: $LOW_MATCH"
+          NORMAL_STOCK_EVENT="$(jq -nc '{
+            version:"0",
+            id:"00000000-0000-0000-0000-000000000001",
+            source:"cloudmart.product",
+            "detail-type":"Inventory Changed",
+            account:"000000000000",
+            time:"2026-01-01T00:00:00Z",
+            region:"us-east-1",
+            resources:[],
+            detail:{low_stock:false,product_id:"CI-NORMAL-STOCK",quantity:10}
+          }')"
 
-           if [ "$NORMAL_MATCH" != "False" ]; then
-             echo "ERROR: Normal stock event incorrectly matches the low-stock rule."
-             exit 1
-           fi
+          LOW_STOCK_EVENT="$(jq -nc '{
+            version:"0",
+            id:"00000000-0000-0000-0000-000000000002",
+            source:"cloudmart.product",
+            "detail-type":"Inventory Changed",
+            account:"000000000000",
+            time:"2026-01-01T00:00:00Z",
+            region:"us-east-1",
+            resources:[],
+            detail:{low_stock:true,product_id:"CI-LOW-STOCK",quantity:1}
+          }')"
 
-           if [ "$LOW_MATCH" != "True" ]; then
-             echo "ERROR: Low-stock event does not match the low-stock rule."
-             exit 1
-           fi
+          NORMAL_MATCH=$(aws events test-event-pattern             --event-pattern "$EVENT_PATTERN"             --event "$NORMAL_STOCK_EVENT"             --region "$AWS_REGION"             --query 'Result'             --output text)
+
+          LOW_MATCH=$(aws events test-event-pattern             --event-pattern "$EVENT_PATTERN"             --event "$LOW_STOCK_EVENT"             --region "$AWS_REGION"             --query 'Result'             --output text)
+
+          echo "Normal stock-change pattern match: $NORMAL_MATCH"
+          echo "Low-stock pattern match: $LOW_MATCH"
+
+          if [ "$NORMAL_MATCH" != "False" ]; then
+            echo "ERROR: Normal stock event incorrectly matches the low-stock rule."
+            exit 1
+          fi
+
+          if [ "$LOW_MATCH" != "True" ]; then
+            echo "ERROR: Low-stock event does not match the low-stock rule."
+            exit 1
+          fi
           TARGET_JSON=$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
             --event-bus-name "$EVENT_BUS" \
@@ -1225,6 +1289,27 @@ jobs:
             exit 1
           fi
 
+          echo "Checking SNS email subscription..."
+
+          EMAIL_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic             --topic-arn "$EXPECTED_SNS_ARN"             --region "$AWS_REGION"             --query "Subscriptions[?Protocol=='email' && Endpoint==$email].SubscriptionArn | [0]"             --output text)
+
+          if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
+            echo "ERROR: Confirmed email subscription was not found."
+            exit 1
+          fi
+
+          PENDING_CONFIRMATION=$(aws sns get-subscription-attributes             --subscription-arn "$EMAIL_SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query "Attributes.PendingConfirmation"             --output text)
+
+          echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
+          echo "PendingConfirmation: $PENDING_CONFIRMATION"
+
+          if [ "$PENDING_CONFIRMATION" != "false" ]; then
+            echo "ERROR: SNS email subscription is not confirmed."
+            echo "Confirm the AWS SNS subscription email before testing notifications."
+            exit 1
+          fi
+
+          echo "SNS email subscription is confirmed."
           echo "Inventory Change EventBridge SNS rule verified successfully."
 
 
