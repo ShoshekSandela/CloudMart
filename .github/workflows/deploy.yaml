@@ -1643,7 +1643,7 @@ jobs:
 
           EMAIL_SUBSCRIPTION_FOUND="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}" '
+              jq -r --arg email "$NOTIFICATION_EMAIL" '
                 [.Subscriptions[]
                   | select(.Protocol == "email")
                   | select(.Endpoint == $email)]
