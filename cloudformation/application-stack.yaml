@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Application Stack.
   API Gateway with Lambda TOKEN Authorizer, Product Lambda,
-  EventBridge inventory events and SNS low-stock notifications.
+  Order Lambda, EventBridge inventory events and SNS low-stock notifications.
 
 Parameters:
 
@@ -27,11 +27,11 @@ Parameters:
 
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Private subnet IDs used by Product Lambda.
+    Description: Private subnet IDs used by Product and Order Lambdas.
 
   LambdaSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
-    Description: Lambda security group used by Product Lambda.
+    Description: Lambda security group used by Product and Order Lambdas.
 
   AuthorizerCacheTTL:
     Type: Number
@@ -266,6 +266,52 @@ Resources:
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
 
   # ==========================================================
+  # ORDER LAMBDA
+  # ==========================================================
+  # Task 1: Create the Order Lambda.
+  # The same ProductLambdaRoleArn is reused for now so the
+  # existing deployment parameters/workflow do not need a new
+  # required parameter. We can introduce a dedicated Order
+  # Lambda role later when its required permissions are finalized.
+
+  OrderFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-order"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/order/
+      Role: !Ref ProductLambdaRoleArn
+      Timeout: 15
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        SubnetIds: !Ref PrivateSubnetIds
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
+          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
+          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
+          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
+          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
+          EVENT_BUS_NAME: !Ref CloudMartEventBus
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  OrderLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OrderFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
+
+  # ==========================================================
   # /products
   # ==========================================================
 
@@ -419,6 +465,14 @@ Outputs:
     Description: Product Lambda name
     Value: !Ref ProductFunction
 
+  OrderLambdaArn:
+    Description: Order Lambda ARN
+    Value: !GetAtt OrderFunction.Arn
+
+  OrderLambdaName:
+    Description: Order Lambda name
+    Value: !Ref OrderFunction
+
   AuthorizerLambdaArn:
     Description: Lambda Authorizer ARN
     Value: !GetAtt LambdaAuthorizer.Arn
@@ -442,7 +496,6 @@ Outputs:
   LowStockTopicArn:
     Description: CloudMart low-stock SNS topic ARN
     Value: !Ref CloudMartLowStockTopic
-
 
   LowStockRuleArn:
     Description: Low-stock EventBridge rule ARN
