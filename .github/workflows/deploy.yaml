@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - main
+      - feature/order-flow
     paths:
       - "cloudformation/network-stack.yaml"
       - "cloudformation/data-stack.yaml"
