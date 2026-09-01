@@ -485,7 +485,7 @@ def lambda_handler(event, context):
             "INTERNAL_SERVER_ERROR",
             "Unable to create order",
         )
-
+    
     finally:
         if connection:
             try:
