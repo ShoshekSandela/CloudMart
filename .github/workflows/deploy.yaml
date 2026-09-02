@@ -609,82 +609,6 @@ jobs:
 
 
       # =====================================================
-      # VERIFY ORDER EVENT / SNS CONFIGURATION
-      # =====================================================
-
-      - name: Verify Order EventBridge Rules and SNS Topic
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          EVENT_BUS="cloudmart-dev-event-bus"
-
-          echo "Checking CloudMart order event bus..."
-          aws events describe-event-bus \
-            --name "$EVENT_BUS" \
-            --region "$AWS_REGION"
-
-          for RULE in \
-            cloudmart-dev-order-placed \
-            cloudmart-dev-order-confirmed \
-            cloudmart-dev-order-canceled \
-            cloudmart-dev-order-failed
-          do
-            echo "Checking EventBridge rule: $RULE"
-
-            STATE=$(aws events describe-rule \
-              --name "$RULE" \
-              --event-bus-name "$EVENT_BUS" \
-              --region "$AWS_REGION" \
-              --query "State" \
-              --output text)
-
-            if [ "$STATE" != "ENABLED" ]; then
-              echo "ERROR: $RULE is not ENABLED. State=$STATE"
-              exit 1
-            fi
-
-            TARGET_COUNT=$(aws events list-targets-by-rule \
-              --rule "$RULE" \
-              --event-bus-name "$EVENT_BUS" \
-              --region "$AWS_REGION" \
-              --query "length(Targets)" \
-              --output text)
-
-            if [ "$TARGET_COUNT" -lt 1 ]; then
-              echo "ERROR: $RULE has no targets."
-              exit 1
-            fi
-
-            echo "$RULE is enabled with $TARGET_COUNT target(s)."
-          done
-
-          TOPIC_ARN=$(aws sns list-topics \
-            --region "$AWS_REGION" \
-            --query "Topics[?ends_with(TopicArn, ':cloudmart-dev-order-notifications')].TopicArn | [0]" \
-            --output text)
-
-          if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
-            echo "ERROR: CloudMart order notification SNS topic not found."
-            exit 1
-          fi
-
-          echo "Order notification SNS topic: $TOPIC_ARN"
-
-          SUB_COUNT=$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$TOPIC_ARN" \
-            --region "$AWS_REGION" \
-            --query "length(Subscriptions)" \
-            --output text)
-
-          if [ "$SUB_COUNT" -lt 1 ]; then
-            echo "ERROR: Order notification SNS topic has no subscription."
-            exit 1
-          fi
-
-          echo "Order event/SNS configuration verification passed."
-
-      # =====================================================
       # NOTIFICATION EMAIL
       # =====================================================
 
@@ -1287,6 +1211,160 @@ jobs:
 
           echo "Product Lambda verified successfully."
 
+
+      # =====================================================
+      # VERIFY ORDER LIFECYCLE EVENTBRIDGE RULES
+      # =====================================================
+
+      - name: Verify Order Lifecycle EventBridge Rules
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENT_BUS="cloudmart-dev-event-bus"
+
+          declare -A EXPECTED_TYPES=(
+            [cloudmart-dev-order-placed]="OrderPlaced"
+            [cloudmart-dev-order-confirmed]="OrderConfirmed"
+            [cloudmart-dev-order-canceled]="OrderCanceled"
+            [cloudmart-dev-order-failed]="OrderFailed"
+          )
+
+          for RULE_NAME in "${!EXPECTED_TYPES[@]}"; do
+            EXPECTED_TYPE="${EXPECTED_TYPES[$RULE_NAME]}"
+
+            echo "Checking EventBridge rule: $RULE_NAME"
+
+            RULE_JSON="$(aws events describe-rule \
+              --name "$RULE_NAME" \
+              --event-bus-name "$EVENT_BUS" \
+              --region "$AWS_REGION" \
+              --output json)"
+
+            RULE_STATE="$(printf '%s' "$RULE_JSON" | jq -r '.State')"
+            EVENT_PATTERN="$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')"
+            RULE_SOURCE="$(printf '%s' "$EVENT_PATTERN" | jq -r '.source[0] // empty')"
+            RULE_DETAIL_TYPE="$(printf '%s' "$EVENT_PATTERN" | jq -r '."detail-type"[0] // empty')"
+
+            echo "State: $RULE_STATE"
+            echo "Source: $RULE_SOURCE"
+            echo "Detail type: $RULE_DETAIL_TYPE"
+
+            if [ "$RULE_STATE" != "ENABLED" ]; then
+              echo "ERROR: $RULE_NAME is not enabled."
+              exit 1
+            fi
+
+            if [ "$RULE_SOURCE" != "cloudmart.order" ]; then
+              echo "ERROR: $RULE_NAME has incorrect source: $RULE_SOURCE"
+              exit 1
+            fi
+
+            if [ "$RULE_DETAIL_TYPE" != "$EXPECTED_TYPE" ]; then
+              echo "ERROR: $RULE_NAME expected $EXPECTED_TYPE but found $RULE_DETAIL_TYPE"
+              exit 1
+            fi
+
+            TARGET_COUNT="$(aws events list-targets-by-rule \
+              --rule "$RULE_NAME" \
+              --event-bus-name "$EVENT_BUS" \
+              --region "$AWS_REGION" \
+              --query 'length(Targets)' \
+              --output text)"
+
+            if ! [[ "$TARGET_COUNT" =~ ^[0-9]+$ ]] || [ "$TARGET_COUNT" -lt 1 ]; then
+              echo "ERROR: $RULE_NAME has no target."
+              exit 1
+            fi
+
+            echo "$RULE_NAME verified with $TARGET_COUNT target(s)."
+          done
+
+          echo "All four order lifecycle EventBridge rules are configured correctly."
+
+      # =====================================================
+      # VERIFY ORDER SNS EMAIL SUBSCRIPTION
+      # =====================================================
+
+      - name: Verify Order Notification SNS Subscription
+        env:
+          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-application-dev"
+
+          TOPIC_ARN="$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='OrderNotificationTopicArn'].OutputValue | [0]" \
+            --output text)"
+
+          if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
+            echo "ERROR: OrderNotificationTopicArn output is missing."
+            exit 1
+          fi
+
+          echo "Order notification topic: $TOPIC_ARN"
+
+          SUBSCRIPTION_ARN="$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --query "Subscriptions[?Protocol=='email' && Endpoint=='$NOTIFICATION_EMAIL'].SubscriptionArn | [0]" \
+            --output text)"
+
+          if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
+            echo "ERROR: Order notification email subscription is missing."
+            exit 1
+          fi
+
+          if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+            echo "ERROR: Order notification email subscription is pending confirmation."
+            exit 1
+          fi
+
+          if [[ "$SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+            echo "ERROR: Order notification subscription is not confirmed: $SUBSCRIPTION_ARN"
+            exit 1
+          fi
+
+          PENDING="$(aws sns get-subscription-attributes \
+            --subscription-arn "$SUBSCRIPTION_ARN" \
+            --region "$AWS_REGION" \
+            --query 'Attributes.PendingConfirmation' \
+            --output text)"
+
+          if [ "$PENDING" != "false" ]; then
+            echo "ERROR: Order notification SNS subscription is not confirmed."
+            exit 1
+          fi
+
+          echo "Order notification SNS email subscription is confirmed."
+
+      # =====================================================
+      # VERIFY ORDER LAMBDA CLOUDWATCH LOG GROUP
+      # =====================================================
+
+      - name: Verify Order Lambda CloudWatch Logs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LOG_GROUP="/aws/lambda/cloudmart-dev-order"
+
+          COUNT="$(aws logs describe-log-groups \
+            --log-group-name-prefix "$LOG_GROUP" \
+            --region "$AWS_REGION" \
+            --query "length(logGroups[?logGroupName=='$LOG_GROUP'])" \
+            --output text)"
+
+          if [ "$COUNT" -lt 1 ]; then
+            echo "ERROR: CloudWatch log group $LOG_GROUP was not found."
+            exit 1
+          fi
+
+          echo "CloudWatch log group exists: $LOG_GROUP"
 
       # =====================================================
       # VERIFY EVENTBRIDGE INVENTORY CHANGE SNS TARGET

@@ -189,15 +189,13 @@ Resources:
             Condition:
               ArnEquals:
                 aws:SourceArn:
-                  - !GetAtt OrderPlacedEventRule.Arn
-                  - !GetAtt OrderConfirmedEventRule.Arn
-                  - !GetAtt OrderCanceledEventRule.Arn
-                  - !GetAtt OrderFailedEventRule.Arn
+                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-placed"
+                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-confirmed"
+                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-canceled"
+                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-failed"
 
   OrderPlacedEventRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed"
       Description: Routes CloudMart OrderPlaced events to SNS.
@@ -221,8 +219,6 @@ Resources:
 
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
       Description: Routes CloudMart OrderConfirmed events to SNS.
@@ -246,8 +242,6 @@ Resources:
 
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled"
       Description: Routes CloudMart OrderCanceled events to SNS.
@@ -271,8 +265,6 @@ Resources:
 
   OrderFailedEventRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed"
       Description: Routes CloudMart OrderFailed events to SNS.

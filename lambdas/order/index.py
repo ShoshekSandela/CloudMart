@@ -455,8 +455,11 @@ def publish_order_placed_event(order):
         return False
 
 
-def publish_order_event(detail_type, order, extra_detail=None):
-    """Publish a CloudMart order lifecycle event to the configured EventBridge bus."""
+# ============================================================
+# ORDER LIFECYCLE EVENT HELPERS
+# ============================================================
+
+def publish_order_event(detail_type, order):
     detail = {
         "order_id": int(order["order_id"]),
         "customer_id": int(order["customer_id"]),
@@ -473,9 +476,6 @@ def publish_order_event(detail_type, order, extra_detail=None):
         ],
     }
 
-    if extra_detail:
-        detail.update(extra_detail)
-
     try:
         result = events.put_events(
             Entries=[
@@ -488,7 +488,7 @@ def publish_order_event(detail_type, order, extra_detail=None):
             ]
         )
 
-        if result.get("FailedEntryCount", 0) > 0:
+        if result.get("FailedEntryCount", 0) != 0:
             logger.error(
                 "%s event failed: %s",
                 detail_type,
@@ -508,7 +508,15 @@ def publish_order_event(detail_type, order, extra_detail=None):
         return False
 
 
-def get_order_for_update(connection, order_id):
+def update_order_status(connection, order_id, new_status):
+    allowed_statuses = {"CONFIRMED", "CANCELED", "FAILED"}
+    new_status = str(new_status).upper().strip()
+
+    if new_status not in allowed_statuses:
+        raise ValueError(
+            "status must be one of: CONFIRMED, CANCELED, FAILED"
+        )
+
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -516,44 +524,29 @@ def get_order_for_update(connection, order_id):
                 o.order_id,
                 o.customer_id,
                 o.status,
-                o.total_amount,
-                c.email AS customer_email
+                o.total_amount
             FROM orders o
-            LEFT JOIN customers c
-                ON c.customer_id = o.customer_id
             WHERE o.order_id = %s
             FOR UPDATE
             """,
             (order_id,),
         )
-        return cursor.fetchone()
+        existing = cursor.fetchone()
 
+        if not existing:
+            raise LookupError(f"Order {order_id} not found")
 
-def update_order_status(connection, order_id, new_status):
-    allowed = {"CONFIRMED", "CANCELED", "FAILED"}
+        old_status = existing["status"]
 
-    if new_status not in allowed:
-        raise ValueError(
-            "status must be one of: CONFIRMED, CANCELED, FAILED"
-        )
+        if old_status == new_status:
+            connection.commit()
+            return False
 
-    order = get_order_for_update(connection, order_id)
+        if old_status in {"CONFIRMED", "CANCELED", "FAILED"}:
+            raise ValueError(
+                f"Order {order_id} is already in terminal status {old_status}"
+            )
 
-    if not order:
-        raise LookupError(f"Order {order_id} not found")
-
-    old_status = order["status"]
-
-    if old_status == new_status:
-        return order, False
-
-    # Prevent invalid terminal-state transitions.
-    if old_status in {"CONFIRMED", "CANCELED", "FAILED"}:
-        raise ValueError(
-            f"Order {order_id} is already in terminal status {old_status}"
-        )
-
-    with connection.cursor() as cursor:
         cursor.execute(
             """
             UPDATE orders
@@ -573,27 +566,11 @@ def update_order_status(connection, order_id, new_status):
             )
             VALUES (%s, %s, %s, %s)
             """,
-            (
-                order_id,
-                old_status,
-                new_status,
-                "order-api",
-            ),
+            (order_id, old_status, new_status, "order-api"),
         )
 
     connection.commit()
-
-    updated = dict(order)
-    updated["status"] = new_status
-    return updated, True
-
-
-def get_order_event_payload(connection, order_id):
-    """Load the complete order payload used by lifecycle events."""
-    order = get_order_by_id(connection, order_id)
-    if not order:
-        raise LookupError(f"Order {order_id} not found")
-    return order
+    return True
 
 
 # ============================================================
@@ -932,47 +909,41 @@ def lambda_handler(event, context):
         # ----------------------------------------------------
         # POST /orders
         #
-        # Normal order creation publishes OrderPlaced.
-        # For lifecycle testing/operations, a payload may include:
-        #   {"order_id": 123, "status": "CONFIRMED"}
-        #   {"order_id": 123, "status": "CANCELED"}
-        #   {"order_id": 123, "status": "FAILED"}
+        # Normal request creates a PENDING order and publishes
+        # OrderPlaced. A lifecycle request can update an existing
+        # order with CONFIRMED, CANCELED or FAILED and publishes
+        # the matching EventBridge event.
         # ----------------------------------------------------
         if method == "POST":
 
             payload = parse_body(event)
 
             if payload.get("status") is not None:
-                order_id = payload.get("order_id")
-
                 try:
-                    order_id = int(order_id)
+                    order_id = int(payload.get("order_id"))
                 except (TypeError, ValueError) as exc:
-                    raise ValueError(
-                        "order_id must be an integer"
-                    ) from exc
+                    raise ValueError("order_id must be an integer") from exc
 
                 if order_id <= 0:
-                    raise ValueError(
-                        "order_id must be greater than zero"
-                    )
+                    raise ValueError("order_id must be greater than zero")
 
-                new_status = str(
-                    payload.get("status")
-                ).upper().strip()
+                new_status = str(payload.get("status")).upper().strip()
 
                 connection = get_db_connection()
-
-                updated_order, changed = update_order_status(
+                changed = update_order_status(
                     connection,
                     order_id,
                     new_status,
                 )
 
-                full_order = get_order_event_payload(
-                    connection,
-                    order_id,
-                )
+                order = get_order_by_id(connection, order_id)
+
+                if not order:
+                    return error_response(
+                        404,
+                        "ORDER_NOT_FOUND",
+                        f"Order {order_id} not found",
+                    )
 
                 if changed:
                     event_type = {
@@ -981,22 +952,15 @@ def lambda_handler(event, context):
                         "FAILED": "OrderFailed",
                     }[new_status]
 
-                    if not publish_order_event(
-                        event_type,
-                        full_order,
-                    ):
+                    if not publish_order_event(event_type, order):
                         logger.error(
-                            "Order %s status changed to %s but "
-                            "%s could not be published",
+                            "Order %s changed to %s but %s could not be published",
                             order_id,
                             new_status,
                             event_type,
                         )
 
-                return response(
-                    200,
-                    full_order,
-                )
+                return response(200, order)
 
             customer_id, items = (
                 validate_request(payload)
@@ -1010,19 +974,13 @@ def lambda_handler(event, context):
                 items,
             )
 
-            if not publish_order_placed_event(
-                order
-            ):
+            if not publish_order_placed_event(order):
                 logger.error(
-                    "Order %s created but "
-                    "OrderPlaced could not be published",
+                    "Order %s created but OrderPlaced could not be published",
                     order["order_id"],
                 )
 
-            return response(
-                201,
-                order,
-            )
+            return response(201, order)
 
         return error_response(
             405,
