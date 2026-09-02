@@ -476,6 +476,28 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
             - OrderLambdaArn: !GetAtt OrderFunction.Arn
 
+  # TASK: PUT /orders/{id}
+  # Updates an existing order, including item quantities.
+  PutOrderByIdMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - OrderLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref OrdersByIdResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
+            - OrderLambdaArn: !GetAtt OrderFunction.Arn
+
   ProductsResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -582,6 +604,7 @@ Resources:
       - PostOrdersMethod
       - GetOrdersMethod
       - GetOrderByIdMethod
+      - PutOrderByIdMethod
     Properties:
       RestApiId: !Ref CloudMartRestApi
       Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"
