@@ -34,7 +34,7 @@ def response(status_code, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,OPTIONS",
         },
         "body": json.dumps(body, default=json_serializer),
     }
@@ -573,6 +573,331 @@ def update_order_status(connection, order_id, new_status):
     return True
 
 
+
+# ============================================================
+# PUT /orders/{id}
+# ============================================================
+
+def update_order(connection, order_id, customer_id, items):
+    """
+    Replace the items of an existing PENDING order.
+
+    Inventory is adjusted by the quantity delta:
+      - quantity increased  -> deduct additional stock
+      - quantity decreased -> return stock
+      - item removed        -> return its previous stock
+      - new item            -> deduct stock
+
+    Everything is performed in one RDS transaction so the order,
+    order_items and inventory remain consistent.
+    """
+    with connection.cursor() as cursor:
+
+        cursor.execute(
+            """
+            SELECT
+                order_id,
+                customer_id,
+                status
+            FROM orders
+            WHERE order_id = %s
+            FOR UPDATE
+            """,
+            (order_id,),
+        )
+
+        existing_order = cursor.fetchone()
+
+        if not existing_order:
+            raise LookupError(
+                f"Order {order_id} not found"
+            )
+
+        if int(existing_order["customer_id"]) != int(customer_id):
+            raise ValueError(
+                f"Order {order_id} does not belong to customer {customer_id}"
+            )
+
+        if existing_order["status"] != "PENDING":
+            raise ValueError(
+                f"Order {order_id} can only be updated while status is PENDING"
+            )
+
+        requested_quantities = {}
+
+        for item in items:
+            product_id = int(item["product_id"])
+            quantity = int(item["quantity"])
+
+            requested_quantities[product_id] = (
+                requested_quantities.get(product_id, 0)
+                + quantity
+            )
+
+        cursor.execute(
+            """
+            SELECT
+                order_item_id,
+                product_id,
+                quantity,
+                unit_price
+            FROM order_items
+            WHERE order_id = %s
+            FOR UPDATE
+            """,
+            (order_id,),
+        )
+
+        existing_items = cursor.fetchall()
+
+        current_items = {
+            int(item["product_id"]): item
+            for item in existing_items
+        }
+
+        product_details = {}
+
+        # Validate and lock all requested products.
+        for product_id in requested_quantities:
+
+            cursor.execute(
+                """
+                SELECT
+                    product_id,
+                    name,
+                    price,
+                    stock_quantity,
+                    status,
+                    deleted_at
+                FROM products
+                WHERE product_id = %s
+                FOR UPDATE
+                """,
+                (product_id,),
+            )
+
+            product = cursor.fetchone()
+
+            if not product:
+                raise LookupError(
+                    f"Product {product_id} not found"
+                )
+
+            if product["deleted_at"] is not None:
+                raise LookupError(
+                    f"Product {product_id} is deleted"
+                )
+
+            if product["status"] != "ACTIVE":
+                raise ValueError(
+                    f"Product {product_id} is not active"
+                )
+
+            product_details[product_id] = product
+
+        # Lock removed products too because their stock is returned.
+        for product_id in current_items:
+            if product_id not in requested_quantities:
+
+                cursor.execute(
+                    """
+                    SELECT
+                        product_id,
+                        stock_quantity
+                    FROM products
+                    WHERE product_id = %s
+                    FOR UPDATE
+                    """,
+                    (product_id,),
+                )
+
+                product = cursor.fetchone()
+
+                if not product:
+                    raise LookupError(
+                        f"Product {product_id} not found"
+                    )
+
+                product_details[product_id] = product
+
+        # --------------------------------------------------------
+        # Apply inventory deltas.
+        # --------------------------------------------------------
+        for product_id, old_item in current_items.items():
+
+            old_quantity = int(old_item["quantity"])
+            new_quantity = int(
+                requested_quantities.get(product_id, 0)
+            )
+
+            delta = new_quantity - old_quantity
+
+            if delta > 0:
+                # Quantity increased: deduct only the difference.
+                cursor.execute(
+                    """
+                    UPDATE products
+                    SET stock_quantity = stock_quantity - %s
+                    WHERE product_id = %s
+                      AND stock_quantity >= %s
+                    """,
+                    (
+                        delta,
+                        product_id,
+                        delta,
+                    ),
+                )
+
+                if cursor.rowcount != 1:
+                    raise StockError(
+                        f"Insufficient stock for product {product_id}"
+                    )
+
+            elif delta < 0:
+                # Quantity decreased: return the difference to inventory.
+                cursor.execute(
+                    """
+                    UPDATE products
+                    SET stock_quantity = stock_quantity + %s
+                    WHERE product_id = %s
+                    """,
+                    (
+                        abs(delta),
+                        product_id,
+                    ),
+                )
+
+        # New products need their full requested quantity deducted.
+        for product_id, new_quantity in requested_quantities.items():
+
+            if product_id in current_items:
+                continue
+
+            cursor.execute(
+                """
+                UPDATE products
+                SET stock_quantity = stock_quantity - %s
+                WHERE product_id = %s
+                  AND stock_quantity >= %s
+                """,
+                (
+                    new_quantity,
+                    product_id,
+                    new_quantity,
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise StockError(
+                    f"Insufficient stock for product {product_id}"
+                )
+
+        # --------------------------------------------------------
+        # Update order_items.
+        # Existing items keep their original unit price.
+        # New items use the current product price.
+        # --------------------------------------------------------
+        total_amount = Decimal("0.00")
+
+        for product_id, quantity in requested_quantities.items():
+
+            if product_id in current_items:
+
+                order_item_id = current_items[product_id]["order_item_id"]
+
+                unit_price = Decimal(
+                    str(current_items[product_id]["unit_price"])
+                )
+
+                subtotal = unit_price * quantity
+
+                cursor.execute(
+                    """
+                    UPDATE order_items
+                    SET quantity = %s,
+                        subtotal = %s
+                    WHERE order_item_id = %s
+                      AND order_id = %s
+                    """,
+                    (
+                        quantity,
+                        subtotal,
+                        order_item_id,
+                        order_id,
+                    ),
+                )
+
+            else:
+
+                product = product_details[product_id]
+
+                unit_price = Decimal(
+                    str(product["price"])
+                )
+
+                subtotal = unit_price * quantity
+
+                cursor.execute(
+                    """
+                    INSERT INTO order_items (
+                        order_id,
+                        product_id,
+                        quantity,
+                        unit_price,
+                        subtotal
+                    )
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        order_id,
+                        product_id,
+                        quantity,
+                        unit_price,
+                        subtotal,
+                    ),
+                )
+
+            total_amount += unit_price * quantity
+
+        # Remove products no longer present in the request.
+        for product_id, old_item in current_items.items():
+
+            if product_id not in requested_quantities:
+
+                cursor.execute(
+                    """
+                    DELETE FROM order_items
+                    WHERE order_item_id = %s
+                      AND order_id = %s
+                    """,
+                    (
+                        old_item["order_item_id"],
+                        order_id,
+                    ),
+                )
+
+        cursor.execute(
+            """
+            UPDATE orders
+            SET total_amount = %s
+            WHERE order_id = %s
+            """,
+            (
+                total_amount,
+                order_id,
+            ),
+        )
+
+        connection.commit()
+
+        return {
+            "order_id": int(order_id),
+            "customer_id": int(customer_id),
+            "status": existing_order["status"],
+            "total_amount": total_amount,
+        }
+
+
 # ============================================================
 #  GET /orders/{id}
 # ============================================================
@@ -982,10 +1307,68 @@ def lambda_handler(event, context):
 
             return response(201, order)
 
+        # ----------------------------------------------------
+        # PUT /orders/{id}
+        #
+        # Updates an existing PENDING order. Inventory is
+        # adjusted by the quantity delta in the same RDS
+        # transaction as order_items and total_amount.
+        # ----------------------------------------------------
+        if method == "PUT":
+
+            order_id = get_path_order_id(event)
+
+            if order_id is None:
+                raise ValueError(
+                    "order id is required in the path"
+                )
+
+            payload = parse_body(event)
+
+            customer_id, items = validate_request(
+                payload
+            )
+
+            connection = get_db_connection()
+
+            update_order(
+                connection,
+                order_id,
+                customer_id,
+                items,
+            )
+
+            # Return the complete updated order.
+            order = get_order_by_id(
+                connection,
+                order_id,
+            )
+
+            if not order:
+                return error_response(
+                    404,
+                    "ORDER_NOT_FOUND",
+                    f"Order {order_id} not found",
+                )
+
+            logger.info(
+                "Order %s updated successfully: %s",
+                order_id,
+                json.dumps(
+                    order,
+                    default=json_serializer,
+                ),
+            )
+
+            return response(
+                200,
+                order,
+            )
+
         return error_response(
             405,
             "METHOD_NOT_ALLOWED",
-            "Supported methods are GET and POST",
+            "Supported methods are GET, POST, PUT, OPTIONS",
         )
 
     except ValueError as exc:
