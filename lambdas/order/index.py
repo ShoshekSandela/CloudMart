@@ -387,59 +387,239 @@ def publish_order_placed_event(order):
         return False
 
 
+def get_path_order_id(event):
+    """Return /orders/{id} path parameter, if present."""
+    path_params = event.get("pathParameters") or {}
+    value = path_params.get("id") or path_params.get("orderId")
+
+    if value is None:
+        path = event.get("path") or event.get("resource") or ""
+        parts = [part for part in path.split("/") if part]
+        if len(parts) >= 2 and parts[0].lower() == "orders":
+            value = parts[1]
+
+    if value is None or str(value).strip() == "":
+        return None
+
+    try:
+        order_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("order id must be an integer") from exc
+
+    if order_id <= 0:
+        raise ValueError("order id must be greater than zero")
+
+    return order_id
+
+
+def get_customer_id_from_query(event):
+    """Accept customerId (API contract) and customer_id for compatibility."""
+    query = event.get("queryStringParameters") or {}
+    value = query.get("customerId")
+    if value is None:
+        value = query.get("customer_id")
+
+    if value is None or str(value).strip() == "":
+        raise ValueError("customerId query parameter is required")
+
+    try:
+        customer_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("customerId must be an integer") from exc
+
+    if customer_id <= 0:
+        raise ValueError("customerId must be greater than zero")
+
+    return customer_id
+
+
+def get_order_by_id(connection, order_id):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                o.order_id,
+                o.customer_id,
+                c.name AS customer_name,
+                c.email AS customer_email,
+                o.status,
+                o.total_amount,
+                o.created_at,
+                o.updated_at
+            FROM orders o
+            LEFT JOIN customers c
+                ON c.customer_id = o.customer_id
+            WHERE o.order_id = %s
+            """,
+            (order_id,),
+        )
+        order = cursor.fetchone()
+
+        if not order:
+            return None
+
+        cursor.execute(
+            """
+            SELECT
+                oi.order_item_id,
+                oi.product_id,
+                p.name AS product_name,
+                oi.quantity,
+                oi.unit_price,
+                oi.subtotal
+            FROM order_items oi
+            LEFT JOIN products p
+                ON p.product_id = oi.product_id
+            WHERE oi.order_id = %s
+            ORDER BY oi.order_item_id
+            """,
+            (order_id,),
+        )
+        items = cursor.fetchall()
+
+        order["order_id"] = int(order["order_id"])
+        order["customer_id"] = int(order["customer_id"])
+        order["items"] = items
+
+        for item in order["items"]:
+            item["order_item_id"] = int(item["order_item_id"])
+            item["product_id"] = int(item["product_id"])
+            item["quantity"] = int(item["quantity"])
+
+        return order
+
+
+def get_orders_by_customer(connection, customer_id):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                o.order_id,
+                o.customer_id,
+                c.name AS customer_name,
+                c.email AS customer_email,
+                o.status,
+                o.total_amount,
+                o.created_at,
+                o.updated_at
+            FROM orders o
+            LEFT JOIN customers c
+                ON c.customer_id = o.customer_id
+            WHERE o.customer_id = %s
+            ORDER BY o.created_at DESC, o.order_id DESC
+            """,
+            (customer_id,),
+        )
+        orders = cursor.fetchall()
+
+        for order in orders:
+            order["order_id"] = int(order["order_id"])
+            order["customer_id"] = int(order["customer_id"])
+
+            cursor.execute(
+                """
+                SELECT
+                    oi.order_item_id,
+                    oi.product_id,
+                    p.name AS product_name,
+                    oi.quantity,
+                    oi.unit_price,
+                    oi.subtotal
+                FROM order_items oi
+                LEFT JOIN products p
+                    ON p.product_id = oi.product_id
+                WHERE oi.order_id = %s
+                ORDER BY oi.order_item_id
+                """,
+                (order["order_id"],),
+            )
+            order["items"] = cursor.fetchall()
+
+            for item in order["items"]:
+                item["order_item_id"] = int(item["order_item_id"])
+                item["product_id"] = int(item["product_id"])
+                item["quantity"] = int(item["quantity"])
+
+        return orders
+
+
 def lambda_handler(event, context):
     logger.info(
         "Order Lambda invoked: %s",
-        json.dumps(
-            event,
-            default=json_serializer,
-        ),
+        json.dumps(event, default=json_serializer),
     )
 
-    method = (
-        event.get("httpMethod") or ""
-    ).upper()
+    method = (event.get("httpMethod") or "").upper()
 
     if method == "OPTIONS":
-        return response(
-            200,
-            {"message": "OK"},
-        )
-
-    if method != "POST":
-        return error_response(
-            405,
-            "METHOD_NOT_ALLOWED",
-            "Only POST /orders is supported",
-        )
+        return response(200, {"message": "OK"})
 
     connection = None
 
     try:
-        payload = parse_body(event)
+        # GET /orders/{id}
+        if method == "GET":
+            path_order_id = get_path_order_id(event)
 
-        customer_id, items = validate_request(
-            payload
-        )
+            connection = get_db_connection()
 
-        connection = get_db_connection()
+            if path_order_id is not None:
+                order = get_order_by_id(
+                    connection,
+                    path_order_id,
+                )
 
-        order = create_order(
-            connection,
-            customer_id,
-            items,
-        )
+                if not order:
+                    return error_response(
+                        404,
+                        "ORDER_NOT_FOUND",
+                        f"Order {path_order_id} not found",
+                    )
 
-        if not publish_order_placed_event(order):
-            logger.error(
-                "Order %s was created but "
-                "OrderPlaced event could not be published",
-                order["order_id"],
+                return response(200, order)
+
+            # GET /orders?customerId=X
+            customer_id = get_customer_id_from_query(event)
+            orders = get_orders_by_customer(
+                connection,
+                customer_id,
             )
 
-        return response(
-            201,
-            order,
+            return response(
+                200,
+                {
+                    "customer_id": customer_id,
+                    "count": len(orders),
+                    "orders": orders,
+                },
+            )
+
+        # POST /orders
+        if method == "POST":
+            payload = parse_body(event)
+            customer_id, items = validate_request(payload)
+
+            connection = get_db_connection()
+
+            order = create_order(
+                connection,
+                customer_id,
+                items,
+            )
+
+            if not publish_order_placed_event(order):
+                logger.error(
+                    "Order %s was created but "
+                    "OrderPlaced event could not be published",
+                    order["order_id"],
+                )
+
+            return response(201, order)
+
+        return error_response(
+            405,
+            "METHOD_NOT_ALLOWED",
+            "Supported methods are GET and POST",
         )
 
     except ValueError as exc:
@@ -476,19 +656,18 @@ def lambda_handler(event, context):
         if connection:
             connection.rollback()
 
-        logger.exception(
-            "Order creation failed"
-        )
+        logger.exception("Order request failed")
 
         return error_response(
             500,
             "INTERNAL_SERVER_ERROR",
-            "Unable to create order",
+            "Unable to process order request",
         )
-    
+
     finally:
         if connection:
             try:
                 connection.close()
             except Exception:
                 pass
+
