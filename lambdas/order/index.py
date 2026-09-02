@@ -7,12 +7,17 @@ from datetime import date, datetime
 import boto3
 import pymysql
 
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
 events = boto3.client("events")
 
+
+# ============================================================
+# RESPONSE HELPERS
+# ============================================================
 
 def json_serializer(value):
     if isinstance(value, Decimal):
@@ -38,25 +43,47 @@ def response(status_code, body):
 def error_response(status_code, code, message):
     return response(
         status_code,
-        {"error": {"code": code, "message": message}},
+        {
+            "error": {
+                "code": code,
+                "message": message,
+            }
+        },
     )
 
 
+# ============================================================
+# SSM / RDS
+# ============================================================
+
 def get_parameter(name, decrypt=False):
-    return ssm.get_parameter(
+    result = ssm.get_parameter(
         Name=name,
         WithDecryption=decrypt,
-    )["Parameter"]["Value"]
+    )
+    return result["Parameter"]["Value"]
 
 
 def get_db_connection():
-    host = get_parameter(os.environ["DB_HOST_PARAMETER_NAME"])
-    port = int(get_parameter(os.environ["DB_PORT_PARAMETER_NAME"]))
-    database = get_parameter(os.environ["DB_NAME_PARAMETER_NAME"])
+    host = get_parameter(
+        os.environ["DB_HOST_PARAMETER_NAME"]
+    )
+
+    port = int(
+        get_parameter(
+            os.environ["DB_PORT_PARAMETER_NAME"]
+        )
+    )
+
+    database = get_parameter(
+        os.environ["DB_NAME_PARAMETER_NAME"]
+    )
+
     username = get_parameter(
         os.environ["DB_USERNAME_PARAMETER_NAME"],
         decrypt=True,
     )
+
     password = get_parameter(
         os.environ["DB_PASSWORD_PARAMETER_NAME"],
         decrypt=True,
@@ -75,6 +102,10 @@ def get_db_connection():
         autocommit=False,
     )
 
+
+# ============================================================
+# REQUEST PARSING / VALIDATION
+# ============================================================
 
 def parse_body(event):
     body = event.get("body")
@@ -95,12 +126,16 @@ def parse_body(event):
 
 def validate_request(payload):
     if not isinstance(payload, dict):
-        raise ValueError("Request body must be a JSON object")
+        raise ValueError(
+            "Request body must be a JSON object"
+        )
 
     customer_id = payload.get("customer_id")
 
     if customer_id is None:
-        raise ValueError("customer_id is required")
+        raise ValueError(
+            "customer_id is required"
+        )
 
     try:
         customer_id = int(customer_id)
@@ -121,7 +156,7 @@ def validate_request(payload):
             "items must be a non-empty array"
         )
 
-    validated_items = []
+    validated = []
 
     for item in items:
         if not isinstance(item, dict):
@@ -160,15 +195,19 @@ def validate_request(payload):
                 "quantity must be greater than zero"
             )
 
-        validated_items.append(
+        validated.append(
             {
                 "product_id": product_id,
                 "quantity": quantity,
             }
         )
 
-    return customer_id, validated_items
+    return customer_id, validated
 
+
+# ============================================================
+# POST /orders
+# ============================================================
 
 class StockError(Exception):
     pass
@@ -189,8 +228,11 @@ def create_order(connection, customer_id, items):
         customer = cursor.fetchone()
 
         if not customer:
-            raise LookupError("Customer not found")
+            raise LookupError(
+                "Customer not found"
+            )
 
+        # Combine duplicate product IDs.
         quantities = {}
 
         for item in items:
@@ -237,6 +279,9 @@ def create_order(connection, customer_id, items):
                     f"Product {product_id} is not active"
                 )
 
+            # Placement checks availability only.
+            # Inventory deduction belongs to the later
+            # OrderConfirmed flow.
             if int(product["stock_quantity"]) < quantity:
                 raise StockError(
                     f"Insufficient stock for product {product_id}"
@@ -358,7 +403,9 @@ def publish_order_placed_event(order):
                     "EventBusName": os.environ[
                         "EVENT_BUS_NAME"
                     ],
-                    "Detail": json.dumps(detail),
+                    "Detail": json.dumps(
+                        detail
+                    ),
                 }
             ]
         )
@@ -387,15 +434,35 @@ def publish_order_placed_event(order):
         return False
 
 
+# ============================================================
+# TASK 3: GET /orders/{id}
+# ============================================================
+
 def get_path_order_id(event):
-    """Return /orders/{id} path parameter, if present."""
     path_params = event.get("pathParameters") or {}
-    value = path_params.get("id") or path_params.get("orderId")
+
+    value = (
+        path_params.get("id")
+        or path_params.get("orderId")
+    )
 
     if value is None:
-        path = event.get("path") or event.get("resource") or ""
-        parts = [part for part in path.split("/") if part]
-        if len(parts) >= 2 and parts[0].lower() == "orders":
+        path = (
+            event.get("path")
+            or event.get("resource")
+            or ""
+        )
+
+        parts = [
+            part
+            for part in path.split("/")
+            if part
+        ]
+
+        if (
+            len(parts) >= 2
+            and parts[0].lower() == "orders"
+        ):
             value = parts[1]
 
     if value is None or str(value).strip() == "":
@@ -404,37 +471,21 @@ def get_path_order_id(event):
     try:
         order_id = int(value)
     except (TypeError, ValueError) as exc:
-        raise ValueError("order id must be an integer") from exc
+        raise ValueError(
+            "order id must be an integer"
+        ) from exc
 
     if order_id <= 0:
-        raise ValueError("order id must be greater than zero")
+        raise ValueError(
+            "order id must be greater than zero"
+        )
 
     return order_id
 
 
-def get_customer_id_from_query(event):
-    """Accept customerId (API contract) and customer_id for compatibility."""
-    query = event.get("queryStringParameters") or {}
-    value = query.get("customerId")
-    if value is None:
-        value = query.get("customer_id")
-
-    if value is None or str(value).strip() == "":
-        raise ValueError("customerId query parameter is required")
-
-    try:
-        customer_id = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("customerId must be an integer") from exc
-
-    if customer_id <= 0:
-        raise ValueError("customerId must be greater than zero")
-
-    return customer_id
-
-
 def get_order_by_id(connection, order_id):
     with connection.cursor() as cursor:
+
         cursor.execute(
             """
             SELECT
@@ -453,6 +504,7 @@ def get_order_by_id(connection, order_id):
             """,
             (order_id,),
         )
+
         order = cursor.fetchone()
 
         if not order:
@@ -475,22 +527,94 @@ def get_order_by_id(connection, order_id):
             """,
             (order_id,),
         )
+
         items = cursor.fetchall()
 
-        order["order_id"] = int(order["order_id"])
-        order["customer_id"] = int(order["customer_id"])
-        order["items"] = items
+        order["order_id"] = int(
+            order["order_id"]
+        )
 
-        for item in order["items"]:
-            item["order_item_id"] = int(item["order_item_id"])
-            item["product_id"] = int(item["product_id"])
-            item["quantity"] = int(item["quantity"])
+        order["customer_id"] = int(
+            order["customer_id"]
+        )
+
+        for item in items:
+            item["order_item_id"] = int(
+                item["order_item_id"]
+            )
+            item["product_id"] = int(
+                item["product_id"]
+            )
+            item["quantity"] = int(
+                item["quantity"]
+            )
+
+        order["items"] = items
 
         return order
 
 
-def get_orders_by_customer(connection, customer_id):
+# ============================================================
+# TASK 4: GET /orders?customerId=X
+# ============================================================
+
+def get_customer_id_from_query(event):
+    query = event.get(
+        "queryStringParameters"
+    ) or {}
+
+    value = query.get("customerId")
+
+    # Compatibility with customer_id if used.
+    if value is None:
+        value = query.get("customer_id")
+
+    if value is None or str(value).strip() == "":
+        raise ValueError(
+            "customerId query parameter is required"
+        )
+
+    try:
+        customer_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "customerId must be an integer"
+        ) from exc
+
+    if customer_id <= 0:
+        raise ValueError(
+            "customerId must be greater than zero"
+        )
+
+    return customer_id
+
+
+def get_orders_by_customer(
+    connection,
+    customer_id,
+):
     with connection.cursor() as cursor:
+
+        # First verify the customer exists.
+        cursor.execute(
+            """
+            SELECT
+                customer_id,
+                name,
+                email
+            FROM customers
+            WHERE customer_id = %s
+            """,
+            (customer_id,),
+        )
+
+        customer = cursor.fetchone()
+
+        if not customer:
+            raise LookupError(
+                f"Customer {customer_id} not found"
+            )
+
         cursor.execute(
             """
             SELECT
@@ -506,15 +630,24 @@ def get_orders_by_customer(connection, customer_id):
             LEFT JOIN customers c
                 ON c.customer_id = o.customer_id
             WHERE o.customer_id = %s
-            ORDER BY o.created_at DESC, o.order_id DESC
+            ORDER BY
+                o.created_at DESC,
+                o.order_id DESC
             """,
             (customer_id,),
         )
+
         orders = cursor.fetchall()
 
         for order in orders:
-            order["order_id"] = int(order["order_id"])
-            order["customer_id"] = int(order["customer_id"])
+
+            order["order_id"] = int(
+                order["order_id"]
+            )
+
+            order["customer_id"] = int(
+                order["customer_id"]
+            )
 
             cursor.execute(
                 """
@@ -533,37 +666,67 @@ def get_orders_by_customer(connection, customer_id):
                 """,
                 (order["order_id"],),
             )
-            order["items"] = cursor.fetchall()
 
-            for item in order["items"]:
-                item["order_item_id"] = int(item["order_item_id"])
-                item["product_id"] = int(item["product_id"])
-                item["quantity"] = int(item["quantity"])
+            items = cursor.fetchall()
+
+            for item in items:
+                item["order_item_id"] = int(
+                    item["order_item_id"]
+                )
+                item["product_id"] = int(
+                    item["product_id"]
+                )
+                item["quantity"] = int(
+                    item["quantity"]
+                )
+
+            order["items"] = items
 
         return orders
 
 
+# ============================================================
+# LAMBDA HANDLER
+# ============================================================
+
 def lambda_handler(event, context):
+
     logger.info(
         "Order Lambda invoked: %s",
-        json.dumps(event, default=json_serializer),
+        json.dumps(
+            event,
+            default=json_serializer,
+        ),
     )
 
-    method = (event.get("httpMethod") or "").upper()
+    method = (
+        event.get("httpMethod")
+        or ""
+    ).upper()
 
     if method == "OPTIONS":
-        return response(200, {"message": "OK"})
+        return response(
+            200,
+            {"message": "OK"},
+        )
 
     connection = None
 
     try:
+
+        # ----------------------------------------------------
         # GET /orders/{id}
+        # ----------------------------------------------------
         if method == "GET":
-            path_order_id = get_path_order_id(event)
+
+            path_order_id = get_path_order_id(
+                event
+            )
 
             connection = get_db_connection()
 
             if path_order_id is not None:
+
                 order = get_order_by_id(
                     connection,
                     path_order_id,
@@ -576,10 +739,20 @@ def lambda_handler(event, context):
                         f"Order {path_order_id} not found",
                     )
 
-                return response(200, order)
+                return response(
+                    200,
+                    order,
+                )
 
+            # ------------------------------------------------
             # GET /orders?customerId=X
-            customer_id = get_customer_id_from_query(event)
+            # ------------------------------------------------
+            customer_id = (
+                get_customer_id_from_query(
+                    event
+                )
+            )
+
             orders = get_orders_by_customer(
                 connection,
                 customer_id,
@@ -594,10 +767,16 @@ def lambda_handler(event, context):
                 },
             )
 
+        # ----------------------------------------------------
         # POST /orders
+        # ----------------------------------------------------
         if method == "POST":
+
             payload = parse_body(event)
-            customer_id, items = validate_request(payload)
+
+            customer_id, items = (
+                validate_request(payload)
+            )
 
             connection = get_db_connection()
 
@@ -607,14 +786,19 @@ def lambda_handler(event, context):
                 items,
             )
 
-            if not publish_order_placed_event(order):
+            if not publish_order_placed_event(
+                order
+            ):
                 logger.error(
-                    "Order %s was created but "
-                    "OrderPlaced event could not be published",
+                    "Order %s created but "
+                    "OrderPlaced could not be published",
                     order["order_id"],
                 )
 
-            return response(201, order)
+            return response(
+                201,
+                order,
+            )
 
         return error_response(
             405,
@@ -623,6 +807,7 @@ def lambda_handler(event, context):
         )
 
     except ValueError as exc:
+
         if connection:
             connection.rollback()
 
@@ -633,6 +818,7 @@ def lambda_handler(event, context):
         )
 
     except LookupError as exc:
+
         if connection:
             connection.rollback()
 
@@ -643,6 +829,7 @@ def lambda_handler(event, context):
         )
 
     except StockError as exc:
+
         if connection:
             connection.rollback()
 
@@ -652,11 +839,29 @@ def lambda_handler(event, context):
             str(exc),
         )
 
-    except Exception:
+    except pymysql.MySQLError as exc:
+
         if connection:
             connection.rollback()
 
-        logger.exception("Order request failed")
+        logger.exception(
+            "Order database operation failed"
+        )
+
+        return error_response(
+            500,
+            "DATABASE_ERROR",
+            "Database operation failed",
+        )
+
+    except Exception:
+
+        if connection:
+            connection.rollback()
+
+        logger.exception(
+            "Order request failed"
+        )
 
         return error_response(
             500,
@@ -665,9 +870,12 @@ def lambda_handler(event, context):
         )
 
     finally:
+
         if connection:
+
             try:
                 connection.close()
             except Exception:
-                pass
-
+                logger.exception(
+                    "Failed to close database connection"
+                )
