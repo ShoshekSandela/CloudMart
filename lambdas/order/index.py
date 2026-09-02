@@ -455,6 +455,147 @@ def publish_order_placed_event(order):
         return False
 
 
+def publish_order_event(detail_type, order, extra_detail=None):
+    """Publish a CloudMart order lifecycle event to the configured EventBridge bus."""
+    detail = {
+        "order_id": int(order["order_id"]),
+        "customer_id": int(order["customer_id"]),
+        "status": order.get("status"),
+        "total_amount": float(order["total_amount"]),
+        "items": [
+            {
+                "product_id": int(item["product_id"]),
+                "quantity": int(item["quantity"]),
+                "unit_price": float(item["unit_price"]),
+                "subtotal": float(item["subtotal"]),
+            }
+            for item in (order.get("items") or [])
+        ],
+    }
+
+    if extra_detail:
+        detail.update(extra_detail)
+
+    try:
+        result = events.put_events(
+            Entries=[
+                {
+                    "Source": "cloudmart.order",
+                    "DetailType": detail_type,
+                    "EventBusName": os.environ["EVENT_BUS_NAME"],
+                    "Detail": json.dumps(detail),
+                }
+            ]
+        )
+
+        if result.get("FailedEntryCount", 0) > 0:
+            logger.error(
+                "%s event failed: %s",
+                detail_type,
+                json.dumps(result, default=json_serializer),
+            )
+            return False
+
+        logger.info(
+            "%s event published: %s",
+            detail_type,
+            json.dumps(detail, default=json_serializer),
+        )
+        return True
+
+    except Exception:
+        logger.exception("Unable to publish %s event", detail_type)
+        return False
+
+
+def get_order_for_update(connection, order_id):
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                o.order_id,
+                o.customer_id,
+                o.status,
+                o.total_amount,
+                c.email AS customer_email
+            FROM orders o
+            LEFT JOIN customers c
+                ON c.customer_id = o.customer_id
+            WHERE o.order_id = %s
+            FOR UPDATE
+            """,
+            (order_id,),
+        )
+        return cursor.fetchone()
+
+
+def update_order_status(connection, order_id, new_status):
+    allowed = {"CONFIRMED", "CANCELED", "FAILED"}
+
+    if new_status not in allowed:
+        raise ValueError(
+            "status must be one of: CONFIRMED, CANCELED, FAILED"
+        )
+
+    order = get_order_for_update(connection, order_id)
+
+    if not order:
+        raise LookupError(f"Order {order_id} not found")
+
+    old_status = order["status"]
+
+    if old_status == new_status:
+        return order, False
+
+    # Prevent invalid terminal-state transitions.
+    if old_status in {"CONFIRMED", "CANCELED", "FAILED"}:
+        raise ValueError(
+            f"Order {order_id} is already in terminal status {old_status}"
+        )
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            UPDATE orders
+            SET status = %s
+            WHERE order_id = %s
+            """,
+            (new_status, order_id),
+        )
+
+        cursor.execute(
+            """
+            INSERT INTO order_status_history (
+                order_id,
+                old_status,
+                new_status,
+                changed_by
+            )
+            VALUES (%s, %s, %s, %s)
+            """,
+            (
+                order_id,
+                old_status,
+                new_status,
+                "order-api",
+            ),
+        )
+
+    connection.commit()
+
+    updated = dict(order)
+    updated["status"] = new_status
+    return updated, True
+
+
+def get_order_event_payload(connection, order_id):
+    """Load the complete order payload used by lifecycle events."""
+    order = get_order_by_id(connection, order_id)
+    if not order:
+        raise LookupError(f"Order {order_id} not found")
+    return order
+
+
 # ============================================================
 #  GET /orders/{id}
 # ============================================================
@@ -790,10 +931,72 @@ def lambda_handler(event, context):
 
         # ----------------------------------------------------
         # POST /orders
+        #
+        # Normal order creation publishes OrderPlaced.
+        # For lifecycle testing/operations, a payload may include:
+        #   {"order_id": 123, "status": "CONFIRMED"}
+        #   {"order_id": 123, "status": "CANCELED"}
+        #   {"order_id": 123, "status": "FAILED"}
         # ----------------------------------------------------
         if method == "POST":
 
             payload = parse_body(event)
+
+            if payload.get("status") is not None:
+                order_id = payload.get("order_id")
+
+                try:
+                    order_id = int(order_id)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(
+                        "order_id must be an integer"
+                    ) from exc
+
+                if order_id <= 0:
+                    raise ValueError(
+                        "order_id must be greater than zero"
+                    )
+
+                new_status = str(
+                    payload.get("status")
+                ).upper().strip()
+
+                connection = get_db_connection()
+
+                updated_order, changed = update_order_status(
+                    connection,
+                    order_id,
+                    new_status,
+                )
+
+                full_order = get_order_event_payload(
+                    connection,
+                    order_id,
+                )
+
+                if changed:
+                    event_type = {
+                        "CONFIRMED": "OrderConfirmed",
+                        "CANCELED": "OrderCanceled",
+                        "FAILED": "OrderFailed",
+                    }[new_status]
+
+                    if not publish_order_event(
+                        event_type,
+                        full_order,
+                    ):
+                        logger.error(
+                            "Order %s status changed to %s but "
+                            "%s could not be published",
+                            order_id,
+                            new_status,
+                            event_type,
+                        )
+
+                return response(
+                    200,
+                    full_order,
+                )
 
             customer_id, items = (
                 validate_request(payload)

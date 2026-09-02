@@ -609,6 +609,82 @@ jobs:
 
 
       # =====================================================
+      # VERIFY ORDER EVENT / SNS CONFIGURATION
+      # =====================================================
+
+      - name: Verify Order EventBridge Rules and SNS Topic
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EVENT_BUS="cloudmart-dev-event-bus"
+
+          echo "Checking CloudMart order event bus..."
+          aws events describe-event-bus \
+            --name "$EVENT_BUS" \
+            --region "$AWS_REGION"
+
+          for RULE in \
+            cloudmart-dev-order-placed \
+            cloudmart-dev-order-confirmed \
+            cloudmart-dev-order-canceled \
+            cloudmart-dev-order-failed
+          do
+            echo "Checking EventBridge rule: $RULE"
+
+            STATE=$(aws events describe-rule \
+              --name "$RULE" \
+              --event-bus-name "$EVENT_BUS" \
+              --region "$AWS_REGION" \
+              --query "State" \
+              --output text)
+
+            if [ "$STATE" != "ENABLED" ]; then
+              echo "ERROR: $RULE is not ENABLED. State=$STATE"
+              exit 1
+            fi
+
+            TARGET_COUNT=$(aws events list-targets-by-rule \
+              --rule "$RULE" \
+              --event-bus-name "$EVENT_BUS" \
+              --region "$AWS_REGION" \
+              --query "length(Targets)" \
+              --output text)
+
+            if [ "$TARGET_COUNT" -lt 1 ]; then
+              echo "ERROR: $RULE has no targets."
+              exit 1
+            fi
+
+            echo "$RULE is enabled with $TARGET_COUNT target(s)."
+          done
+
+          TOPIC_ARN=$(aws sns list-topics \
+            --region "$AWS_REGION" \
+            --query "Topics[?ends_with(TopicArn, ':cloudmart-dev-order-notifications')].TopicArn | [0]" \
+            --output text)
+
+          if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
+            echo "ERROR: CloudMart order notification SNS topic not found."
+            exit 1
+          fi
+
+          echo "Order notification SNS topic: $TOPIC_ARN"
+
+          SUB_COUNT=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --query "length(Subscriptions)" \
+            --output text)
+
+          if [ "$SUB_COUNT" -lt 1 ]; then
+            echo "ERROR: Order notification SNS topic has no subscription."
+            exit 1
+          fi
+
+          echo "Order event/SNS configuration verification passed."
+
+      # =====================================================
       # NOTIFICATION EMAIL
       # =====================================================
 

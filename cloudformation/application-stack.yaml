@@ -151,6 +151,150 @@ Resources:
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: '"CLOUDMART LOW STOCK ALERT\n\nA product has reached its low-stock threshold.\n\nPRODUCT DETAILS\n--------------------------------\nProduct ID       : <productId>\nProduct Name     : <productName>\nPrevious Stock   : <oldStock>\nCurrent Stock    : <newStock>\nLow-Stock Limit  : <threshold>\n\nACTION REQUIRED\n--------------------\nPlease review the inventory and replenish stock.\n\nThis notification was generated automatically by CloudMart."'
 
+  # ============================================================
+  # ORDER LIFECYCLE EVENTS -> SNS
+  # ============================================================
+
+  CloudMartOrderNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-order-notifications"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudMartOrderNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref CloudMartOrderNotificationTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  CloudMartOrderNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref CloudMartOrderNotificationTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgePublishOrderEvents
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref CloudMartOrderNotificationTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt OrderPlacedEventRule.Arn
+                  - !GetAtt OrderConfirmedEventRule.Arn
+                  - !GetAtt OrderCanceledEventRule.Arn
+                  - !GetAtt OrderFailedEventRule.Arn
+
+  OrderPlacedEventRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-placed"
+      Description: Routes CloudMart OrderPlaced events to SNS.
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.order
+        detail-type:
+          - OrderPlaced
+      Targets:
+        - Id: OrderPlacedSNSTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+            InputTemplate: '"CLOUDMART ORDER PLACED\n\nOrder ID       : <orderId>\nCustomer ID    : <customerId>\nStatus         : <status>\nTotal Amount   : <total>\n\nThis notification was generated automatically by CloudMart."'
+
+  OrderConfirmedEventRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
+      Description: Routes CloudMart OrderConfirmed events to SNS.
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.order
+        detail-type:
+          - OrderConfirmed
+      Targets:
+        - Id: OrderConfirmedSNSTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+            InputTemplate: '"CLOUDMART ORDER CONFIRMED\n\nOrder ID       : <orderId>\nCustomer ID    : <customerId>\nStatus         : <status>\nTotal Amount   : <total>\n\nThis notification was generated automatically by CloudMart."'
+
+  OrderCanceledEventRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-canceled"
+      Description: Routes CloudMart OrderCanceled events to SNS.
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.order
+        detail-type:
+          - OrderCanceled
+      Targets:
+        - Id: OrderCanceledSNSTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+            InputTemplate: '"CLOUDMART ORDER CANCELED\n\nOrder ID       : <orderId>\nCustomer ID    : <customerId>\nStatus         : <status>\nTotal Amount   : <total>\n\nThis notification was generated automatically by CloudMart."'
+
+  OrderFailedEventRule:
+    Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-failed"
+      Description: Routes CloudMart OrderFailed events to SNS.
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.order
+        detail-type:
+          - OrderFailed
+      Targets:
+        - Id: OrderFailedSNSTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+            InputTemplate: '"CLOUDMART ORDER FAILED\n\nOrder ID       : <orderId>\nCustomer ID    : <customerId>\nStatus         : <status>\nTotal Amount   : <total>\n\nThis notification was generated automatically by CloudMart."'
+
+
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
@@ -503,3 +647,19 @@ Outputs:
 
   LowStockRuleArn:
     Value: !GetAtt LowStockEventRule.Arn
+
+
+  OrderNotificationTopicArn:
+    Value: !Ref CloudMartOrderNotificationTopic
+
+  OrderPlacedRuleArn:
+    Value: !GetAtt OrderPlacedEventRule.Arn
+
+  OrderConfirmedRuleArn:
+    Value: !GetAtt OrderConfirmedEventRule.Arn
+
+  OrderCanceledRuleArn:
+    Value: !GetAtt OrderCanceledEventRule.Arn
+
+  OrderFailedRuleArn:
+    Value: !GetAtt OrderFailedEventRule.Arn
