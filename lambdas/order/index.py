@@ -206,7 +206,7 @@ def validate_request(payload):
 
 
 # ============================================================
-# POST /orders
+# RDS transaction + order/order_items + inventory
 # ============================================================
 
 class StockError(Exception):
@@ -279,9 +279,7 @@ def create_order(connection, customer_id, items):
                     f"Product {product_id} is not active"
                 )
 
-            # Placement checks availability only.
-            # Inventory deduction belongs to the later
-            # OrderConfirmed flow.
+            # Check stock before creating the order.
             if int(product["stock_quantity"]) < quantity:
                 raise StockError(
                     f"Insufficient stock for product {product_id}"
@@ -341,6 +339,29 @@ def create_order(connection, customer_id, items):
                     item["subtotal"],
                 ),
             )
+
+        # Deduct inventory inside the SAME database transaction.
+        # The stock check is performed again atomically so concurrent
+        # orders cannot drive inventory below zero.
+        for item in order_items:
+            cursor.execute(
+                """
+                UPDATE products
+                SET stock_quantity = stock_quantity - %s
+                WHERE product_id = %s
+                  AND stock_quantity >= %s
+                """,
+                (
+                    item["quantity"],
+                    item["product_id"],
+                    item["quantity"],
+                ),
+            )
+
+            if cursor.rowcount != 1:
+                raise StockError(
+                    f"Insufficient stock for product {item['product_id']}"
+                )
 
         cursor.execute(
             """
@@ -435,7 +456,7 @@ def publish_order_placed_event(order):
 
 
 # ============================================================
-# TASK 3: GET /orders/{id}
+#  GET /orders/{id}
 # ============================================================
 
 def get_path_order_id(event):
