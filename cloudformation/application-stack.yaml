@@ -59,7 +59,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "1"
+    Default: "2"
     Description: Change this value to force a new API Gateway deployment.
 
 Resources:
