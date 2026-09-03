@@ -386,6 +386,8 @@ def create_order(connection, customer_id, items):
         return {
             "order_id": int(order_id),
             "customer_id": int(customer_id),
+            "customer_name": customer["name"],
+            "customer_email": customer["email"],
             "status": "PENDING",
             "total_amount": total_amount,
             "items": order_items,
@@ -396,6 +398,8 @@ def publish_order_placed_event(order):
     detail = {
         "order_id": order["order_id"],
         "customer_id": order["customer_id"],
+        "customer_name": order.get("customer_name"),
+        "customer_email": order.get("customer_email"),
         "status": order["status"],
         "total_amount": float(
             order["total_amount"]
@@ -463,6 +467,8 @@ def publish_order_event(detail_type, order):
     detail = {
         "order_id": int(order["order_id"]),
         "customer_id": int(order["customer_id"]),
+        "customer_name": order.get("customer_name"),
+        "customer_email": order.get("customer_email"),
         "status": order.get("status"),
         "total_amount": float(order["total_amount"]),
         "items": [
@@ -509,12 +515,12 @@ def publish_order_event(detail_type, order):
 
 
 def update_order_status(connection, order_id, new_status):
-    allowed_statuses = {"CONFIRMED", "CANCELED", "FAILED"}
+    allowed_statuses = {"CONFIRMED", "CANCELED", "FAILED", "COMPLETED"}
     new_status = str(new_status).upper().strip()
 
     if new_status not in allowed_statuses:
         raise ValueError(
-            "status must be one of: CONFIRMED, CANCELED, FAILED"
+            "status must be one of: CONFIRMED, CANCELED, FAILED, COMPLETED"
         )
 
     with connection.cursor() as cursor:
@@ -542,7 +548,7 @@ def update_order_status(connection, order_id, new_status):
             connection.commit()
             return False
 
-        if old_status in {"CONFIRMED", "CANCELED", "FAILED"}:
+        if old_status in {"CANCELED", "FAILED", "COMPLETED"}:
             raise ValueError(
                 f"Order {order_id} is already in terminal status {old_status}"
             )
@@ -1275,6 +1281,7 @@ def lambda_handler(event, context):
                         "CONFIRMED": "OrderConfirmed",
                         "CANCELED": "OrderCanceled",
                         "FAILED": "OrderFailed",
+                        "COMPLETED": "OrderCompleted",
                     }[new_status]
 
                     if not publish_order_event(event_type, order):
