@@ -571,13 +571,16 @@ def update_product(cursor, product_id, payload):
 
 def delete_product(cursor, product_id, payload):
 
+    # Soft delete: keep the row in RDS, but mark the product INACTIVE.
+    # This preserves the product for audit/history while removing it
+    # from normal product GET/list results (which use deleted_at IS NULL).
     cursor.execute("""
         UPDATE products
         SET
+            status = 'INACTIVE',
             deleted_at = CURRENT_TIMESTAMP,
             deleted_by = %s,
             delete_reason = %s,
-            status = 'DELETED',
             updated_at = CURRENT_TIMESTAMP
         WHERE product_id = %s
           AND deleted_at IS NULL
@@ -845,9 +848,11 @@ def lambda_handler(event, context):
                     200,
                     {
                         "message":
-                            "Product deleted",
+                            "Product soft-deleted successfully",
                         "product_id":
-                            product_id
+                            product_id,
+                        "status":
+                            "INACTIVE"
                     }
                 )
 
