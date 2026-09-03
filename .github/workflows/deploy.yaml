@@ -1138,35 +1138,6 @@ jobs:
 
 
       # =====================================================
-      # CREATE EVENTBRIDGE / SNS SSM PARAMETERS
-      # =====================================================
-
-      - name: Create Event and Notification SSM Parameters
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          EVENT_BUS_ARN=$(aws cloudformation describe-stacks             --stack-name cloudmart-application-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='EventBusArn'].OutputValue | [0]"             --output text)
-
-          SNS_TOPIC_ARN=$(aws cloudformation describe-stacks             --stack-name cloudmart-application-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]"             --output text)
-
-          if [ -z "$EVENT_BUS_ARN" ] || [ "$EVENT_BUS_ARN" = "None" ]; then
-            echo "ERROR: EventBusArn output is missing."
-            exit 1
-          fi
-
-          if [ -z "$SNS_TOPIC_ARN" ] || [ "$SNS_TOPIC_ARN" = "None" ]; then
-            echo "ERROR: LowStockTopicArn output is missing."
-            exit 1
-          fi
-
-          aws ssm put-parameter             --name "/cloudmart/dev/events/event-bus-arn"             --type "String"             --value "$EVENT_BUS_ARN"             --overwrite             --region "$AWS_REGION"
-
-          aws ssm put-parameter             --name "/cloudmart/dev/notifications/sns-topic-arn"             --type "String"             --value "$SNS_TOPIC_ARN"             --overwrite             --region "$AWS_REGION"
-
-          echo "EventBridge and SNS SSM parameters created/updated."
-
-      # =====================================================
       # VERIFY AUTHORIZER LAMBDA
       # =====================================================
 
