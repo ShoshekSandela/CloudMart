@@ -1064,6 +1064,7 @@ jobs:
             --parameter-overrides \
               Environment=dev \
               ProjectName=cloudmart \
+              OrderLambdaRoleArn="$ORDER_ROLE_ARN" \
               PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
               LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
