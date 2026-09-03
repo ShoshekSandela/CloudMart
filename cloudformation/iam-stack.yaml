@@ -202,6 +202,17 @@ Resources:
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/*
 
+              # VPC access for Order Lambda
+              - Effect: Allow
+
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeSubnets
+                  - ec2:DeleteNetworkInterface
+
+                Resource: "*"
+
       Tags:
 
         - Key: Project
