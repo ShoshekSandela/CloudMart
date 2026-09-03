@@ -23,6 +23,9 @@ Parameters:
   ProductLambdaRoleArn:
     Type: String
 
+  OrderLambdaRoleArn:
+    Type: String
+
   PrivateSubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
 
@@ -372,7 +375,7 @@ Resources:
       Handler: index.lambda_handler
       CodeUri: ../lambdas/product/
       Role:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-OrderLambdaRoleArn"
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-ProductLambdaRoleArn"
       Timeout: 15
       MemorySize: 256
       VpcConfig:
@@ -409,7 +412,7 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: ../lambdas/order/
-      Role: !Ref ProductLambdaRoleArn
+      Role: !Ref OrderLambdaRoleArn
       Timeout: 15
       MemorySize: 256
       VpcConfig:
