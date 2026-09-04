@@ -702,6 +702,7 @@ Outputs:
     Value: !GetAtt LowStockEventRule.Arn
 
 
+
   OrderNotificationTopicArn:
     Value: !Ref CloudMartOrderNotificationTopic
 
