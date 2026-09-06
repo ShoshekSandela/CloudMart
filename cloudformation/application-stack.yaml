@@ -431,6 +431,12 @@ Resources:
         Project: CloudMart
         Environment: !Ref Environment
 
+  OrderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-order"
+      RetentionInDays: 30
+
   OrderLambdaPermission:
     Type: AWS::Lambda::Permission
     Properties:
