@@ -1475,13 +1475,21 @@ def lambda_handler(event, context):
             connection.rollback()
 
         logger.exception(
-            "Order database operation failed"
+            "Database operation failed",
+            extra={
+                "error": str(exc),
+                "mysql_errno": exc.args[0] if exc.args else None,
+            },
         )
 
         return error_response(
             500,
-            "DATABASE_ERROR",
-            "Database operation failed",
+            {
+                "error": {
+                    "code": "DATABASE_ERROR",
+                    "message": "Database operation failed",
+                }
+            },
         )
 
     except Exception:
