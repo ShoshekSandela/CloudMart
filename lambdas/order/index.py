@@ -1484,12 +1484,8 @@ def lambda_handler(event, context):
 
         return error_response(
             500,
-            {
-                "error": {
-                    "code": "DATABASE_ERROR",
-                    "message": "Database operation failed",
-                }
-            },
+            "DATABASE_ERROR",
+            "Database operation failed",
         )
 
     except Exception:
