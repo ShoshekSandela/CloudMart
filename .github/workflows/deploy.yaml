@@ -1500,7 +1500,11 @@ jobs:
           EMAIL_SUBSCRIPTION_ARN=$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r \
             --arg email "$NOTIFICATION_EMAIL" '
               [.Subscriptions[]
-                | select(.Protocol == "email" and .Endpoint == $email)
+                | select(
+                    .Protocol == "email"
+                    and .Endpoint == $email
+                    and .SubscriptionArn != "Deleted"
+                  )
                 | .SubscriptionArn][0] // empty')
 
           if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
@@ -1513,12 +1517,6 @@ jobs:
           if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
             echo "ERROR: SNS email subscription is pending confirmation."
             echo "Confirm the SNS email before rerunning the workflow."
-            exit 1
-          fi
-
-          if [ "$EMAIL_SUBSCRIPTION_ARN" = "Deleted" ]; then
-            echo "ERROR: SNS email subscription is deleted."
-            echo "The application stack must create a new email subscription."
             exit 1
           fi
 
@@ -1637,7 +1635,11 @@ jobs:
             printf '%s' "$SUBSCRIPTIONS_JSON" |
               jq -r --arg email "$NOTIFICATION_EMAIL" '
                 [.Subscriptions[]
-                  | select(.Protocol == "email" and .Endpoint == $email)
+                  | select(
+                      .Protocol == "email"
+                      and .Endpoint == $email
+                      and .SubscriptionArn != "Deleted"
+                    )
                   | .SubscriptionArn][0] // empty
               '
           )"
@@ -1654,12 +1656,6 @@ jobs:
           if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
             echo "ERROR: SNS email subscription is pending confirmation."
             echo "Confirm the SNS email before continuing."
-            exit 1
-          fi
-
-          if [ "$EMAIL_SUBSCRIPTION_ARN" = "Deleted" ]; then
-            echo "ERROR: SNS email subscription is deleted."
-            echo "The application stack must create a new subscription."
             exit 1
           fi
 
@@ -1877,12 +1873,17 @@ jobs:
             --region "$AWS_REGION" \
             --output json)"
 
-          SUBSCRIPTION_COUNT="$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq '.Subscriptions | length')"
+          ACTIVE_SUBSCRIPTION_COUNT="$(
+            printf '%s' "$SUBSCRIPTIONS_JSON" |
+              jq '[.Subscriptions[]
+                | select(.SubscriptionArn != "Deleted")
+              ] | length'
+          )"
 
-          echo "SNS subscription count: $SUBSCRIPTION_COUNT"
+          echo "Active SNS subscription count: $ACTIVE_SUBSCRIPTION_COUNT"
 
-          if [ "$SUBSCRIPTION_COUNT" -lt 1 ]; then
-            echo "ERROR: SNS topic has no subscription."
+          if [ "$ACTIVE_SUBSCRIPTION_COUNT" -lt 1 ]; then
+            echo "ERROR: SNS topic has no active subscription."
             exit 1
           fi
 
@@ -1891,7 +1892,8 @@ jobs:
               jq -r --arg email "$NOTIFICATION_EMAIL" '
                 [.Subscriptions[]
                   | select(.Protocol == "email")
-                  | select(.Endpoint == $email)]
+                  | select(.Endpoint == $email)
+                  | select(.SubscriptionArn != "Deleted")]
                 | length
               '
           )"

@@ -100,7 +100,10 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  CloudMartLowStockSubscription:
+  # Create a fresh SNS email subscription.
+  # The previous CloudMartLowStockSubscription is in the Deleted state,
+  # so a new logical resource is required.
+  CloudMartLowStockEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
