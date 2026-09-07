@@ -13,12 +13,12 @@ USE cloudmart;
 
 CREATE TABLE IF NOT EXISTS customers (
     customer_id BIGINT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL,
+    customer_name VARCHAR(255) NOT NULL,
+    customer_email VARCHAR(255) NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (customer_id),
-    UNIQUE KEY uk_customers_email (email)
+    UNIQUE KEY uk_customers_email (customer_email)
 
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
@@ -240,8 +240,8 @@ WHERE NOT EXISTS (
 -- ============================================================
 
 INSERT INTO customers (
-    name,
-    email
+    customer_name,
+    customer_email
 )
 SELECT
     'CloudMart Test Customer',
@@ -249,7 +249,7 @@ SELECT
 WHERE NOT EXISTS (
     SELECT 1
     FROM customers
-    WHERE email = 'customer@cloudmart.com'
+    WHERE customer_email = 'customer@cloudmart.com'
 );
 
 
@@ -259,7 +259,7 @@ WHERE NOT EXISTS (
 
 INSERT INTO products (
     category_id,
-    name,
+    product_name,
     description,
     price,
     stock_quantity,
@@ -279,14 +279,14 @@ WHERE category_name = 'Electronics'
   AND NOT EXISTS (
       SELECT 1
       FROM products
-      WHERE name = 'CloudMart Laptop'
+      WHERE product_name = 'CloudMart Laptop'
   )
 LIMIT 1;
 
 
 INSERT INTO products (
     category_id,
-    name,
+    product_name,
     description,
     price,
     stock_quantity,
@@ -306,14 +306,14 @@ WHERE category_name = 'Accessories'
   AND NOT EXISTS (
       SELECT 1
       FROM products
-      WHERE name = 'CloudMart Mouse'
+      WHERE product_name = 'CloudMart Mouse'
   )
 LIMIT 1;
 
 
 INSERT INTO products (
     category_id,
-    name,
+    product_name,
     description,
     price,
     stock_quantity,
@@ -333,7 +333,7 @@ WHERE category_name = 'Accessories'
   AND NOT EXISTS (
       SELECT 1
       FROM products
-      WHERE name = 'CloudMart Keyboard'
+      WHERE product_name = 'CloudMart Keyboard'
   )
 LIMIT 1;
 
@@ -377,7 +377,7 @@ FROM order_status_history;
 
 SELECT
     product_id,
-    name,
+    product_name,
     price,
     stock_quantity,
     low_stock_threshold,
