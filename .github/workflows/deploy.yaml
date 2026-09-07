@@ -903,6 +903,36 @@ jobs:
             exit 1
           fi
 
+          if [ ! -f "lambdas/order/index.py" ]; then
+            echo "ERROR: lambdas/order/index.py is missing."
+            exit 1
+          fi
+
+          # The Order Lambda is the source of truth for customer/order
+          # data used by OrderPlaced and the SNS notification flow.
+          # Verify that the repository contains the expected implementation
+          # before SAM builds the application.
+          if ! grep -q "def validate_request" lambdas/order/index.py; then
+            echo "ERROR: Order Lambda validate_request() is missing."
+            exit 1
+          fi
+
+          if ! grep -q "def create_order" lambdas/order/index.py; then
+            echo "ERROR: Order Lambda create_order() is missing."
+            exit 1
+          fi
+
+          if ! grep -q "OrderPlaced" lambdas/order/index.py; then
+            echo "ERROR: Order Lambda OrderPlaced event implementation is missing."
+            exit 1
+          fi
+
+          if grep -q 'customer_email must be a valid email address' lambdas/order/index.py; then
+            echo "ERROR: Old Order Lambda customer_email validation is still present."
+            echo "The deployed API must not reject the request because of the old email validation."
+            exit 1
+          fi
+
           if [ ! -f "lambdas/product/requirements.txt" ]; then
             echo "ERROR: lambdas/product/requirements.txt is missing."
             exit 1
@@ -969,6 +999,26 @@ jobs:
           fi
 
           echo "schema.sql is included in the Product Lambda build."
+
+          echo "Checking Order Lambda build output..."
+
+          if [ ! -d ".aws-sam/build/OrderFunction" ]; then
+            echo "ERROR: OrderFunction was not created by SAM build."
+            exit 1
+          fi
+
+          if [ ! -f ".aws-sam/build/OrderFunction/index.py" ]; then
+            echo "ERROR: OrderFunction index.py is missing from SAM build."
+            exit 1
+          fi
+
+          # Make sure SAM copied the current repository Order Lambda source.
+          if ! cmp -s "lambdas/order/index.py" ".aws-sam/build/OrderFunction/index.py"; then
+            echo "ERROR: SAM build OrderFunction/index.py does not match the repository source."
+            exit 1
+          fi
+
+          echo "Order Lambda source is present and matches the repository."
 
       - name: Verify SAM build output
         shell: bash
@@ -1061,6 +1111,7 @@ jobs:
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
             --resolve-s3 \
+            --force-upload \
             --parameter-overrides \
               Environment=dev \
               ProjectName=cloudmart \
@@ -1313,6 +1364,79 @@ jobs:
           fi
 
           echo "Order notification SNS email subscription is confirmed."
+
+      # =====================================================
+      # VERIFY DEPLOYED ORDER LAMBDA SOURCE
+      # =====================================================
+
+      - name: Verify Deployed Order Lambda Source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FUNCTION_NAME="cloudmart-dev-order"
+          SOURCE_FILE="lambdas/order/index.py"
+          DEPLOYED_ZIP="/tmp/cloudmart-order-deployed.zip"
+          DEPLOYED_DIR="/tmp/cloudmart-order-deployed"
+
+          echo "Checking deployed Order Lambda..."
+
+          FUNCTION_ARN="$(aws lambda get-function             --function-name "$FUNCTION_NAME"             --region "$AWS_REGION"             --query "Configuration.FunctionArn"             --output text)"
+
+          if [ -z "$FUNCTION_ARN" ] || [ "$FUNCTION_ARN" = "None" ]; then
+            echo "ERROR: Order Lambda was not found."
+            exit 1
+          fi
+
+          echo "Order Lambda ARN: $FUNCTION_ARN"
+
+          CODE_URL="$(aws lambda get-function             --function-name "$FUNCTION_NAME"             --region "$AWS_REGION"             --query "Code.Location"             --output text)"
+
+          if [ -z "$CODE_URL" ] || [ "$CODE_URL" = "None" ]; then
+            echo "ERROR: Order Lambda deployment package URL is missing."
+            exit 1
+          fi
+
+          rm -rf "$DEPLOYED_DIR"
+          rm -f "$DEPLOYED_ZIP"
+
+          curl -fsSL "$CODE_URL" -o "$DEPLOYED_ZIP"
+          mkdir -p "$DEPLOYED_DIR"
+          unzip -q "$DEPLOYED_ZIP" -d "$DEPLOYED_DIR"
+
+          if [ ! -f "$DEPLOYED_DIR/index.py" ]; then
+            echo "ERROR: Deployed Order Lambda package does not contain index.py."
+            exit 1
+          fi
+
+          SOURCE_HASH="$(sha256sum "$SOURCE_FILE" | awk '{print $1}')"
+          DEPLOYED_HASH="$(sha256sum "$DEPLOYED_DIR/index.py" | awk '{print $1}')"
+
+          echo "Repository Order Lambda SHA256: $SOURCE_HASH"
+          echo "Deployed Order Lambda SHA256:   $DEPLOYED_HASH"
+
+          if [ "$SOURCE_HASH" != "$DEPLOYED_HASH" ]; then
+            echo "ERROR: Deployed Order Lambda code does not match repository source."
+            echo "This prevents an old Order Lambda version from remaining active."
+            exit 1
+          fi
+
+          if grep -q 'customer_email must be a valid email address' "$DEPLOYED_DIR/index.py"; then
+            echo "ERROR: Old customer_email validation was found in the deployed Order Lambda."
+            exit 1
+          fi
+
+          if ! grep -q "def validate_request" "$DEPLOYED_DIR/index.py"; then
+            echo "ERROR: Expected validate_request() is missing from deployed Order Lambda."
+            exit 1
+          fi
+
+          if ! grep -q "def create_order" "$DEPLOYED_DIR/index.py"; then
+            echo "ERROR: Expected create_order() is missing from deployed Order Lambda."
+            exit 1
+          fi
+
+          echo "Deployed Order Lambda source verification passed."
 
       # =====================================================
       # VERIFY ORDER LAMBDA CLOUDWATCH LOG GROUP
