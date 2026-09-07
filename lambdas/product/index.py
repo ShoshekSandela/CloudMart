@@ -257,6 +257,27 @@ def validate_inventory(stock, threshold):
 
 
 # ============================================================
+# PRICE VALIDATION
+# ============================================================
+
+def validate_price(price):
+
+    try:
+        price = Decimal(str(price))
+    except (TypeError, ValueError, ArithmeticError):
+        raise ValueError(
+            "price must be a valid number"
+        )
+
+    if price <= 0:
+        raise ValueError(
+            "price must be greater than 0"
+        )
+
+    return price
+
+
+# ============================================================
 # EVENTBRIDGE
 # ============================================================
 
@@ -403,6 +424,10 @@ def create_product(cursor, payload):
         payload["low_stock_threshold"]
     )
 
+    price = validate_price(
+        payload["price"]
+    )
+
     cursor.execute("""
         INSERT INTO products (
             category_id,
@@ -420,7 +445,7 @@ def create_product(cursor, payload):
         payload.get("category_id"),
         payload["name"],
         payload.get("description"),
-        payload["price"],
+        price,
         stock,
         threshold,
         payload.get("status", "ACTIVE")
@@ -473,12 +498,17 @@ def update_product(cursor, product_id, payload):
 
         if field in payload:
 
+            if field == "price":
+                values.append(
+                    validate_price(payload["price"])
+                )
+            else:
+                values.append(
+                    payload[field]
+                )
+
             fields.append(
                 f"{field} = %s"
-            )
-
-            values.append(
-                payload[field]
             )
 
     # --------------------------------------------------------
