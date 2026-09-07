@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 from decimal import Decimal
 from datetime import date, datetime
 
@@ -50,6 +51,51 @@ def error_response(status_code, code, message):
             }
         },
     )
+
+
+# ============================================================
+# CUSTOMER EMAIL VALIDATION
+# ============================================================
+
+def validate_customer_email(value):
+    """
+    Validate the customer_email supplied in the Create Order request.
+
+    Create Order intentionally uses this request email for the new
+    order response and OrderPlaced event instead of replacing it
+    with the email stored for customer_id in the customers table.
+    """
+    if value is None:
+        raise ValueError(
+            "customer_email is required"
+        )
+
+    if not isinstance(value, str):
+        raise ValueError(
+            "customer_email must be a string"
+        )
+
+    customer_email = value.strip()
+
+    if not customer_email:
+        raise ValueError(
+            "customer_email is required"
+        )
+
+    if len(customer_email) > 254:
+        raise ValueError(
+            "customer_email is too long"
+        )
+
+    if not re.fullmatch(
+        r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+",
+        customer_email,
+    ):
+        raise ValueError(
+            "customer_email must be a valid email address"
+        )
+
+    return customer_email
 
 
 # ============================================================
@@ -213,7 +259,7 @@ class StockError(Exception):
     pass
 
 
-def create_order(connection, customer_id, items):
+def create_order(connection, customer_id, customer_email, items):
     with connection.cursor() as cursor:
 
         cursor.execute(
@@ -387,7 +433,9 @@ def create_order(connection, customer_id, items):
             "order_id": int(order_id),
             "customer_id": int(customer_id),
             "customer_name": customer["name"],
-            "customer_email": customer["email"],
+            # Use the email supplied in the Create Order request.
+            # Do not replace it with customers.email for customer_id.
+            "customer_email": customer_email,
             "status": "PENDING",
             "total_amount": total_amount,
             "items": order_items,
@@ -1298,11 +1346,19 @@ def lambda_handler(event, context):
                 validate_request(payload)
             )
 
+            # Create Order uses the email supplied by the caller.
+            # Previously this value was ignored and the Lambda returned
+            # customers.email for the supplied customer_id.
+            customer_email = validate_customer_email(
+                payload.get("customer_email")
+            )
+
             connection = get_db_connection()
 
             order = create_order(
                 connection,
                 customer_id,
+                customer_email,
                 items,
             )
 
