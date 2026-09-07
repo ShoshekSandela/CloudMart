@@ -88,7 +88,7 @@ def validate_customer_email(value):
         )
 
     if not re.fullmatch(
-        r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+",
+        r"[^@\s]+@[^@\s]+\.[^@\s]+",
         customer_email,
     ):
         raise ValueError(

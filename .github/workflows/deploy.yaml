@@ -927,11 +927,46 @@ jobs:
             exit 1
           fi
 
-          if grep -q 'customer_email must be a valid email address' lambdas/order/index.py; then
-            echo "ERROR: Old Order Lambda customer_email validation is still present."
-            echo "The deployed API must not reject the request because of the old email validation."
-            exit 1
-          fi
+          # Verify the request-validation function itself does not require
+          # customer_email. The Order Lambda gets the customer email from
+          # the RDS customers table using customer_id.
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+
+          path = Path("lambdas/order/index.py")
+          source = path.read_text(encoding="utf-8")
+          tree = ast.parse(source)
+
+          validate = next(
+              (node for node in tree.body
+               if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+               and node.name == "validate_request"),
+              None,
+          )
+
+          if validate is None:
+              raise SystemExit("ERROR: validate_request() was not found.")
+
+          validate_source = ast.get_source_segment(source, validate) or ""
+
+          if "customer_email" in validate_source:
+              raise SystemExit(
+                  "ERROR: validate_request() still contains customer_email validation."
+              )
+
+          if "customer_id" not in validate_source:
+              raise SystemExit(
+                  "ERROR: validate_request() does not validate customer_id."
+              )
+
+          if "items" not in validate_source:
+              raise SystemExit(
+                  "ERROR: validate_request() does not validate items."
+              )
+
+          print("Order request validation is correct.")
+          PY
 
           if [ ! -f "lambdas/product/requirements.txt" ]; then
             echo "ERROR: lambdas/product/requirements.txt is missing."
@@ -1421,20 +1456,42 @@ jobs:
             exit 1
           fi
 
-          if grep -q 'customer_email must be a valid email address' "$DEPLOYED_DIR/index.py"; then
-            echo "ERROR: Old customer_email validation was found in the deployed Order Lambda."
-            exit 1
-          fi
+          python - "$DEPLOYED_DIR/index.py" <<'PY'
+          import ast
+          import sys
+          from pathlib import Path
 
-          if ! grep -q "def validate_request" "$DEPLOYED_DIR/index.py"; then
-            echo "ERROR: Expected validate_request() is missing from deployed Order Lambda."
-            exit 1
-          fi
+          path = Path(sys.argv[1])
+          source = path.read_text(encoding="utf-8")
+          tree = ast.parse(source)
 
-          if ! grep -q "def create_order" "$DEPLOYED_DIR/index.py"; then
-            echo "ERROR: Expected create_order() is missing from deployed Order Lambda."
-            exit 1
-          fi
+          functions = {
+              node.name: node
+              for node in tree.body
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+          }
+
+          if "validate_request" not in functions:
+              raise SystemExit(
+                  "ERROR: validate_request() is missing from deployed Order Lambda."
+              )
+
+          if "create_order" not in functions:
+              raise SystemExit(
+                  "ERROR: create_order() is missing from deployed Order Lambda."
+              )
+
+          validate_source = ast.get_source_segment(
+              source, functions["validate_request"]
+          ) or ""
+
+          if "customer_email" in validate_source:
+              raise SystemExit(
+                  "ERROR: Deployed validate_request() still contains customer_email validation."
+              )
+
+          print("Deployed Order Lambda validation is correct.")
+          PY
 
           echo "Deployed Order Lambda source verification passed."
 
