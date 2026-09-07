@@ -351,13 +351,15 @@ def create_order(connection, customer_id, customer_email, items):
             """
             INSERT INTO orders (
                 customer_id,
+                customer_email,
                 status,
                 total_amount
             )
-            VALUES (%s, %s, %s)
+            VALUES (%s, %s, %s, %s)
             """,
             (
                 customer_id,
+                customer_email,
                 "PENDING",
                 total_amount,
             ),
@@ -1010,7 +1012,7 @@ def get_order_by_id(connection, order_id):
                 o.order_id,
                 o.customer_id,
                 c.name AS customer_name,
-                c.email AS customer_email,
+                COALESCE(o.customer_email, c.email) AS customer_email,
                 o.status,
                 o.total_amount,
                 o.created_at,
@@ -1139,7 +1141,7 @@ def get_orders_by_customer(
                 o.order_id,
                 o.customer_id,
                 c.name AS customer_name,
-                c.email AS customer_email,
+                COALESCE(o.customer_email, c.email) AS customer_email,
                 o.status,
                 o.total_amount,
                 o.created_at,

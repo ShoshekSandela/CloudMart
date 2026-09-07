@@ -97,6 +97,9 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id BIGINT NOT NULL AUTO_INCREMENT,
     customer_id BIGINT NOT NULL,
 
+    -- Email captured for this specific order
+    customer_email VARCHAR(255) NULL,
+
     status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
 
     total_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -118,6 +121,18 @@ CREATE TABLE IF NOT EXISTS orders (
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================
+-- ORDER EMAIL MIGRATION
+--
+-- This keeps the email supplied when an order is created with that
+-- specific order. Existing orders may be NULL and the Order Lambda
+-- falls back to customers.email for backward compatibility.
+-- ============================================================
+
+ALTER TABLE orders
+    ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255) NULL AFTER customer_id;
 
 
 -- ============================================================
