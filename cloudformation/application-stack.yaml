@@ -62,7 +62,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "3"
+    Default: "221"
     Description: Change this value to force a new API Gateway deployment.
 
 Resources:
@@ -156,21 +156,7 @@ Resources:
               newStock: "$.detail.new_stock"
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: |
-              ⚠️ CLOUDMART LOW STOCK ALERT
-
-              Product: <productName>
-              Product ID: <productId>
-
-              STOCK STATUS
-              Previous Stock: <oldStock>
-              Current Stock: <newStock>
-              Low Stock Limit: <threshold>
-
-              ACTION REQUIRED
-              Please replenish this product soon.
-
-              — CloudMart
-
+              "⚠️ CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"
   # ============================================================
   # ORDER LIFECYCLE EVENTS -> SNS
   # ============================================================
@@ -239,21 +225,7 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
             InputTemplate: |
-              🔵 CLOUDMART ORDER PLACED
-
-              Order #<orderId>
-
-              STATUS: <status>
-              TOTAL: <total>
-
-              CUSTOMER
-              Name: <customerName>
-              Email: <customerEmail>
-
-              Your order has been received successfully.
-
-              — CloudMart
-
+              "🔵 CLOUDMART ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nYour order has been received successfully.\n\n— CloudMart"
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     Properties:
@@ -278,23 +250,7 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
             InputTemplate: |
-              🟢 CLOUDMART ORDER CONFIRMED
-
-              Order #<orderId>
-
-              STATUS: <status>
-              TOTAL: <total>
-
-              CUSTOMER
-              Name: <customerName>
-              Email: <customerEmail>
-
-              Your order has been confirmed successfully.
-
-              Thank you for shopping with CloudMart.
-
-              — CloudMart
-
+              "🟢 CLOUDMART ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nYour order has been confirmed successfully.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     Properties:
@@ -319,23 +275,7 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
             InputTemplate: |
-              🟠 CLOUDMART ORDER CANCELED
-
-              Order #<orderId>
-
-              STATUS: <status>
-              TOTAL: <total>
-
-              CUSTOMER
-              Name: <customerName>
-              Email: <customerEmail>
-
-              Your order has been canceled.
-
-              If you did not request this cancellation, please contact CloudMart support.
-
-              — CloudMart
-
+              "🟠 CLOUDMART ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nYour order has been canceled.\n\nIf you did not request this cancellation, please contact CloudMart support.\n\n— CloudMart"
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     Properties:
@@ -360,22 +300,7 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
             InputTemplate: |
-              🔴 CLOUDMART ORDER FAILED
-
-              Order #<orderId>
-
-              STATUS: <status>
-              TOTAL: <total>
-
-              CUSTOMER
-              Name: <customerName>
-              Email: <customerEmail>
-
-              Your order could not be processed.
-              Please review the order details or contact CloudMart support.
-
-              — CloudMart
-
+              "🔴 CLOUDMART ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nYour order could not be processed.\nPlease review the order details or contact CloudMart support.\n\n— CloudMart"
   OrderCompletedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -402,23 +327,7 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
             InputTemplate: |
-              ✅ CLOUDMART ORDER COMPLETED
-
-              Order #<orderId>
-
-              STATUS: <status>
-              TOTAL: <total>
-
-              CUSTOMER
-              Name: <customerName>
-              Email: <customerEmail>
-
-              Your order has been completed successfully.
-
-              Thank you for shopping with CloudMart.
-
-              — CloudMart
-
+              "✅ CLOUDMART ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nYour order has been completed successfully.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
