@@ -124,16 +124,13 @@ CREATE TABLE IF NOT EXISTS orders (
 
 
 -- ============================================================
--- ORDER EMAIL MIGRATION
+-- ORDER EMAIL MIGRATION NOTE
 --
--- This keeps the email supplied when an order is created with that
--- specific order. Existing orders may be NULL and the Order Lambda
--- falls back to customers.customer_email for backward compatibility.
+-- The orders table above already defines customer_email.
+-- For an EXISTING RDS database that was created before this column
+-- was added, run the one-time migration in:
+-- database/migrations/001_customer_email.sql
 -- ============================================================
-
-ALTER TABLE orders
-    ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255) NULL AFTER customer_id;
-
 
 -- ============================================================
 -- EXISTING RDS MIGRATION (RUN ONLY IF YOUR EXISTING customers TABLE

@@ -1120,8 +1120,8 @@ def get_orders_by_customer(
             """
             SELECT
                 customer_id,
-                name,
-                email
+                customer_name,
+                customer_email
             FROM customers
             WHERE customer_id = %s
             """,
