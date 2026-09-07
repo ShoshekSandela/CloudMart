@@ -259,7 +259,7 @@ WHERE NOT EXISTS (
 
 INSERT INTO products (
     category_id,
-    product_name,
+    name,
     description,
     price,
     stock_quantity,
@@ -279,14 +279,14 @@ WHERE category_name = 'Electronics'
   AND NOT EXISTS (
       SELECT 1
       FROM products
-      WHERE product_name = 'CloudMart Laptop'
+      WHERE name = 'CloudMart Laptop'
   )
 LIMIT 1;
 
 
 INSERT INTO products (
     category_id,
-    product_name,
+    name,
     description,
     price,
     stock_quantity,
@@ -306,14 +306,14 @@ WHERE category_name = 'Accessories'
   AND NOT EXISTS (
       SELECT 1
       FROM products
-      WHERE product_name = 'CloudMart Mouse'
+      WHERE name = 'CloudMart Mouse'
   )
 LIMIT 1;
 
 
 INSERT INTO products (
     category_id,
-    product_name,
+    name,
     description,
     price,
     stock_quantity,
@@ -333,7 +333,7 @@ WHERE category_name = 'Accessories'
   AND NOT EXISTS (
       SELECT 1
       FROM products
-      WHERE product_name = 'CloudMart Keyboard'
+      WHERE name = 'CloudMart Keyboard'
   )
 LIMIT 1;
 
@@ -377,7 +377,7 @@ FROM order_status_history;
 
 SELECT
     product_id,
-    product_name,
+    name,
     price,
     stock_quantity,
     low_stock_threshold,
