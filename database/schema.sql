@@ -128,12 +128,31 @@ CREATE TABLE IF NOT EXISTS orders (
 --
 -- This keeps the email supplied when an order is created with that
 -- specific order. Existing orders may be NULL and the Order Lambda
--- falls back to customers.email for backward compatibility.
+-- falls back to customers.customer_email for backward compatibility.
 -- ============================================================
 
 ALTER TABLE orders
     ADD COLUMN IF NOT EXISTS customer_email VARCHAR(255) NULL AFTER customer_id;
 
+
+-- ============================================================
+-- EXISTING RDS MIGRATION (RUN ONLY IF YOUR EXISTING customers TABLE
+-- STILL HAS name/email COLUMNS)
+--
+-- DESCRIBE customers;
+--
+-- ALTER TABLE customers
+--     CHANGE COLUMN name customer_name VARCHAR(255) NOT NULL,
+--     CHANGE COLUMN email customer_email VARCHAR(255) NOT NULL;
+--
+-- DESCRIBE orders;
+--
+-- ALTER TABLE orders
+--     ADD COLUMN customer_email VARCHAR(255) NULL AFTER customer_id;
+--
+-- Do NOT run the customer ALTER statement on a database that already
+-- has customer_name/customer_email.
+-- ============================================================
 
 -- ============================================================
 -- 5. ORDER STATUS HISTORY

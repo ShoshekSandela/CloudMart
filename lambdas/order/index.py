@@ -264,7 +264,7 @@ def create_order(connection, customer_id, customer_email, items):
 
         cursor.execute(
             """
-            SELECT customer_id, name, email
+            SELECT customer_id, customer_name, customer_email
             FROM customers
             WHERE customer_id = %s
             """,
@@ -434,9 +434,9 @@ def create_order(connection, customer_id, customer_email, items):
         return {
             "order_id": int(order_id),
             "customer_id": int(customer_id),
-            "customer_name": customer["name"],
+            "customer_name": customer["customer_name"],
             # Use the email supplied in the Create Order request.
-            # Do not replace it with customers.email for customer_id.
+            # Do not replace it with customers.customer_email for customer_id.
             "customer_email": customer_email,
             "status": "PENDING",
             "total_amount": total_amount,
@@ -1011,8 +1011,8 @@ def get_order_by_id(connection, order_id):
             SELECT
                 o.order_id,
                 o.customer_id,
-                c.name AS customer_name,
-                COALESCE(o.customer_email, c.email) AS customer_email,
+                c.customer_name AS customer_name,
+                COALESCE(o.customer_email, c.customer_email) AS customer_email,
                 o.status,
                 o.total_amount,
                 o.created_at,
@@ -1140,8 +1140,8 @@ def get_orders_by_customer(
             SELECT
                 o.order_id,
                 o.customer_id,
-                c.name AS customer_name,
-                COALESCE(o.customer_email, c.email) AS customer_email,
+                c.customer_name AS customer_name,
+                COALESCE(o.customer_email, c.customer_email) AS customer_email,
                 o.status,
                 o.total_amount,
                 o.created_at,
@@ -1350,7 +1350,7 @@ def lambda_handler(event, context):
 
             # Create Order uses the email supplied by the caller.
             # Previously this value was ignored and the Lambda returned
-            # customers.email for the supplied customer_id.
+            # customers.customer_email for the supplied customer_id.
             customer_email = validate_customer_email(
                 payload.get("customer_email")
             )
