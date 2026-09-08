@@ -69,6 +69,27 @@ Resources:
             Resource:
               - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock:*
 
+          - Sid: ListOrderNotificationTopicSubscriptions
+            Effect: Allow
+            Action:
+              - sns:ListSubscriptionsByTopic
+            Resource:
+              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+
+          - Sid: SubscribeToOrderNotificationTopic
+            Effect: Allow
+            Action:
+              - sns:Subscribe
+            Resource:
+              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+
+          - Sid: GetOrderNotificationSubscriptionAttributes
+            Effect: Allow
+            Action:
+              - sns:GetSubscriptionAttributes
+            Resource:
+              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
+
   # =========================================================
   # PRODUCT LAMBDA ROLE
   # =========================================================

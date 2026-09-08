@@ -1341,7 +1341,7 @@ jobs:
           echo "All four order lifecycle EventBridge rules are configured correctly."
 
       # =====================================================
-      # VERIFY ORDER SNS EMAIL SUBSCRIPTION
+      # VERIFY / RECREATE ORDER SNS EMAIL SUBSCRIPTION
       # =====================================================
 
       - name: Verify Order Notification SNS Subscription
@@ -1352,6 +1352,11 @@ jobs:
           set -euo pipefail
 
           STACK_NAME="cloudmart-application-dev"
+
+          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
+            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
+            exit 1
+          fi
 
           TOPIC_ARN="$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
@@ -1365,40 +1370,103 @@ jobs:
           fi
 
           echo "Order notification topic: $TOPIC_ARN"
+          echo "Notification email: $NOTIFICATION_EMAIL"
 
-          SUBSCRIPTION_ARN="$(aws sns list-subscriptions-by-topic \
+          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
             --topic-arn "$TOPIC_ARN" \
             --region "$AWS_REGION" \
-            --query "Subscriptions[?Protocol=='email' && Endpoint=='$NOTIFICATION_EMAIL'].SubscriptionArn | [0]" \
-            --output text)"
+            --output json)"
 
-          if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: Order notification email subscription is missing."
-            exit 1
+          # Find a subscription for the configured email.
+          # A Deleted subscription is intentionally ignored because SNS
+          # does not allow it to be reused; a new subscription must be made.
+          ACTIVE_SUBSCRIPTION_ARN="$(
+            printf '%s' "$SUBSCRIPTIONS_JSON" |
+              jq -r --arg email "$NOTIFICATION_EMAIL" '
+                [.Subscriptions[]
+                  | select(
+                      .Protocol == "email"
+                      and .Endpoint == $email
+                      and .SubscriptionArn != "Deleted"
+                    )
+                  | .SubscriptionArn][0] // empty
+              '
+          )"
+
+          DELETED_SUBSCRIPTION_FOUND="$(
+            printf '%s' "$SUBSCRIPTIONS_JSON" |
+              jq -r --arg email "$NOTIFICATION_EMAIL" '
+                [.Subscriptions[]
+                  | select(
+                      .Protocol == "email"
+                      and .Endpoint == $email
+                      and .SubscriptionArn == "Deleted"
+                    )
+                ] | length
+              '
+          )"
+
+          if [ -n "$ACTIVE_SUBSCRIPTION_ARN" ]; then
+            echo "Active order notification subscription found: $ACTIVE_SUBSCRIPTION_ARN"
+
+            if [ "$ACTIVE_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+              echo "ERROR: Order notification email subscription is pending confirmation."
+              echo "Confirm the AWS SNS email and rerun the workflow."
+              exit 1
+            fi
+
+            if [[ "$ACTIVE_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+              echo "ERROR: Unexpected SNS subscription value: $ACTIVE_SUBSCRIPTION_ARN"
+              exit 1
+            fi
+
+            PENDING="$(aws sns get-subscription-attributes \
+              --subscription-arn "$ACTIVE_SUBSCRIPTION_ARN" \
+              --region "$AWS_REGION" \
+              --query 'Attributes.PendingConfirmation' \
+              --output text)"
+
+            if [ "$PENDING" != "false" ]; then
+              echo "ERROR: Order notification SNS subscription is not confirmed."
+              echo "Confirm the AWS SNS email and rerun the workflow."
+              exit 1
+            fi
+
+            echo "Order notification SNS email subscription is confirmed."
+            exit 0
           fi
 
-          if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-            echo "ERROR: Order notification email subscription is pending confirmation."
-            exit 1
+          # No active subscription exists. This includes the exact failure
+          # case reported by the workflow: SubscriptionArn == Deleted.
+          if [ "$DELETED_SUBSCRIPTION_FOUND" -gt 0 ]; then
+            echo "Order notification subscription is Deleted."
+          else
+            echo "Order notification subscription is missing."
           fi
 
-          if [[ "$SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
-            echo "ERROR: Order notification subscription is not confirmed: $SUBSCRIPTION_ARN"
-            exit 1
-          fi
+          echo "Creating a new order notification email subscription..."
 
-          PENDING="$(aws sns get-subscription-attributes \
-            --subscription-arn "$SUBSCRIPTION_ARN" \
+          NEW_SUBSCRIPTION_ARN="$(aws sns subscribe \
+            --topic-arn "$TOPIC_ARN" \
+            --protocol email \
+            --notification-endpoint "$NOTIFICATION_EMAIL" \
             --region "$AWS_REGION" \
-            --query 'Attributes.PendingConfirmation' \
+            --query 'SubscriptionArn' \
             --output text)"
 
-          if [ "$PENDING" != "false" ]; then
-            echo "ERROR: Order notification SNS subscription is not confirmed."
-            exit 1
-          fi
+          echo "New SNS subscription created: $NEW_SUBSCRIPTION_ARN"
+          echo ""
+          echo "ACTION REQUIRED:"
+          echo "AWS has sent a new subscription confirmation email to:"
+          echo "$NOTIFICATION_EMAIL"
+          echo ""
+          echo "Open that email and click 'Confirm subscription'."
+          echo "Then rerun this workflow."
 
-          echo "Order notification SNS email subscription is confirmed."
+          # An email subscription cannot be confirmed programmatically.
+          # Do not pretend the notification path is ready until the user
+          # confirms the AWS SNS email.
+          exit 1
 
       # =====================================================
       # VERIFY DEPLOYED ORDER LAMBDA SOURCE
