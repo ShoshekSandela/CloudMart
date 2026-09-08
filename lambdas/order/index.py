@@ -16,6 +16,126 @@ ssm = boto3.client("ssm")
 events = boto3.client("events")
 
 
+
+# ============================================================
+# AUTHENTICATION / AUTHORIZATION HELPERS
+# ============================================================
+
+def get_authorization_context(event):
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+
+    role = str(
+        authorizer.get("role") or ""
+    ).upper().strip()
+
+    email = authorizer.get("email")
+    customer_id = authorizer.get("customer_id")
+
+    if role not in {"ADMIN", "CUSTOMER"}:
+        raise PermissionError(
+            "Authenticated role is missing or invalid"
+        )
+
+    if email is not None:
+        email = str(email).strip().lower() or None
+
+    if customer_id not in (None, ""):
+        try:
+            customer_id = int(customer_id)
+        except (TypeError, ValueError) as exc:
+            raise PermissionError(
+                "Authenticated customer_id is invalid"
+            ) from exc
+
+    return {
+        "role": role,
+        "email": email,
+        "customer_id": customer_id,
+    }
+
+
+def require_admin(auth):
+    if auth["role"] != "ADMIN":
+        raise PermissionError(
+            "ADMIN role is required"
+        )
+
+
+def resolve_customer_identity(
+    connection,
+    auth,
+):
+    if auth["role"] != "CUSTOMER":
+        return None
+
+    customer_id = auth.get("customer_id")
+    email = auth.get("email")
+
+    with connection.cursor() as cursor:
+        customer = None
+
+        if customer_id is not None:
+            cursor.execute(
+                """
+                SELECT customer_id, customer_name, customer_email
+                FROM customers
+                WHERE customer_id = %s
+                LIMIT 1
+                """,
+                (customer_id,),
+            )
+            customer = cursor.fetchone()
+
+            if customer and email:
+                if (
+                    customer["customer_email"].strip().lower()
+                    != email
+                ):
+                    raise PermissionError(
+                        "Authenticated customer does not match customer record"
+                    )
+
+        elif email:
+            cursor.execute(
+                """
+                SELECT customer_id, customer_name, customer_email
+                FROM customers
+                WHERE LOWER(customer_email) = %s
+                LIMIT 1
+                """,
+                (email,),
+            )
+            customer = cursor.fetchone()
+
+        if not customer:
+            raise PermissionError(
+                "Authenticated customer was not found in customers table"
+            )
+
+        return customer
+
+
+def authorize_order_access(
+    connection,
+    auth,
+    order,
+):
+    if auth["role"] == "ADMIN":
+        return
+
+    customer = resolve_customer_identity(
+        connection,
+        auth,
+    )
+
+    if int(order["customer_id"]) != int(
+        customer["customer_id"]
+    ):
+        raise PermissionError(
+            "Customer cannot access another customer's order"
+        )
+
 # ============================================================
 # RESPONSE HELPERS
 # ============================================================
@@ -1238,6 +1358,7 @@ def lambda_handler(event, context):
                 event
             )
 
+            auth = get_authorization_context(event)
             connection = get_db_connection()
 
             if path_order_id is not None:
@@ -1254,6 +1375,12 @@ def lambda_handler(event, context):
                         f"Order {path_order_id} not found",
                     )
 
+                authorize_order_access(
+                    connection,
+                    auth,
+                    order,
+                )
+
                 return response(
                     200,
                     order,
@@ -1262,11 +1389,18 @@ def lambda_handler(event, context):
             # ------------------------------------------------
             # GET /orders?customerId=X
             # ------------------------------------------------
-            customer_id = (
-                get_customer_id_from_query(
+            if auth["role"] == "CUSTOMER":
+                customer = resolve_customer_identity(
+                    connection,
+                    auth,
+                )
+                customer_id = int(
+                    customer["customer_id"]
+                )
+            else:
+                customer_id = get_customer_id_from_query(
                     event
                 )
-            )
 
             orders = get_orders_by_customer(
                 connection,
@@ -1295,6 +1429,9 @@ def lambda_handler(event, context):
             payload = parse_body(event)
 
             if payload.get("status") is not None:
+                auth = get_authorization_context(event)
+                require_admin(auth)
+
                 try:
                     order_id = int(payload.get("order_id"))
                 except (TypeError, ValueError) as exc:
@@ -1339,23 +1476,34 @@ def lambda_handler(event, context):
 
                 return response(200, order)
 
+            auth = get_authorization_context(event)
             _, items = validate_request(payload)
 
-            # customer_email is the customer identity for order creation.
-            # If it already exists, reuse that customer. If it is new,
-            # create the customer first and use the new customer_id.
-            customer_email = validate_customer_email(
-                payload.get("customer_email")
-            )
-
-            customer_name = payload.get("customer_name")
-
-            if customer_name is not None:
-                if not isinstance(customer_name, str):
-                    raise ValueError("customer_name must be a string")
-                customer_name = customer_name.strip() or None
-
             connection = get_db_connection()
+
+            if auth["role"] == "CUSTOMER":
+                customer = resolve_customer_identity(
+                    connection,
+                    auth,
+                )
+                customer_email = customer["customer_email"]
+                customer_name = customer["customer_name"]
+            else:
+                # ADMIN may create an order for a supplied customer email.
+                customer_email = validate_customer_email(
+                    payload.get("customer_email")
+                )
+
+                customer_name = payload.get("customer_name")
+
+                if customer_name is not None:
+                    if not isinstance(customer_name, str):
+                        raise ValueError(
+                            "customer_name must be a string"
+                        )
+                    customer_name = (
+                        customer_name.strip() or None
+                    )
 
             order = create_order(
                 connection,
@@ -1390,12 +1538,39 @@ def lambda_handler(event, context):
 
             payload = parse_body(event)
 
-            customer_id, items = validate_request(
+            auth = get_authorization_context(event)
+
+            _, items = validate_request(
                 payload,
-                require_customer_id=True,
+                require_customer_id=False,
             )
 
             connection = get_db_connection()
+
+            existing_order = get_order_by_id(
+                connection,
+                order_id,
+            )
+
+            if not existing_order:
+                return error_response(
+                    404,
+                    "ORDER_NOT_FOUND",
+                    f"Order {order_id} not found",
+                )
+
+            if auth["role"] == "CUSTOMER":
+                customer = resolve_customer_identity(
+                    connection,
+                    auth,
+                )
+                customer_id = int(
+                    customer["customer_id"]
+                )
+            else:
+                customer_id = int(
+                    existing_order["customer_id"]
+                )
 
             update_order(
                 connection,
@@ -1435,6 +1610,17 @@ def lambda_handler(event, context):
             405,
             "METHOD_NOT_ALLOWED",
             "Supported methods are GET, POST, PUT, OPTIONS",
+        )
+
+    except PermissionError as exc:
+
+        if connection:
+            connection.rollback()
+
+        return error_response(
+            403,
+            "FORBIDDEN",
+            str(exc),
         )
 
     except ValueError as exc:

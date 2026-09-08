@@ -12,21 +12,80 @@ TOKEN_PARAMETER_NAME = os.environ["TOKEN_PARAMETER_NAME"]
 def log_json(message, level="info", **fields):
     record = {
         "message": message,
-        **fields
+        "level": level,
+        **fields,
     }
     print(json.dumps(record))
-    # CloudWatch receives one JSON object per log line.
 
 
-def get_expected_token():
+def get_authentication_config():
     response = ssm.get_parameter(
         Name=TOKEN_PARAMETER_NAME,
-        WithDecryption=True
+        WithDecryption=True,
     )
-    return response["Parameter"]["Value"]
+
+    value = response["Parameter"]["Value"].strip()
+
+    # Backward compatible: a plain SSM value is treated as an ADMIN token.
+    try:
+        config = json.loads(value)
+    except json.JSONDecodeError:
+        return {
+            "admin_token": value,
+            "admin_email": os.environ.get(
+                "ADMIN_EMAIL",
+                "admin@cloudmart.com",
+            ),
+        }
+
+    if not isinstance(config, dict):
+        raise ValueError(
+            "Authorization configuration must be a JSON object"
+        )
+
+    return config
 
 
-def generate_policy(principal_id, effect, resource):
+def find_identity(config, token):
+    if token == str(config.get("admin_token", "")):
+        return {
+            "role": "ADMIN",
+            "email": config.get(
+                "admin_email",
+                "admin@cloudmart.com",
+            ),
+            "customer_id": None,
+        }
+
+    if token == str(config.get("customer_token", "")):
+        return {
+            "role": "CUSTOMER",
+            "email": config.get("customer_email"),
+            "customer_id": config.get(
+                "customer_customer_id",
+                config.get("customer_id"),
+            ),
+        }
+
+    return None
+
+
+def generate_policy(
+    principal_id,
+    effect,
+    resource,
+    identity,
+):
+    context = {
+        "role": identity["role"],
+    }
+
+    if identity.get("email"):
+        context["email"] = str(identity["email"])
+
+    if identity.get("customer_id") is not None:
+        context["customer_id"] = str(identity["customer_id"])
+
     return {
         "principalId": principal_id,
         "policyDocument": {
@@ -35,10 +94,11 @@ def generate_policy(principal_id, effect, resource):
                 {
                     "Action": "execute-api:Invoke",
                     "Effect": effect,
-                    "Resource": resource
+                    "Resource": resource,
                 }
-            ]
-        }
+            ],
+        },
+        "context": context,
     }
 
 
@@ -49,50 +109,85 @@ def lambda_handler(event, context):
         "Authorizer request received",
         type=event.get("type"),
         methodArn=method_arn,
-        requestId=getattr(context, "aws_request_id", None)
+        requestId=getattr(
+            context,
+            "aws_request_id",
+            None,
+        ),
     )
 
-    authorization_header = event.get("authorizationToken")
+    authorization_header = event.get(
+        "authorizationToken"
+    )
 
     if not authorization_header:
-        log_json("Authorization header missing", level="warning")
+        log_json(
+            "Authorization header missing",
+            level="warning",
+        )
         raise Exception("Unauthorized")
 
     token = authorization_header.strip()
 
-    # Accept either the configured token directly or:
-    # Authorization: Bearer <token>
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
 
     if not token or not method_arn:
-        log_json("Invalid authorization request", level="warning")
+        log_json(
+            "Invalid authorization request",
+            level="warning",
+        )
         raise Exception("Unauthorized")
 
     try:
-        expected_token = get_expected_token()
+        config = get_authentication_config()
+        identity = find_identity(
+            config,
+            token,
+        )
     except Exception as error:
         log_json(
-            "Failed to retrieve token from SSM",
+            "Failed to retrieve authorization configuration",
             level="error",
-            error=str(error)
+            error=str(error),
         )
         raise
 
-    if token != expected_token:
-        log_json("Invalid authorization token", level="warning")
+    if not identity:
+        log_json(
+            "Invalid authorization token",
+            level="warning",
+        )
         raise Exception("Unauthorized")
 
-    # Authorize the complete API represented by this execution.
-    api_arn = method_arn.split("/", 2)[0]
+    api_arn = method_arn.split(
+        "/",
+        2,
+    )[0]
+
+    if identity["role"] == "ADMIN":
+        principal_id = "cloudmart-admin"
+    else:
+        customer_identity = (
+            identity.get("customer_id")
+            or identity.get("email")
+            or "user"
+        )
+        principal_id = (
+            f"cloudmart-customer-{customer_identity}"
+        )
 
     log_json(
         "Authorization successful",
-        principalId="cloudmart-user"
+        principalId=principal_id,
+        role=identity["role"],
+        email=identity.get("email"),
+        customer_id=identity.get("customer_id"),
     )
 
     return generate_policy(
-        principal_id="cloudmart-user",
+        principal_id=principal_id,
         effect="Allow",
-        resource=f"{api_arn}/*/*/*"
+        resource=f"{api_arn}/*/*/*",
+        identity=identity,
     )
