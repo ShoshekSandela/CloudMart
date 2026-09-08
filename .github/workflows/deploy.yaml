@@ -391,61 +391,6 @@ jobs:
 
 
       # =====================================================
-      # SSM SECURESTRING AUTH TOKEN
-      # =====================================================
-
-      - name: Verify Auth Token
-        env:
-          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
-
-        shell: bash
-        run: |
-
-          if [ -z "$AUTH_TOKEN" ]; then
-            echo "ERROR: CLOUDMART_AUTH_TOKEN is missing."
-            exit 1
-          fi
-
-          echo "Auth token is available."
-
-
-      - name: Create or Update SSM Auth Token
-        env:
-          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
-
-        shell: bash
-        run: |
-
-          aws ssm put-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --value "$AUTH_TOKEN" \
-            --type SecureString \
-            --overwrite \
-            --region "$AWS_REGION"
-
-          echo "SSM SecureString auth token created/updated."
-
-
-      - name: Verify SSM Auth Token Parameter
-        run: |
-
-          PARAM_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --region "$AWS_REGION" \
-            --query "Parameter.Type" \
-            --output text)
-
-          echo "SSM Auth Token Parameter Type: $PARAM_TYPE"
-
-          if [ "$PARAM_TYPE" != "SecureString" ]; then
-            echo "ERROR: Auth token is not stored as SecureString."
-            exit 1
-          fi
-
-          echo "SSM SecureString verification passed."
-
-
-      # =====================================================
       # IAM FAILURE DIAGNOSTICS
       # =====================================================
 
@@ -583,29 +528,6 @@ jobs:
               exit 1
               ;;
           esac
-
-
-      # =====================================================
-      # VERIFY SSM AUTH TOKEN
-      # =====================================================
-
-      - name: Verify SSM Auth Token
-        run: |
-
-          PARAM_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --region "$AWS_REGION" \
-            --query "Parameter.Type" \
-            --output text)
-
-          echo "Auth Token Parameter Type: $PARAM_TYPE"
-
-          if [ "$PARAM_TYPE" != "SecureString" ]; then
-            echo "ERROR: SSM auth token parameter is not SecureString."
-            exit 1
-          fi
-
-          echo "SSM auth token is ready."
 
 
       # =====================================================
@@ -1166,6 +1088,58 @@ jobs:
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"
 
           echo "Application Stack deployment completed successfully."
+
+      # =====================================================
+      # INITIALIZE RANDOM ADMIN / CUSTOMER TOKENS
+      # =====================================================
+
+      - name: Initialize CloudMart ADMIN and CUSTOMER tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Initializing CloudMart authentication tokens..."
+
+          aws lambda invoke             --function-name "cloudmart-dev-authorizer"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_tokens"}'             /tmp/auth-token-init.json
+
+          cat /tmp/auth-token-init.json
+
+          echo "ADMIN and CUSTOMER tokens initialized in /cloudmart/dev/auth/token"
+
+
+      # =====================================================
+      # VERIFY GENERATED AUTH TOKEN PARAMETER
+      # =====================================================
+
+      - name: Verify Generated Auth Token Parameter
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PARAM_JSON="$(aws ssm get-parameter             --name "/cloudmart/dev/auth/token"             --with-decryption             --region "$AWS_REGION"             --output json)"
+
+          PARAM_TYPE="$(printf '%s' "$PARAM_JSON" | jq -r '.Parameter.Type')"
+          PARAM_VALUE="$(printf '%s' "$PARAM_JSON" | jq -r '.Parameter.Value')"
+
+          if [ "$PARAM_TYPE" != "SecureString" ]; then
+            echo "ERROR: Auth token parameter is not SecureString."
+            exit 1
+          fi
+
+          if ! printf '%s' "$PARAM_VALUE" | jq -e '.admin_token | type == "string" and length > 0' >/dev/null; then
+            echo "ERROR: ADMIN token was not generated."
+            exit 1
+          fi
+
+          if ! printf '%s' "$PARAM_VALUE" | jq -e '.customer_token | type == "string" and length > 0' >/dev/null; then
+            echo "ERROR: CUSTOMER token was not generated."
+            exit 1
+          fi
+
+          echo "Generated ADMIN token exists."
+          echo "Generated CUSTOMER token exists."
+          echo "SSM authentication configuration verification passed."
+
 
 
       # =====================================================

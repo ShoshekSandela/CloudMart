@@ -62,7 +62,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "223"
+    Default: "225"
     Description: Change this value to force a new API Gateway deployment.
 
 Resources:
@@ -342,6 +342,7 @@ Resources:
         Variables:
           TOKEN_PARAMETER_NAME: !Ref TokenParameterName
           ADMIN_EMAIL: admin@cloudmart.com
+          CUSTOMER_EMAIL: customer@cloudmart.com
       Tags:
         Project: CloudMart
         Environment: !Ref Environment

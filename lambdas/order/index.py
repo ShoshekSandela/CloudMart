@@ -69,13 +69,44 @@ def resolve_customer_identity(
     if auth["role"] != "CUSTOMER":
         return None
 
-    customer_id = auth.get("customer_id")
     email = auth.get("email")
+    configured_customer_id = auth.get("customer_id")
+
+    if not email:
+        raise PermissionError(
+            "Customer token has no authenticated email"
+        )
+
+    email = validate_customer_email(email)
 
     with connection.cursor() as cursor:
-        customer = None
+        cursor.execute(
+            """
+            SELECT customer_id, customer_name, customer_email
+            FROM customers
+            WHERE LOWER(customer_email) = %s
+            LIMIT 1
+            """,
+            (email,),
+        )
+        customer = cursor.fetchone()
 
-        if customer_id is not None:
+        if not customer:
+            customer_name = email.split("@", 1)[0]
+
+            cursor.execute(
+                """
+                INSERT INTO customers (
+                    customer_name,
+                    customer_email
+                )
+                VALUES (%s, %s)
+                """,
+                (customer_name, email),
+            )
+
+            customer_id = cursor.lastrowid
+
             cursor.execute(
                 """
                 SELECT customer_id, customer_name, customer_email
@@ -87,31 +118,11 @@ def resolve_customer_identity(
             )
             customer = cursor.fetchone()
 
-            if customer and email:
-                if (
-                    customer["customer_email"].strip().lower()
-                    != email
-                ):
-                    raise PermissionError(
-                        "Authenticated customer does not match customer record"
-                    )
-
-        elif email:
-            cursor.execute(
-                """
-                SELECT customer_id, customer_name, customer_email
-                FROM customers
-                WHERE LOWER(customer_email) = %s
-                LIMIT 1
-                """,
-                (email,),
-            )
-            customer = cursor.fetchone()
-
-        if not customer:
-            raise PermissionError(
-                "Authenticated customer was not found in customers table"
-            )
+        if configured_customer_id is not None:
+            if int(customer["customer_id"]) != int(configured_customer_id):
+                raise PermissionError(
+                    "Authenticated customer does not match customer record"
+                )
 
         return customer
 
@@ -1567,6 +1578,11 @@ def lambda_handler(event, context):
                 customer_id = int(
                     customer["customer_id"]
                 )
+
+                if int(existing_order["customer_id"]) != customer_id:
+                    raise PermissionError(
+                        "Customer cannot update another customer's order"
+                    )
             else:
                 customer_id = int(
                     existing_order["customer_id"]

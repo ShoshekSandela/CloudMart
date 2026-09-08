@@ -366,11 +366,12 @@ Resources:
                 Resource: "arn:aws:logs:*:*:*"
 
 
-              # Read authentication token from SSM
+              # Read and initialize authentication tokens in SSM
               - Effect: Allow
 
                 Action:
                   - ssm:GetParameter
+                  - ssm:PutParameter
 
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token

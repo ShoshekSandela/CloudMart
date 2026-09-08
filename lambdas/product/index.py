@@ -627,6 +627,54 @@ def delete_product(cursor, product_id, payload):
 
 
 # ============================================================
+# AUTHORIZATION / RBAC
+#
+# API Gateway already enforces the ADMIN/CUSTOMER route policy
+# through the TOKEN authorizer. This second check protects the
+# Product Lambda itself if it is invoked directly.
+#
+# ADMIN:
+#   GET /products
+#   POST /products
+#   GET /products/{id}
+#   PUT /products/{id}
+#   DELETE /products/{id}
+#
+# CUSTOMER:
+#   GET /products
+#   GET /products/{id}
+#
+# ============================================================
+
+def get_authorization_context(event):
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+
+    role = (
+        authorizer.get("role")
+        or authorizer.get("Role")
+        or ""
+    ).upper()
+
+    return {
+        "role": role,
+        "email": authorizer.get("email"),
+        "customer_id": authorizer.get("customer_id")
+    }
+
+
+def require_admin(event):
+    auth = get_authorization_context(event)
+
+    if auth["role"] != "ADMIN":
+        raise PermissionError(
+            "ADMIN role is required for this operation"
+        )
+
+    return auth
+
+
+# ============================================================
 # MAIN LAMBDA
 # ============================================================
 
@@ -690,22 +738,12 @@ def lambda_handler(event, context):
         connection = get_db_connection()
 
         # ---------------------------------------------------------
-        # AUTOMATIC DATABASE INITIALIZATION
-        #
-        # If the RDS database has not been initialized yet, apply
-        # the schema.sql bundled into this Lambda package.
-        # No manual database setup is required.
-        #
-        # The explicit action below is retained for CI/CD or
-        # troubleshooting, but normal API requests also self-heal
-        # a missing products table.
-        # ---------------------------------------------------------
-        ensure_database_schema(connection)
-
-        # ---------------------------------------------------------
         # ONE-TIME DATABASE INITIALIZATION
-        # This is intentionally a direct Lambda invocation action,
-        # not a normal HTTP/API operation.
+        #
+        # This is a direct Lambda invocation action only.
+        # It must be handled BEFORE the normal schema check so that
+        # an explicit initialization does not perform an unnecessary
+        # products-table lookup first.
         # ---------------------------------------------------------
 
         if event.get("action") == "initialize_database":
@@ -719,6 +757,15 @@ def lambda_handler(event, context):
             result = initialize_database(connection)
 
             return response(200, result)
+
+        # ---------------------------------------------------------
+        # AUTOMATIC DATABASE INITIALIZATION
+        #
+        # For normal Product API requests, automatically apply the
+        # packaged schema if the products table is missing.
+        # ---------------------------------------------------------
+
+        ensure_database_schema(connection)
 
         with connection.cursor() as cursor:
 
@@ -770,6 +817,8 @@ def lambda_handler(event, context):
 
             if method == "POST":
 
+                require_admin(event)
+
                 product_id = create_product(
                     cursor,
                     payload
@@ -794,6 +843,8 @@ def lambda_handler(event, context):
             # =================================================
 
             if method == "PUT" and product_id:
+
+                require_admin(event)
 
                 result = update_product(
                     cursor,
@@ -854,6 +905,8 @@ def lambda_handler(event, context):
 
             if method == "DELETE" and product_id:
 
+                require_admin(event)
+
                 deleted = delete_product(
                     cursor,
                     product_id,
@@ -906,6 +959,21 @@ def lambda_handler(event, context):
             {
                 "message":
                     "Invalid JSON body"
+            }
+        )
+
+    except PermissionError as exc:
+
+        if connection:
+            connection.rollback()
+
+        log_json("warning", "Authorization denied", error=str(exc))
+
+        return response(
+            403,
+            {
+                "message":
+                    str(exc)
             }
         )
 
