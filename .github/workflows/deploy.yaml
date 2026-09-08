@@ -1377,10 +1377,10 @@ jobs:
             --region "$AWS_REGION" \
             --output json)"
 
-          # Find a subscription for the configured email.
-          # A Deleted subscription is intentionally ignored because SNS
-          # does not allow it to be reused; a new subscription must be made.
-          ACTIVE_SUBSCRIPTION_ARN="$(
+          # IMPORTANT:
+          # A confirmed subscription is never replaced or recreated.
+          # It remains untouched during normal deployments.
+          CONFIRMED_COUNT="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
               jq -r --arg email "$NOTIFICATION_EMAIL" '
                 [.Subscriptions[]
@@ -1389,11 +1389,57 @@ jobs:
                       and .Endpoint == $email
                       and .SubscriptionArn != "Deleted"
                     )
-                  | .SubscriptionArn][0] // empty
+                ] | length
               '
           )"
 
-          DELETED_SUBSCRIPTION_FOUND="$(
+          if [ "$CONFIRMED_COUNT" -gt 0 ]; then
+            SUBSCRIPTION_ARN="$(
+              printf '%s' "$SUBSCRIPTIONS_JSON" |
+                jq -r --arg email "$NOTIFICATION_EMAIL" '
+                  [.Subscriptions[]
+                    | select(
+                        .Protocol == "email"
+                        and .Endpoint == $email
+                        and .SubscriptionArn != "Deleted"
+                      )
+                    | .SubscriptionArn][0] // empty
+                '
+            )"
+
+            echo "Existing order notification subscription found: $SUBSCRIPTION_ARN"
+
+            if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+              echo "ERROR: Order notification subscription is pending confirmation."
+              echo "Confirm the AWS SNS email, then rerun the workflow."
+              exit 1
+            fi
+
+            if [[ "$SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+              echo "ERROR: Unexpected SNS subscription value: $SUBSCRIPTION_ARN"
+              exit 1
+            fi
+
+            PENDING_CONFIRMATION="$(aws sns get-subscription-attributes \
+              --subscription-arn "$SUBSCRIPTION_ARN" \
+              --region "$AWS_REGION" \
+              --query 'Attributes.PendingConfirmation' \
+              --output text)"
+
+            if [ "$PENDING_CONFIRMATION" != "false" ]; then
+              echo "ERROR: Order notification SNS subscription is not confirmed."
+              echo "Confirm the AWS SNS email, then rerun the workflow."
+              exit 1
+            fi
+
+            echo "Order notification SNS email subscription is CONFIRMED."
+            echo "Keeping the existing subscription unchanged."
+            exit 0
+          fi
+
+          # No active subscription exists. This means the old subscription
+          # was deleted/unsubscribed, or it does not exist yet.
+          DELETED_COUNT="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
               jq -r --arg email "$NOTIFICATION_EMAIL" '
                 [.Subscriptions[]
@@ -1406,45 +1452,29 @@ jobs:
               '
           )"
 
-          if [ -n "$ACTIVE_SUBSCRIPTION_ARN" ]; then
-            echo "Active order notification subscription found: $ACTIVE_SUBSCRIPTION_ARN"
+          if [ "$DELETED_COUNT" -gt 0 ]; then
+            echo "Order notification subscription is DELETED."
+          else
+            echo "Order notification subscription does not exist."
+          fi
 
-            if [ "$ACTIVE_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-              echo "ERROR: Order notification email subscription is pending confirmation."
-              echo "Confirm the AWS SNS email and rerun the workflow."
-              exit 1
-            fi
-
-            if [[ "$ACTIVE_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
-              echo "ERROR: Unexpected SNS subscription value: $ACTIVE_SUBSCRIPTION_ARN"
-              exit 1
-            fi
-
-            PENDING="$(aws sns get-subscription-attributes \
-              --subscription-arn "$ACTIVE_SUBSCRIPTION_ARN" \
+          # Before creating anything, check again to avoid a duplicate if
+          # another subscription was created concurrently.
+          EXISTING_NON_DELETED="$(
+            aws sns list-subscriptions-by-topic \
+              --topic-arn "$TOPIC_ARN" \
               --region "$AWS_REGION" \
-              --query 'Attributes.PendingConfirmation' \
-              --output text)"
+              --query "Subscriptions[?Protocol=='email' && Endpoint=='$NOTIFICATION_EMAIL' && SubscriptionArn!='Deleted'] | length(@)" \
+              --output text
+          )"
 
-            if [ "$PENDING" != "false" ]; then
-              echo "ERROR: Order notification SNS subscription is not confirmed."
-              echo "Confirm the AWS SNS email and rerun the workflow."
-              exit 1
-            fi
-
-            echo "Order notification SNS email subscription is confirmed."
+          if [ "$EXISTING_NON_DELETED" -gt 0 ]; then
+            echo "An active subscription appeared during verification."
+            echo "Leaving it unchanged."
             exit 0
           fi
 
-          # No active subscription exists. This includes the exact failure
-          # case reported by the workflow: SubscriptionArn == Deleted.
-          if [ "$DELETED_SUBSCRIPTION_FOUND" -gt 0 ]; then
-            echo "Order notification subscription is Deleted."
-          else
-            echo "Order notification subscription is missing."
-          fi
-
-          echo "Creating a new order notification email subscription..."
+          echo "Creating one replacement order notification email subscription..."
 
           NEW_SUBSCRIPTION_ARN="$(aws sns subscribe \
             --topic-arn "$TOPIC_ARN" \
@@ -1457,15 +1487,13 @@ jobs:
           echo "New SNS subscription created: $NEW_SUBSCRIPTION_ARN"
           echo ""
           echo "ACTION REQUIRED:"
-          echo "AWS has sent a new subscription confirmation email to:"
+          echo "AWS sent a new SNS subscription confirmation email to:"
           echo "$NOTIFICATION_EMAIL"
           echo ""
-          echo "Open that email and click 'Confirm subscription'."
-          echo "Then rerun this workflow."
+          echo "Click 'Confirm subscription' in that email."
+          echo "Then rerun the workflow."
 
-          # An email subscription cannot be confirmed programmatically.
-          # Do not pretend the notification path is ready until the user
-          # confirms the AWS SNS email.
+          # Email confirmation must be performed by the recipient.
           exit 1
 
       # =====================================================
