@@ -260,189 +260,105 @@ class StockError(Exception):
 
 
 def create_order(connection, customer_id, customer_email, items):
+    """Create a PENDING order, reserve inventory, then publish inventory events."""
     with connection.cursor() as cursor:
-
-        cursor.execute(
-            """
+        cursor.execute("""
             SELECT customer_id, customer_name, customer_email
-            FROM customers
-            WHERE customer_id = %s
-            """,
-            (customer_id,),
-        )
-
+            FROM customers WHERE customer_id = %s
+        """, (customer_id,))
         customer = cursor.fetchone()
-
         if not customer:
-            raise LookupError(
-                "Customer not found"
-            )
+            raise LookupError("Customer not found")
 
-        # Combine duplicate product IDs.
         quantities = {}
-
         for item in items:
             product_id = item["product_id"]
-            quantities[product_id] = (
-                quantities.get(product_id, 0)
-                + item["quantity"]
-            )
+            quantities[product_id] = quantities.get(product_id, 0) + item["quantity"]
 
         order_items = []
+        inventory_events = []
         total_amount = Decimal("0.00")
 
         for product_id, quantity in quantities.items():
-
-            cursor.execute(
-                """
-                SELECT
-                    product_id,
-                    name,
-                    price,
-                    stock_quantity,
-                    status,
-                    deleted_at
-                FROM products
-                WHERE product_id = %s
-                """,
-                (product_id,),
-            )
-
+            cursor.execute("""
+                SELECT product_id, name, price, stock_quantity,
+                       low_stock_threshold, status, deleted_at
+                FROM products WHERE product_id = %s FOR UPDATE
+            """, (product_id,))
             product = cursor.fetchone()
-
             if not product:
-                raise LookupError(
-                    f"Product {product_id} not found"
-                )
-
+                raise LookupError(f"Product {product_id} not found")
             if product["deleted_at"] is not None:
-                raise LookupError(
-                    f"Product {product_id} is deleted"
-                )
-
+                raise LookupError(f"Product {product_id} is deleted")
             if product["status"] != "ACTIVE":
-                raise ValueError(
-                    f"Product {product_id} is not active"
-                )
+                raise ValueError(f"Product {product_id} is not active")
+            old_stock = int(product["stock_quantity"])
+            if old_stock < quantity:
+                raise StockError(f"Insufficient stock for product {product_id}")
 
-            # Check stock before creating the order.
-            if int(product["stock_quantity"]) < quantity:
-                raise StockError(
-                    f"Insufficient stock for product {product_id}"
-                )
-
-            unit_price = Decimal(
-                str(product["price"])
-            )
-
+            unit_price = Decimal(str(product["price"]))
             subtotal = unit_price * quantity
             total_amount += subtotal
+            order_items.append({"product_id": product_id, "quantity": quantity,
+                                "unit_price": unit_price, "subtotal": subtotal})
+            inventory_events.append({"product_id": int(product_id), "product_name": product["name"],
+                                     "old_stock": old_stock, "new_stock": old_stock - quantity,
+                                     "threshold": int(product["low_stock_threshold"])})
 
-            order_items.append(
-                {
-                    "product_id": product_id,
-                    "quantity": quantity,
-                    "unit_price": unit_price,
-                    "subtotal": subtotal,
-                }
-            )
-
-        cursor.execute(
-            """
-            INSERT INTO orders (
-                customer_id,
-                customer_email,
-                status,
-                total_amount
-            )
+        cursor.execute("""
+            INSERT INTO orders (customer_id, customer_email, status, total_amount)
             VALUES (%s, %s, %s, %s)
-            """,
-            (
-                customer_id,
-                customer_email,
-                "PENDING",
-                total_amount,
-            ),
-        )
-
+        """, (customer_id, customer_email, "PENDING", total_amount))
         order_id = cursor.lastrowid
 
         for item in order_items:
-            cursor.execute(
-                """
-                INSERT INTO order_items (
-                    order_id,
-                    product_id,
-                    quantity,
-                    unit_price,
-                    subtotal
-                )
+            cursor.execute("""
+                INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
                 VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    order_id,
-                    item["product_id"],
-                    item["quantity"],
-                    item["unit_price"],
-                    item["subtotal"],
-                ),
-            )
+            """, (order_id, item["product_id"], item["quantity"], item["unit_price"], item["subtotal"]))
 
-        # Deduct inventory inside the SAME database transaction.
-        # The stock check is performed again atomically so concurrent
-        # orders cannot drive inventory below zero.
         for item in order_items:
-            cursor.execute(
-                """
+            cursor.execute("""
                 UPDATE products
-                SET stock_quantity = stock_quantity - %s
-                WHERE product_id = %s
-                  AND stock_quantity >= %s
-                """,
-                (
-                    item["quantity"],
-                    item["product_id"],
-                    item["quantity"],
-                ),
-            )
-
+                SET stock_quantity = stock_quantity - %s, updated_at = CURRENT_TIMESTAMP
+                WHERE product_id = %s AND stock_quantity >= %s
+            """, (item["quantity"], item["product_id"], item["quantity"]))
             if cursor.rowcount != 1:
-                raise StockError(
-                    f"Insufficient stock for product {item['product_id']}"
-                )
+                raise StockError(f"Insufficient stock for product {item['product_id']}")
 
-        cursor.execute(
-            """
-            INSERT INTO order_status_history (
-                order_id,
-                old_status,
-                new_status,
-                changed_by
-            )
+        cursor.execute("""
+            INSERT INTO order_status_history (order_id, old_status, new_status, changed_by)
             VALUES (%s, %s, %s, %s)
-            """,
-            (
-                order_id,
-                None,
-                "PENDING",
-                "order-api",
-            ),
-        )
-
+        """, (order_id, None, "PENDING", "order-api"))
         connection.commit()
 
-        return {
-            "order_id": int(order_id),
-            "customer_id": int(customer_id),
-            "customer_name": customer["customer_name"],
-            # Use the email supplied in the Create Order request.
-            # Do not replace it with customers.customer_email for customer_id.
-            "customer_email": customer_email,
-            "status": "PENDING",
-            "total_amount": total_amount,
-            "items": order_items,
-        }
+        for change in inventory_events:
+            publish_inventory_event_from_order(**change)
 
+        return {"order_id": int(order_id), "customer_id": int(customer_id),
+                "customer_name": customer["customer_name"], "customer_email": customer_email,
+                "status": "PENDING", "total_amount": total_amount, "items": order_items}
+
+
+def publish_inventory_event_from_order(product_id, product_name, old_stock, new_stock, threshold):
+    """Publish the existing Product Lambda inventory event shape from Order Lambda."""
+    detail = {"product_id": int(product_id), "product_name": product_name,
+              "old_stock": int(old_stock), "new_stock": int(new_stock),
+              "low_stock_threshold": int(threshold),
+              "low_stock": int(new_stock) <= int(threshold)}
+    try:
+        result = events.put_events(Entries=[{
+            "Source": "cloudmart.product", "DetailType": "Inventory Changed",
+            "EventBusName": os.environ["EVENT_BUS_NAME"], "Detail": json.dumps(detail)
+        }])
+        if result.get("FailedEntryCount", 0) > 0:
+            logger.error("Inventory Changed event failed: %s", json.dumps(result, default=json_serializer))
+            return False
+        logger.info("Inventory Changed event published: %s", json.dumps(detail))
+        return True
+    except Exception:
+        logger.exception("Unable to publish Inventory Changed event")
+        return False
 
 def publish_order_placed_event(order):
     detail = {
@@ -567,67 +483,57 @@ def publish_order_event(detail_type, order):
 def update_order_status(connection, order_id, new_status):
     allowed_statuses = {"CONFIRMED", "CANCELED", "FAILED", "COMPLETED"}
     new_status = str(new_status).upper().strip()
-
     if new_status not in allowed_statuses:
-        raise ValueError(
-            "status must be one of: CONFIRMED, CANCELED, FAILED, COMPLETED"
-        )
+        raise ValueError("status must be one of: CONFIRMED, CANCELED, FAILED, COMPLETED")
 
+    inventory_events = []
     with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT
-                o.order_id,
-                o.customer_id,
-                o.status,
-                o.total_amount
-            FROM orders o
-            WHERE o.order_id = %s
-            FOR UPDATE
-            """,
-            (order_id,),
-        )
+        cursor.execute("""
+            SELECT order_id, customer_id, status, total_amount
+            FROM orders WHERE order_id = %s FOR UPDATE
+        """, (order_id,))
         existing = cursor.fetchone()
-
         if not existing:
             raise LookupError(f"Order {order_id} not found")
-
         old_status = existing["status"]
-
         if old_status == new_status:
             connection.commit()
             return False
-
         if old_status in {"CANCELED", "FAILED", "COMPLETED"}:
-            raise ValueError(
-                f"Order {order_id} is already in terminal status {old_status}"
-            )
+            raise ValueError(f"Order {order_id} is already in terminal status {old_status}")
 
-        cursor.execute(
-            """
-            UPDATE orders
-            SET status = %s
-            WHERE order_id = %s
-            """,
-            (new_status, order_id),
-        )
+        # Inventory was reserved at order creation. Restore it exactly once
+        # when the order becomes CANCELED or FAILED.
+        if new_status in {"CANCELED", "FAILED"}:
+            cursor.execute("""
+                SELECT oi.product_id, oi.quantity, p.name AS product_name,
+                       p.stock_quantity, p.low_stock_threshold
+                FROM order_items oi
+                JOIN products p ON p.product_id = oi.product_id
+                WHERE oi.order_id = %s FOR UPDATE
+            """, (order_id,))
+            for item in cursor.fetchall():
+                old_stock = int(item["stock_quantity"])
+                new_stock = old_stock + int(item["quantity"])
+                cursor.execute("""
+                    UPDATE products
+                    SET stock_quantity = stock_quantity + %s, updated_at = CURRENT_TIMESTAMP
+                    WHERE product_id = %s
+                """, (item["quantity"], item["product_id"]))
+                inventory_events.append({"product_id": int(item["product_id"]),
+                    "product_name": item["product_name"], "old_stock": old_stock,
+                    "new_stock": new_stock, "threshold": int(item["low_stock_threshold"])})
 
-        cursor.execute(
-            """
-            INSERT INTO order_status_history (
-                order_id,
-                old_status,
-                new_status,
-                changed_by
-            )
+        cursor.execute("UPDATE orders SET status = %s WHERE order_id = %s", (new_status, order_id))
+        cursor.execute("""
+            INSERT INTO order_status_history (order_id, old_status, new_status, changed_by)
             VALUES (%s, %s, %s, %s)
-            """,
-            (order_id, old_status, new_status, "order-api"),
-        )
-
+        """, (order_id, old_status, new_status, "order-api"))
     connection.commit()
-    return True
 
+    for change in inventory_events:
+        publish_inventory_event_from_order(**change)
+    return True
 
 
 # ============================================================
