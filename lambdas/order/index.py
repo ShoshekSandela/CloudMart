@@ -170,7 +170,7 @@ def parse_body(event):
         ) from exc
 
 
-def validate_request(payload):
+def validate_request(payload, require_customer_id=False):
     if not isinstance(payload, dict):
         raise ValueError(
             "Request body must be a JSON object"
@@ -178,21 +178,54 @@ def validate_request(payload):
 
     customer_id = payload.get("customer_id")
 
-    if customer_id is None:
+    if require_customer_id:
+        if customer_id is None:
+            raise ValueError(
+                "customer_id is required"
+            )
+
+        try:
+            customer_id = int(customer_id)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "customer_id must be an integer"
+            ) from exc
+
+        if customer_id <= 0:
+            raise ValueError(
+                "customer_id must be greater than zero"
+            )
+
+    customer_email = payload.get("customer_email")
+
+    if customer_email is None:
         raise ValueError(
-            "customer_id is required"
+            "customer_email is required"
         )
 
-    try:
-        customer_id = int(customer_id)
-    except (TypeError, ValueError) as exc:
+    if not isinstance(customer_email, str):
         raise ValueError(
-            "customer_id must be an integer"
-        ) from exc
+            "customer_email must be a string"
+        )
 
-    if customer_id <= 0:
+    customer_email = customer_email.strip()
+
+    if not customer_email:
         raise ValueError(
-            "customer_id must be greater than zero"
+            "customer_email is required"
+        )
+
+    if len(customer_email) > 254:
+        raise ValueError(
+            "customer_email is too long"
+        )
+
+    if not re.fullmatch(
+        r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+",
+        customer_email,
+    ):
+        raise ValueError(
+            "customer_email must be a valid email address"
         )
 
     items = payload.get("items")
@@ -248,7 +281,54 @@ def validate_request(payload):
             }
         )
 
-    return customer_id, validated
+    return customer_id, customer_email, validated
+
+
+def get_or_create_customer(connection, customer_email, customer_name=None):
+    """
+    Find a customer by email. If the email does not exist, create a new
+    customer and return its customer_id and stored customer details.
+    """
+    customer_email = customer_email.strip().lower()
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT customer_id, customer_name, customer_email
+            FROM customers
+            WHERE LOWER(customer_email) = %s
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (customer_email,),
+        )
+        customer = cursor.fetchone()
+
+        if customer:
+            return customer
+
+        if not customer_name:
+            customer_name = customer_email.split("@", 1)[0]
+
+        cursor.execute(
+            """
+            INSERT INTO customers (customer_name, customer_email)
+            VALUES (%s, %s)
+            """,
+            (customer_name, customer_email),
+        )
+
+        customer_id = cursor.lastrowid
+
+        cursor.execute(
+            """
+            SELECT customer_id, customer_name, customer_email
+            FROM customers
+            WHERE customer_id = %s
+            """,
+            (customer_id,),
+        )
+        return cursor.fetchone()
 
 
 # ============================================================
@@ -259,16 +339,16 @@ class StockError(Exception):
     pass
 
 
-def create_order(connection, customer_id, customer_email, items):
+def create_order(connection, customer_email, items, customer_name=None):
     """Create a PENDING order, reserve inventory, then publish inventory events."""
     with connection.cursor() as cursor:
-        cursor.execute("""
-            SELECT customer_id, customer_name, customer_email
-            FROM customers WHERE customer_id = %s
-        """, (customer_id,))
-        customer = cursor.fetchone()
-        if not customer:
-            raise LookupError("Customer not found")
+        customer = get_or_create_customer(
+            connection,
+            customer_email,
+            customer_name,
+        )
+        customer_id = int(customer["customer_id"])
+        customer_email = customer["customer_email"]
 
         quantities = {}
         for item in items:
@@ -918,7 +998,7 @@ def get_order_by_id(connection, order_id):
                 o.order_id,
                 o.customer_id,
                 c.customer_name AS customer_name,
-                COALESCE(o.customer_email, c.customer_email) AS customer_email,
+                c.customer_email AS customer_email,
                 o.status,
                 o.total_amount,
                 o.created_at,
@@ -1047,7 +1127,7 @@ def get_orders_by_customer(
                 o.order_id,
                 o.customer_id,
                 c.customer_name AS customer_name,
-                COALESCE(o.customer_email, c.customer_email) AS customer_email,
+                c.customer_email AS customer_email,
                 o.status,
                 o.total_amount,
                 o.created_at,
@@ -1250,24 +1330,27 @@ def lambda_handler(event, context):
 
                 return response(200, order)
 
-            customer_id, items = (
+            customer_id, customer_email, items = (
                 validate_request(payload)
             )
 
-            # Create Order uses the email supplied by the caller.
-            # Previously this value was ignored and the Lambda returned
-            # customers.customer_email for the supplied customer_id.
-            customer_email = validate_customer_email(
-                payload.get("customer_email")
-            )
+            # customer_email is the customer identity for order creation.
+            # If it already exists, reuse that customer. If it is new,
+            # create the customer first and use the new customer_id.
+            customer_name = payload.get("customer_name")
+
+            if customer_name is not None:
+                if not isinstance(customer_name, str):
+                    raise ValueError("customer_name must be a string")
+                customer_name = customer_name.strip() or None
 
             connection = get_db_connection()
 
             order = create_order(
                 connection,
-                customer_id,
                 customer_email,
                 items,
+                customer_name,
             )
 
             if not publish_order_placed_event(order):
@@ -1296,8 +1379,9 @@ def lambda_handler(event, context):
 
             payload = parse_body(event)
 
-            customer_id, items = validate_request(
-                payload
+            customer_id, _, items = validate_request(
+                payload,
+                require_customer_id=True,
             )
 
             connection = get_db_connection()
