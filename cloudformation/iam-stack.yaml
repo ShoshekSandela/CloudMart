@@ -91,6 +91,37 @@ Resources:
               - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
 
   # =========================================================
+  # GITHUB ACTIONS LAMBDA INITIALIZATION PERMISSION
+  # =========================================================
+  #
+  # deploy.yaml invokes the Authorizer Lambda directly after the
+  # application stack is deployed. This permission belongs to the
+  # GitHub Actions role, not to the Lambda Authorizer execution role.
+  #
+
+  GitHubActionsAuthorizerInitializationPolicy:
+    Type: AWS::IAM::Policy
+
+    Properties:
+      PolicyName: CloudMartGitHubActionsAuthorizerInitializationPolicy
+
+      Roles:
+        - !Ref GitHubActionsRoleName
+
+      PolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+
+          - Sid: InitializeCloudMartAuthorizer
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-authorizer
+
+
+  # =========================================================
   # PRODUCT LAMBDA ROLE
   # =========================================================
 
