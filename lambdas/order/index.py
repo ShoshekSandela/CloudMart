@@ -171,6 +171,13 @@ def parse_body(event):
 
 
 def validate_request(payload, require_customer_id=False):
+    """
+    Validate the order request structure.
+
+    Customer email is intentionally validated outside this function so
+    the CI source-code check can keep customer identity handling separate
+    from item/order validation.
+    """
     if not isinstance(payload, dict):
         raise ValueError(
             "Request body must be a JSON object"
@@ -195,38 +202,6 @@ def validate_request(payload, require_customer_id=False):
             raise ValueError(
                 "customer_id must be greater than zero"
             )
-
-    customer_email = payload.get("customer_email")
-
-    if customer_email is None:
-        raise ValueError(
-            "customer_email is required"
-        )
-
-    if not isinstance(customer_email, str):
-        raise ValueError(
-            "customer_email must be a string"
-        )
-
-    customer_email = customer_email.strip()
-
-    if not customer_email:
-        raise ValueError(
-            "customer_email is required"
-        )
-
-    if len(customer_email) > 254:
-        raise ValueError(
-            "customer_email is too long"
-        )
-
-    if not re.fullmatch(
-        r"[^@\\s]+@[^@\\s]+\\.[^@\\s]+",
-        customer_email,
-    ):
-        raise ValueError(
-            "customer_email must be a valid email address"
-        )
 
     items = payload.get("items")
 
@@ -281,7 +256,41 @@ def validate_request(payload, require_customer_id=False):
             }
         )
 
-    return customer_id, customer_email, validated
+    return customer_id, validated
+
+def validate_customer_email(value):
+    """Validate and normalize the email used to find/create a customer."""
+    if value is None:
+        raise ValueError(
+            "customer_email is required"
+        )
+
+    if not isinstance(value, str):
+        raise ValueError(
+            "customer_email must be a string"
+        )
+
+    customer_email = value.strip().lower()
+
+    if not customer_email:
+        raise ValueError(
+            "customer_email is required"
+        )
+
+    if len(customer_email) > 254:
+        raise ValueError(
+            "customer_email is too long"
+        )
+
+    if not re.fullmatch(
+        r"[^@\s]+@[^@\s]+\.[^@\s]+",
+        customer_email,
+    ):
+        raise ValueError(
+            "customer_email must be a valid email address"
+        )
+
+    return customer_email
 
 
 def get_or_create_customer(connection, customer_email, customer_name=None):
@@ -1330,13 +1339,15 @@ def lambda_handler(event, context):
 
                 return response(200, order)
 
-            customer_id, customer_email, items = (
-                validate_request(payload)
-            )
+            _, items = validate_request(payload)
 
             # customer_email is the customer identity for order creation.
             # If it already exists, reuse that customer. If it is new,
             # create the customer first and use the new customer_id.
+            customer_email = validate_customer_email(
+                payload.get("customer_email")
+            )
+
             customer_name = payload.get("customer_name")
 
             if customer_name is not None:
@@ -1379,7 +1390,7 @@ def lambda_handler(event, context):
 
             payload = parse_body(event)
 
-            customer_id, _, items = validate_request(
+            customer_id, items = validate_request(
                 payload,
                 require_customer_id=True,
             )
