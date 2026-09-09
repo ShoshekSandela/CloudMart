@@ -10,6 +10,7 @@ ssm = boto3.client("ssm")
 TOKEN_PARAMETER_NAME = os.environ["TOKEN_PARAMETER_NAME"]
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@cloudmart.com")
 CUSTOMER_EMAIL = os.environ.get("CUSTOMER_EMAIL", "customer@cloudmart.com")
+CUSTOMER_ID = os.environ.get("CUSTOMER_ID", "1")
 
 
 def generate_token():
@@ -52,12 +53,27 @@ def initialize_tokens():
         config["customer_token"] = generate_token()
         changed = True
 
-    if not config.get("admin_email"):
+    # GitHub Actions / CloudFormation configuration is the source of truth
+    # for the email associated with each persistent token. Tokens themselves
+    # are only generated when missing and are never rotated by deployment.
+    if config.get("admin_email") != ADMIN_EMAIL:
         config["admin_email"] = ADMIN_EMAIL
         changed = True
 
-    if not config.get("customer_email"):
+    if config.get("customer_email") != CUSTOMER_EMAIL:
         config["customer_email"] = CUSTOMER_EMAIL
+        changed = True
+
+    if str(config.get("customer_id", "")) != str(CUSTOMER_ID):
+        try:
+            configured_customer_id = int(CUSTOMER_ID)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Configured CUSTOMER_ID must be an integer") from exc
+
+        if configured_customer_id <= 0:
+            raise ValueError("Configured CUSTOMER_ID must be positive")
+
+        config["customer_id"] = configured_customer_id
         changed = True
 
     if changed or not raw_value:
@@ -110,7 +126,7 @@ def find_identity(config, token):
         return {
             "role": "CUSTOMER",
             "email": config.get("customer_email", CUSTOMER_EMAIL),
-            "customer_id": config.get("customer_customer_id"),
+            "customer_id": config.get("customer_id"),
         }
 
     return None

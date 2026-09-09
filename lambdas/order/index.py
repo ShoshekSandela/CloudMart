@@ -76,7 +76,11 @@ def resolve_customer_identity(
     if auth["role"] != "CUSTOMER":
         return None
 
-    customer = sync_configured_customer(connection)
+    customer = sync_configured_customer(
+        connection,
+        configured_email=auth.get("email"),
+        configured_customer_id=auth.get("customer_id"),
+    )
 
     return customer
 
@@ -103,7 +107,11 @@ def get_configured_customer_identity():
     return customer_id, validate_customer_email(customer_email)
 
 
-def sync_configured_customer(connection):
+def sync_configured_customer(
+    connection,
+    configured_email=None,
+    configured_customer_id=None,
+):
     """
     Synchronize the configured CloudMart customer.
 
@@ -115,14 +123,21 @@ def sync_configured_customer(connection):
     the duplicate row is removed. This avoids creating a new customer every
     time the configured email changes.
     """
-    configured_email = os.environ.get("CUSTOMER_EMAIL", "").strip().lower()
+    if configured_email is None:
+        configured_email = os.environ.get("CUSTOMER_EMAIL", "").strip().lower()
+    else:
+        configured_email = str(configured_email).strip().lower()
+
     if not configured_email:
-        raise ValueError("Configured CUSTOMER_EMAIL is missing")
+        raise ValueError("Configured customer email is missing")
 
     configured_email = validate_customer_email(configured_email)
 
+    if configured_customer_id in (None, ""):
+        configured_customer_id = os.environ.get("CUSTOMER_ID", "1")
+
     try:
-        configured_customer_id = int(os.environ.get("CUSTOMER_ID", "1"))
+        configured_customer_id = int(configured_customer_id)
     except (TypeError, ValueError) as exc:
         raise ValueError("Configured CUSTOMER_ID must be an integer") from exc
 
@@ -278,9 +293,29 @@ def sync_configured_customer(connection):
         orders_updated,
     )
 
+    # Fetch the final row so callers always receive customer_name as well.
+    # This prevents create_order() from raising KeyError: 'customer_name'.
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT customer_id, customer_name, customer_email
+            FROM customers
+            WHERE customer_id = %s
+            LIMIT 1
+            """,
+            (configured_customer_id,),
+        )
+        final_customer = cursor.fetchone()
+
+    if not final_customer:
+        raise LookupError(
+            f"Configured customer {configured_customer_id} was not found after synchronization"
+        )
+
     return {
-        "customer_id": configured_customer_id,
-        "customer_email": configured_email,
+        "customer_id": int(final_customer["customer_id"]),
+        "customer_name": final_customer["customer_name"],
+        "customer_email": final_customer["customer_email"],
         "orders_updated": int(orders_updated),
     }
 
@@ -290,11 +325,11 @@ def sync_configured_customer(connection):
 
 def validate_customer_email(value):
     """
-    Validate the customer_email supplied in the Create Order request.
+    Validate an authenticated/configured customer email.
 
-    Create Order intentionally uses this request email for the new
-    order response and OrderPlaced event instead of replacing it
-    with the email stored for customer_id in the customers table.
+    The Create Order API does not accept customer_email from the request
+    body. The email comes from the Authorization token's authorizer context
+    and is backed by the deployment configuration.
     """
     if value is None:
         raise ValueError(
@@ -412,6 +447,10 @@ def validate_request(payload, require_customer_id=False):
             "Request body must be a JSON object"
         )
 
+    # Customer identity fields are intentionally not used for CUSTOMER
+    # Create Order requests. Identity comes from the token.
+    # Keep customer_id parsing only for backwards-compatible ADMIN/internal
+    # calls that explicitly request it.
     customer_id = payload.get("customer_id")
 
     if require_customer_id:
@@ -545,7 +584,7 @@ class StockError(Exception):
 
 
 def create_order(connection, customer, items):
-    """Create a PENDING order for the resolved configured customer."""
+    """Create a PENDING order for the authenticated/resolved customer."""
     with connection.cursor() as cursor:
         customer_id = int(customer["customer_id"])
         customer_email = customer["customer_email"]
@@ -1627,6 +1666,21 @@ def lambda_handler(event, context):
                 return response(200, order)
 
             auth = get_authorization_context(event)
+
+            # Customer identity must come exclusively from the Authorization
+            # token. Do not accept customer email/name/id from the request body.
+            if auth["role"] == "CUSTOMER":
+                forbidden_identity_fields = [
+                    field
+                    for field in ("customer_id", "customer_email", "customer_name")
+                    if field in payload
+                ]
+                if forbidden_identity_fields:
+                    raise ValueError(
+                        "Customer identity must not be supplied in the request body; "
+                        "use the Authorization Bearer token"
+                    )
+
             _, items = validate_request(payload)
 
             connection = get_db_connection()
