@@ -1578,6 +1578,15 @@ def sync_configured_customer(connection):
     }
 
 
+def json_serializer(value):
+    """Serialize database values that JSON does not handle natively."""
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def response(status_code, body):
     return {
         "statusCode": status_code,
