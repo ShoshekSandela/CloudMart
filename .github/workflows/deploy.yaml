@@ -534,19 +534,25 @@ jobs:
       # NOTIFICATION EMAIL
       # =====================================================
 
-      - name: Verify Notification Email
+      - name: Verify Notification Emails
         env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+          CUSTOMER_EMAIL: ${{ vars.CLOUDMART_CUSTOMER_EMAIL }}
 
         shell: bash
         run: |
 
-          if [ -z "$NOTIFICATION_EMAIL" ]; then
-            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
+          if [ -z "$ADMIN_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_ADMIN_EMAIL is missing."
             exit 1
           fi
 
-          echo "Notification email is available."
+          if [ -z "$CUSTOMER_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_CUSTOMER_EMAIL is missing."
+            exit 1
+          fi
+
+          echo "ADMIN and CUSTOMER emails are available."
 
 
       # =====================================================
@@ -722,7 +728,8 @@ jobs:
       - name: Verify Application Configuration
         env:
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+          CUSTOMER_EMAIL: ${{ vars.CLOUDMART_CUSTOMER_EMAIL }}
 
         shell: bash
         run: |
@@ -783,8 +790,13 @@ jobs:
             exit 1
           fi
 
-          if [ -z "$NOTIFICATION_EMAIL" ]; then
-            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
+          if [ -z "$ADMIN_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_ADMIN_EMAIL is missing."
+            exit 1
+          fi
+
+          if [ -z "$CUSTOMER_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_CUSTOMER_EMAIL is missing."
             exit 1
           fi
 
@@ -1054,7 +1066,8 @@ jobs:
 
       - name: Deploy Application Stack
         env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+          CUSTOMER_EMAIL: ${{ vars.CLOUDMART_CUSTOMER_EMAIL }}
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
 
         shell: bash
@@ -1084,7 +1097,8 @@ jobs:
               DBNameParameterName="/cloudmart/dev/database/name" \
               DBUsernameParameterName="/cloudmart/dev/database/username" \
               DBPasswordParameterName="/cloudmart/dev/database/password" \
-              NotificationEmail="$NOTIFICATION_EMAIL" \
+              NotificationEmail="$ADMIN_EMAIL" \
+              CustomerEmail="$CUSTOMER_EMAIL" \
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"
 
           echo "Application Stack deployment completed successfully."
@@ -1105,6 +1119,29 @@ jobs:
           cat /tmp/auth-token-init.json
 
           echo "ADMIN and CUSTOMER tokens initialized in /cloudmart/dev/auth/token"
+
+
+      # =====================================================
+      # SYNCHRONIZE CONFIGURED CUSTOMER EMAIL
+      # =====================================================
+
+      - name: Synchronize configured customer email
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Synchronizing CUSTOMER_EMAIL into the customers and orders tables..."
+
+          aws lambda invoke             --function-name "cloudmart-dev-order"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"sync_configured_customer"}'             /tmp/customer-sync.json
+
+          cat /tmp/customer-sync.json
+
+          if ! jq -e '.statusCode == 200' /tmp/customer-sync.json >/dev/null; then
+            echo "ERROR: Configured customer synchronization failed."
+            exit 1
+          fi
+
+          echo "Configured CUSTOMER_EMAIL synchronized successfully."
 
 
       # =====================================================
@@ -1320,15 +1357,15 @@ jobs:
 
       - name: Verify Order Notification SNS Subscription
         env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
         shell: bash
         run: |
           set -euo pipefail
 
           STACK_NAME="cloudmart-application-dev"
 
-          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
-            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
+          if [ -z "${ADMIN_EMAIL:-}" ]; then
+            echo "ERROR: CLOUDMART_ADMIN_EMAIL is missing."
             exit 1
           fi
 
@@ -1344,7 +1381,7 @@ jobs:
           fi
 
           echo "Order notification topic: $TOPIC_ARN"
-          echo "Notification email: $NOTIFICATION_EMAIL"
+          echo "Notification email: $ADMIN_EMAIL"
 
           SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
             --topic-arn "$TOPIC_ARN" \
@@ -1356,7 +1393,7 @@ jobs:
           # It remains untouched during normal deployments.
           CONFIRMED_COUNT="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$NOTIFICATION_EMAIL" '
+              jq -r --arg email "$ADMIN_EMAIL" '
                 [.Subscriptions[]
                   | select(
                       .Protocol == "email"
@@ -1370,7 +1407,7 @@ jobs:
           if [ "$CONFIRMED_COUNT" -gt 0 ]; then
             SUBSCRIPTION_ARN="$(
               printf '%s' "$SUBSCRIPTIONS_JSON" |
-                jq -r --arg email "$NOTIFICATION_EMAIL" '
+                jq -r --arg email "$ADMIN_EMAIL" '
                   [.Subscriptions[]
                     | select(
                         .Protocol == "email"
@@ -1415,7 +1452,7 @@ jobs:
           # was deleted/unsubscribed, or it does not exist yet.
           DELETED_COUNT="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$NOTIFICATION_EMAIL" '
+              jq -r --arg email "$ADMIN_EMAIL" '
                 [.Subscriptions[]
                   | select(
                       .Protocol == "email"
@@ -1438,7 +1475,7 @@ jobs:
             aws sns list-subscriptions-by-topic \
               --topic-arn "$TOPIC_ARN" \
               --region "$AWS_REGION" \
-              --query "Subscriptions[?Protocol=='email' && Endpoint=='$NOTIFICATION_EMAIL' && SubscriptionArn!='Deleted'] | length(@)" \
+              --query "Subscriptions[?Protocol=='email' && Endpoint=='$ADMIN_EMAIL' && SubscriptionArn!='Deleted'] | length(@)" \
               --output text
           )"
 
@@ -1453,7 +1490,7 @@ jobs:
           NEW_SUBSCRIPTION_ARN="$(aws sns subscribe \
             --topic-arn "$TOPIC_ARN" \
             --protocol email \
-            --notification-endpoint "$NOTIFICATION_EMAIL" \
+            --notification-endpoint "$ADMIN_EMAIL" \
             --region "$AWS_REGION" \
             --query 'SubscriptionArn' \
             --output text)"
@@ -1462,13 +1499,80 @@ jobs:
           echo ""
           echo "ACTION REQUIRED:"
           echo "AWS sent a new SNS subscription confirmation email to:"
-          echo "$NOTIFICATION_EMAIL"
+          echo "$ADMIN_EMAIL"
           echo ""
           echo "Click 'Confirm subscription' in that email."
           echo "Then rerun the workflow."
 
           # Email confirmation must be performed by the recipient.
           exit 1
+
+      # =====================================================
+      # VERIFY CUSTOMER ORDER SNS EMAIL SUBSCRIPTION
+      # =====================================================
+
+      - name: Verify Customer Order Notification SNS Subscription
+        env:
+          CUSTOMER_EMAIL: ${{ vars.CLOUDMART_CUSTOMER_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-application-dev"
+
+          if [ -z "${CUSTOMER_EMAIL:-}" ]; then
+            echo "ERROR: CLOUDMART_CUSTOMER_EMAIL is missing."
+            exit 1
+          fi
+
+          TOPIC_ARN="$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='CustomerOrderNotificationTopicArn'].OutputValue | [0]"             --output text)"
+
+          if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
+            echo "ERROR: CustomerOrderNotificationTopicArn output is missing."
+            exit 1
+          fi
+
+          echo "Customer order notification topic: $TOPIC_ARN"
+          echo "Expected customer email: $CUSTOMER_EMAIL"
+
+          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic             --topic-arn "$TOPIC_ARN"             --region "$AWS_REGION"             --output json)"
+
+          SUBSCRIPTION_ARN="$(
+            printf '%s' "$SUBSCRIPTIONS_JSON" |
+              jq -r --arg email "$CUSTOMER_EMAIL" '
+                [.Subscriptions[]
+                  | select(
+                      .Protocol == "email"
+                      and .Endpoint == $email
+                      and .SubscriptionArn != "Deleted"
+                    )
+                  | .SubscriptionArn][0] // empty
+              '
+          )"
+
+          if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
+            echo "ERROR: Customer SNS subscription was not found."
+            exit 1
+          fi
+
+          echo "Customer subscription ARN: $SUBSCRIPTION_ARN"
+
+          if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+            echo "ERROR: Customer SNS subscription is pending confirmation."
+            echo "Confirm the SNS email sent to $CUSTOMER_EMAIL, then rerun the workflow."
+            exit 1
+          fi
+
+          PENDING_CONFIRMATION="$(aws sns get-subscription-attributes             --subscription-arn "$SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query 'Attributes.PendingConfirmation'             --output text)"
+
+          if [ "$PENDING_CONFIRMATION" != "false" ]; then
+            echo "ERROR: Customer SNS subscription is not confirmed."
+            echo "Confirm the SNS email sent to $CUSTOMER_EMAIL."
+            exit 1
+          fi
+
+          echo "Customer order notification SNS subscription is CONFIRMED."
+
 
       # =====================================================
       # VERIFY DEPLOYED ORDER LAMBDA SOURCE
@@ -1596,7 +1700,7 @@ jobs:
       - name: Verify Inventory Change EventBridge Rule
         shell: bash
         env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
         run: |
           set -euo pipefail
 
@@ -1735,13 +1839,13 @@ jobs:
 
           echo "EventBridge target matches CloudMart SNS topic."
 
-          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
-            echo "ERROR: NOTIFICATION_EMAIL is not configured."
+          if [ -z "${ADMIN_EMAIL:-}" ]; then
+            echo "ERROR: ADMIN_EMAIL is not configured."
             exit 1
           fi
 
           echo "Checking SNS email subscription..."
-          echo "Expected notification email: $NOTIFICATION_EMAIL"
+          echo "Expected notification email: $ADMIN_EMAIL"
 
           SUBSCRIPTIONS_JSON=$(aws sns list-subscriptions-by-topic \
             --topic-arn "$EXPECTED_SNS_ARN" \
@@ -1749,7 +1853,7 @@ jobs:
             --output json)
 
           EMAIL_SUBSCRIPTION_ARN=$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r \
-            --arg email "$NOTIFICATION_EMAIL" '
+            --arg email "$ADMIN_EMAIL" '
               [.Subscriptions[]
                 | select(
                     .Protocol == "email"
@@ -1759,7 +1863,7 @@ jobs:
                 | .SubscriptionArn][0] // empty')
 
           if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: Email subscription was not found for $NOTIFICATION_EMAIL."
+            echo "ERROR: Email subscription was not found for $ADMIN_EMAIL."
             exit 1
           fi
 
@@ -1838,7 +1942,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
+      ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
 
     steps:
 
@@ -1858,8 +1962,8 @@ jobs:
 
           STACK_NAME="cloudmart-application-dev"
 
-          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
-            echo "ERROR: NOTIFICATION_EMAIL is not configured."
+          if [ -z "${ADMIN_EMAIL:-}" ]; then
+            echo "ERROR: ADMIN_EMAIL is not configured."
             exit 1
           fi
 
@@ -1875,7 +1979,7 @@ jobs:
           fi
 
           echo "SNS topic: $TOPIC_ARN"
-          echo "Configured email: $NOTIFICATION_EMAIL"
+          echo "Configured email: $ADMIN_EMAIL"
 
           SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
             --topic-arn "$TOPIC_ARN" \
@@ -1884,7 +1988,7 @@ jobs:
 
           EMAIL_SUBSCRIPTION_ARN="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$NOTIFICATION_EMAIL" '
+              jq -r --arg email "$ADMIN_EMAIL" '
                 [.Subscriptions[]
                   | select(
                       .Protocol == "email"
@@ -2140,7 +2244,7 @@ jobs:
 
           EMAIL_SUBSCRIPTION_FOUND="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$NOTIFICATION_EMAIL" '
+              jq -r --arg email "$ADMIN_EMAIL" '
                 [.Subscriptions[]
                   | select(.Protocol == "email")
                   | select(.Endpoint == $email)
