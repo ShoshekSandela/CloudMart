@@ -254,6 +254,7 @@ Resources:
   OrderPlacedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed"
@@ -291,22 +292,10 @@ Resources:
               total: "$.detail.total_amount"
             InputTemplate: |
                " CLOUDMART CUSTOMER ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-        - Id: OrderPlacedCustomerSNSTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-            InputTemplate: |
-               " CLOUDMART CUSTOMER ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
@@ -344,22 +333,10 @@ Resources:
               total: "$.detail.total_amount"
             InputTemplate: |
                " CLOUDMART CUSTOMER ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-        - Id: OrderConfirmedCustomerSNSTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-            InputTemplate: |
-               " CLOUDMART CUSTOMER ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled"
@@ -397,22 +374,10 @@ Resources:
               total: "$.detail.total_amount"
             InputTemplate: |
                " CLOUDMART CUSTOMER ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-        - Id: OrderCanceledCustomerSNSTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-            InputTemplate: |
-               " CLOUDMART CUSTOMER ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed"
@@ -450,19 +415,6 @@ Resources:
               total: "$.detail.total_amount"
             InputTemplate: |
                " CLOUDMART CUSTOMER ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-        - Id: OrderFailedCustomerSNSTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-            InputTemplate: |
-               " CLOUDMART CUSTOMER ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-
   OrderCompletedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -504,19 +456,6 @@ Resources:
               total: "$.detail.total_amount"
             InputTemplate: |
                " CLOUDMART CUSTOMER ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-        - Id: OrderCompletedCustomerSNSTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-            InputTemplate: |
-               " CLOUDMART CUSTOMER ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\nTOTAL: <total>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nCloudMart order notification.\n\n— CloudMart"
-
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
     Properties:

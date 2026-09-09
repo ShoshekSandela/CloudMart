@@ -1352,7 +1352,7 @@ jobs:
           echo "All four order lifecycle EventBridge rules are configured correctly."
 
       # =====================================================
-      # VERIFY / RECREATE ORDER SNS EMAIL SUBSCRIPTION
+      # VERIFY ORDER SNS EMAIL SUBSCRIPTION
       # =====================================================
 
       - name: Verify Order Notification SNS Subscription
@@ -1369,11 +1369,7 @@ jobs:
             exit 1
           fi
 
-          TOPIC_ARN="$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='OrderNotificationTopicArn'].OutputValue | [0]" \
-            --output text)"
+          TOPIC_ARN="$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='OrderNotificationTopicArn'].OutputValue | [0]"             --output text)"
 
           if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
             echo "ERROR: OrderNotificationTopicArn output is missing."
@@ -1381,17 +1377,11 @@ jobs:
           fi
 
           echo "Order notification topic: $TOPIC_ARN"
-          echo "Notification email: $ADMIN_EMAIL"
+          echo "Configured ADMIN email: $ADMIN_EMAIL"
 
-          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$TOPIC_ARN" \
-            --region "$AWS_REGION" \
-            --output json)"
+          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic             --topic-arn "$TOPIC_ARN"             --region "$AWS_REGION"             --output json)"
 
-          # IMPORTANT:
-          # A confirmed subscription is never replaced or recreated.
-          # It remains untouched during normal deployments.
-          CONFIRMED_COUNT="$(
+          SUBSCRIPTION_ARN="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
               jq -r --arg email "$ADMIN_EMAIL" '
                 [.Subscriptions[]
@@ -1400,112 +1390,39 @@ jobs:
                       and .Endpoint == $email
                       and .SubscriptionArn != "Deleted"
                     )
-                ] | length
+                  | .SubscriptionArn][0] // empty
               '
           )"
 
-          if [ "$CONFIRMED_COUNT" -gt 0 ]; then
-            SUBSCRIPTION_ARN="$(
-              printf '%s' "$SUBSCRIPTIONS_JSON" |
-                jq -r --arg email "$ADMIN_EMAIL" '
-                  [.Subscriptions[]
-                    | select(
-                        .Protocol == "email"
-                        and .Endpoint == $email
-                        and .SubscriptionArn != "Deleted"
-                      )
-                    | .SubscriptionArn][0] // empty
-                '
-            )"
+          if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
+            echo "ERROR: CloudFormation did not create the ADMIN SNS email subscription."
+            echo "Expected endpoint: $ADMIN_EMAIL"
+            exit 1
+          fi
 
-            echo "Existing order notification subscription found: $SUBSCRIPTION_ARN"
+          echo "ADMIN SNS subscription: $SUBSCRIPTION_ARN"
 
-            if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-              echo "ERROR: Order notification subscription is pending confirmation."
-              echo "Confirm the AWS SNS email, then rerun the workflow."
-              exit 1
-            fi
-
-            if [[ "$SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
-              echo "ERROR: Unexpected SNS subscription value: $SUBSCRIPTION_ARN"
-              exit 1
-            fi
-
-            PENDING_CONFIRMATION="$(aws sns get-subscription-attributes \
-              --subscription-arn "$SUBSCRIPTION_ARN" \
-              --region "$AWS_REGION" \
-              --query 'Attributes.PendingConfirmation' \
-              --output text)"
-
-            if [ "$PENDING_CONFIRMATION" != "false" ]; then
-              echo "ERROR: Order notification SNS subscription is not confirmed."
-              echo "Confirm the AWS SNS email, then rerun the workflow."
-              exit 1
-            fi
-
-            echo "Order notification SNS email subscription is CONFIRMED."
-            echo "Keeping the existing subscription unchanged."
+          if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
+            echo "WARNING: ADMIN SNS subscription is PendingConfirmation."
+            echo "AWS requires the recipient to confirm the SNS email."
+            echo "The deployment will continue; no manual subscription will be created."
             exit 0
           fi
 
-          # No active subscription exists. This means the old subscription
-          # was deleted/unsubscribed, or it does not exist yet.
-          DELETED_COUNT="$(
-            printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$ADMIN_EMAIL" '
-                [.Subscriptions[]
-                  | select(
-                      .Protocol == "email"
-                      and .Endpoint == $email
-                      and .SubscriptionArn == "Deleted"
-                    )
-                ] | length
-              '
-          )"
-
-          if [ "$DELETED_COUNT" -gt 0 ]; then
-            echo "Order notification subscription is DELETED."
-          else
-            echo "Order notification subscription does not exist."
+          if [[ "$SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+            echo "ERROR: Unexpected SNS subscription value: $SUBSCRIPTION_ARN"
+            exit 1
           fi
 
-          # Before creating anything, check again to avoid a duplicate if
-          # another subscription was created concurrently.
-          EXISTING_NON_DELETED="$(
-            aws sns list-subscriptions-by-topic \
-              --topic-arn "$TOPIC_ARN" \
-              --region "$AWS_REGION" \
-              --query "Subscriptions[?Protocol=='email' && Endpoint=='$ADMIN_EMAIL' && SubscriptionArn!='Deleted'] | length(@)" \
-              --output text
-          )"
+          PENDING_CONFIRMATION="$(aws sns get-subscription-attributes             --subscription-arn "$SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query 'Attributes.PendingConfirmation'             --output text)"
 
-          if [ "$EXISTING_NON_DELETED" -gt 0 ]; then
-            echo "An active subscription appeared during verification."
-            echo "Leaving it unchanged."
+          if [ "$PENDING_CONFIRMATION" != "false" ]; then
+            echo "WARNING: ADMIN SNS subscription is not confirmed yet."
+            echo "The deployment will continue."
             exit 0
           fi
 
-          echo "Creating one replacement order notification email subscription..."
-
-          NEW_SUBSCRIPTION_ARN="$(aws sns subscribe \
-            --topic-arn "$TOPIC_ARN" \
-            --protocol email \
-            --notification-endpoint "$ADMIN_EMAIL" \
-            --region "$AWS_REGION" \
-            --query 'SubscriptionArn' \
-            --output text)"
-
-          echo "New SNS subscription created: $NEW_SUBSCRIPTION_ARN"
-          echo ""
-          echo "ACTION REQUIRED:"
-          echo "AWS sent a new SNS subscription confirmation email to:"
-          echo "$ADMIN_EMAIL"
-          echo ""
-          echo "Click 'Confirm subscription' in that email."
-          echo "Then rerun the workflow."
-
-          # Email confirmation must be performed by the recipient.
-          exit 1
+          echo "ADMIN order notification SNS subscription is CONFIRMED."
 
       # =====================================================
       # VERIFY CUSTOMER ORDER SNS EMAIL SUBSCRIPTION
@@ -1533,7 +1450,7 @@ jobs:
           fi
 
           echo "Customer order notification topic: $TOPIC_ARN"
-          echo "Expected customer email: $CUSTOMER_EMAIL"
+          echo "Configured CUSTOMER email: $CUSTOMER_EMAIL"
 
           SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic             --topic-arn "$TOPIC_ARN"             --region "$AWS_REGION"             --output json)"
 
@@ -1551,28 +1468,34 @@ jobs:
           )"
 
           if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: Customer SNS subscription was not found."
+            echo "ERROR: CloudFormation did not create the CUSTOMER SNS email subscription."
+            echo "Expected endpoint: $CUSTOMER_EMAIL"
             exit 1
           fi
 
-          echo "Customer subscription ARN: $SUBSCRIPTION_ARN"
+          echo "CUSTOMER SNS subscription: $SUBSCRIPTION_ARN"
 
           if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-            echo "ERROR: Customer SNS subscription is pending confirmation."
-            echo "Confirm the SNS email sent to $CUSTOMER_EMAIL, then rerun the workflow."
+            echo "WARNING: CUSTOMER SNS subscription is PendingConfirmation."
+            echo "AWS requires the recipient to confirm the SNS email."
+            echo "The deployment will continue; no manual subscription will be created."
+            exit 0
+          fi
+
+          if [[ "$SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
+            echo "ERROR: Unexpected SNS subscription value: $SUBSCRIPTION_ARN"
             exit 1
           fi
 
           PENDING_CONFIRMATION="$(aws sns get-subscription-attributes             --subscription-arn "$SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query 'Attributes.PendingConfirmation'             --output text)"
 
           if [ "$PENDING_CONFIRMATION" != "false" ]; then
-            echo "ERROR: Customer SNS subscription is not confirmed."
-            echo "Confirm the SNS email sent to $CUSTOMER_EMAIL."
-            exit 1
+            echo "WARNING: CUSTOMER SNS subscription is not confirmed yet."
+            echo "The deployment will continue."
+            exit 0
           fi
 
-          echo "Customer order notification SNS subscription is CONFIRMED."
-
+          echo "CUSTOMER order notification SNS subscription is CONFIRMED."
 
       # =====================================================
       # VERIFY DEPLOYED ORDER LAMBDA SOURCE
@@ -1870,9 +1793,10 @@ jobs:
           echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
 
           if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-            echo "ERROR: SNS email subscription is pending confirmation."
-            echo "Confirm the SNS email before rerunning the workflow."
-            exit 1
+            echo "WARNING: Low-stock SNS email subscription is PendingConfirmation."
+            echo "AWS requires the recipient to confirm the SNS email."
+            echo "The deployment will continue."
+            exit 0
           fi
 
           if [[ "$EMAIL_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
@@ -1890,8 +1814,9 @@ jobs:
           echo "PendingConfirmation: $PENDING_CONFIRMATION"
 
           if [ "$PENDING_CONFIRMATION" != "false" ]; then
-            echo "ERROR: SNS email subscription is not confirmed."
-            exit 1
+            echo "WARNING: Low-stock SNS email subscription is not confirmed yet."
+            echo "The deployment will continue."
+            exit 0
           fi
 
           echo "SNS email subscription is confirmed."
@@ -2009,9 +1934,10 @@ jobs:
           echo "SNS email subscription: $EMAIL_SUBSCRIPTION_ARN"
 
           if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-            echo "ERROR: SNS email subscription is pending confirmation."
-            echo "Confirm the SNS email before continuing."
-            exit 1
+            echo "WARNING: Low-stock SNS email subscription is PendingConfirmation."
+            echo "AWS requires the recipient to confirm the SNS email."
+            echo "Verification will continue because confirmation is recipient-controlled."
+            exit 0
           fi
 
           if [[ "$EMAIL_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
@@ -2025,8 +1951,9 @@ jobs:
           echo "PendingConfirmation: $PENDING_CONFIRMATION"
 
           if [ "$PENDING_CONFIRMATION" != "false" ]; then
-            echo "ERROR: SNS email subscription is not confirmed."
-            exit 1
+            echo "WARNING: Low-stock SNS email subscription is not confirmed yet."
+            echo "Verification will continue."
+            exit 0
           fi
 
           echo "Confirmed SNS email subscription exists: $EMAIL_SUBSCRIPTION_ARN"
