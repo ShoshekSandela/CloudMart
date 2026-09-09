@@ -1578,6 +1578,17 @@ def sync_configured_customer(connection):
     }
 
 
+def response(status_code, body):
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+        },
+        "body": json.dumps(body, default=json_serializer),
+    }
+
+
 def lambda_handler(event, context):
     if event.get("action") == "sync_configured_customer":
         connection = None
