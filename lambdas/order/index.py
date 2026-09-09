@@ -277,14 +277,36 @@ def sync_configured_customer(connection):
                 WHERE LOWER(customer_email) = %s
                   AND customer_id <> %s
                 LIMIT 1
+                FOR UPDATE
                 """,
                 (customer_email, customer_id),
             )
             conflict = cursor.fetchone()
+
             if conflict:
-                raise ValueError(
-                    f"Configured CUSTOMER_EMAIL already belongs to customer_id "
-                    f"{conflict['customer_id']}"
+                conflict_id = int(conflict["customer_id"])
+
+                # The configured customer_id is the source of truth.
+                # If the new configured email is currently attached to
+                # another customer row, consolidate that customer's orders
+                # into the configured customer_id, then remove the duplicate
+                # customer row so the UNIQUE email constraint is preserved.
+                cursor.execute(
+                    """
+                    UPDATE orders
+                    SET customer_id = %s,
+                        customer_email = %s
+                    WHERE customer_id = %s
+                    """,
+                    (customer_id, customer_email, conflict_id),
+                )
+
+                cursor.execute(
+                    """
+                    DELETE FROM customers
+                    WHERE customer_id = %s
+                    """,
+                    (conflict_id,),
                 )
 
             cursor.execute(
@@ -296,6 +318,17 @@ def sync_configured_customer(connection):
                 (customer_email, customer_id),
             )
             customer["customer_email"] = customer_email
+
+        # Always keep the configured customer's existing orders synchronized.
+        cursor.execute(
+            """
+            UPDATE orders
+            SET customer_email = %s
+            WHERE customer_id = %s
+              AND (customer_email IS NULL OR LOWER(customer_email) <> %s)
+            """,
+            (customer_email, customer_id, customer_email),
+        )
 
         cursor.execute(
             """
