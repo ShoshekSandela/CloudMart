@@ -120,6 +120,13 @@ Resources:
             Resource:
               - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-authorizer
 
+          - Sid: InvokeCloudMartOrderLambda
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-order
+
 
   # =========================================================
   # PRODUCT LAMBDA ROLE
