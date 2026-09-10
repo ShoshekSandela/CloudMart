@@ -1761,13 +1761,24 @@ jobs:
             --output json)
 
           TARGET_COUNT=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')
-          TARGET_ARN=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')
-
           echo "Target count: $TARGET_COUNT"
-          echo "Target ARN: $TARGET_ARN"
 
-          if [ "$TARGET_COUNT" -lt 1 ] || [ -z "$TARGET_ARN" ]; then
+          if ! [[ "$TARGET_COUNT" =~ ^[0-9]+$ ]] || [ "$TARGET_COUNT" -lt 1 ]; then
             echo "ERROR: EventBridge rule has no target."
+            exit 1
+          fi
+
+          # CloudMart notification flow:
+          # EventBridge -> SNS Publisher Lambda -> SNS topic.
+          # Therefore the EventBridge target must be the SNS Publisher Lambda.
+          EXPECTED_PUBLISHER_ARN=$(aws lambda get-function \
+            --function-name "cloudmart-dev-sns-publisher" \
+            --region "$AWS_REGION" \
+            --query "Configuration.FunctionArn" \
+            --output text)
+
+          if [ -z "$EXPECTED_PUBLISHER_ARN" ] || [ "$EXPECTED_PUBLISHER_ARN" = "None" ]; then
+            echo "ERROR: SNS Publisher Lambda was not found."
             exit 1
           fi
 
@@ -1782,16 +1793,23 @@ jobs:
             exit 1
           fi
 
-          echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
+          TARGET_ARN=$(printf '%s' "$TARGET_JSON" | jq -r --arg arn "$EXPECTED_PUBLISHER_ARN" '
+            [.Targets[] | select(.Arn == $arn) | .Arn][0] // empty
+          ')
 
-          if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target does not match SNS topic."
-            echo "Expected: $EXPECTED_SNS_ARN"
-            echo "Actual:   $TARGET_ARN"
+          echo "Expected SNS Publisher Lambda ARN: $EXPECTED_PUBLISHER_ARN"
+          echo "Expected SNS topic ARN: $EXPECTED_SNS_ARN"
+          echo "Matching EventBridge target ARN: ${TARGET_ARN:-<not found>}"
+
+          if [ "$TARGET_ARN" != "$EXPECTED_PUBLISHER_ARN" ]; then
+            echo "ERROR: EventBridge rule does not target the SNS Publisher Lambda."
+            echo "Expected Lambda target: $EXPECTED_PUBLISHER_ARN"
+            echo "Actual targets:"
+            printf '%s' "$TARGET_JSON" | jq -r '.Targets[] | .Arn'
             exit 1
           fi
 
-          echo "EventBridge target matches CloudMart SNS topic."
+          echo "EventBridge target correctly points to SNS Publisher Lambda."
 
           if [ -z "${ADMIN_EMAIL:-}" ]; then
             echo "ERROR: ADMIN_EMAIL is not configured."
@@ -2156,27 +2174,50 @@ jobs:
             exit 1
           fi
 
-          TARGET_ARN="$(aws events list-targets-by-rule \
+          TARGET_JSON="$(aws events list-targets-by-rule \
             --rule "$RULE_NAME" \
             --event-bus-name "$EVENT_BUS" \
             --region "$AWS_REGION" \
-            --query "Targets[0].Arn" \
-            --output text)"
+            --output json)"
 
-          echo "Actual target ARN: $TARGET_ARN"
+          TARGET_COUNT="$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')"
+          echo "Target count: $TARGET_COUNT"
 
-          # IMPORTANT:
-          # Compare the complete ARN directly. Do not use the previous
-          # shell wildcard case expression, which incorrectly rejected
-          # the valid SNS ARN.
-          if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target does not match the CloudMart SNS topic."
-            echo "Expected: $EXPECTED_SNS_ARN"
-            echo "Actual:   $TARGET_ARN"
+          if ! [[ "$TARGET_COUNT" =~ ^[0-9]+$ ]] || [ "$TARGET_COUNT" -lt 1 ]; then
+            echo "ERROR: EventBridge rule has no target."
             exit 1
           fi
 
-          echo "EventBridge target matches CloudMart SNS topic."
+          # CloudMart notification flow:
+          # EventBridge -> SNS Publisher Lambda -> SNS topic.
+          EXPECTED_PUBLISHER_ARN="$(aws lambda get-function \
+            --function-name "cloudmart-dev-sns-publisher" \
+            --region "$AWS_REGION" \
+            --query "Configuration.FunctionArn" \
+            --output text)"
+
+          if [ -z "$EXPECTED_PUBLISHER_ARN" ] || [ "$EXPECTED_PUBLISHER_ARN" = "None" ]; then
+            echo "ERROR: SNS Publisher Lambda was not found."
+            exit 1
+          fi
+
+          TARGET_ARN="$(printf '%s' "$TARGET_JSON" | jq -r --arg arn "$EXPECTED_PUBLISHER_ARN" '
+            [.Targets[] | select(.Arn == $arn) | .Arn][0] // empty
+          ')"
+
+          echo "Expected SNS Publisher Lambda ARN: $EXPECTED_PUBLISHER_ARN"
+          echo "Expected SNS topic ARN: $EXPECTED_SNS_ARN"
+          echo "Matching EventBridge target ARN: ${TARGET_ARN:-<not found>}"
+
+          if [ "$TARGET_ARN" != "$EXPECTED_PUBLISHER_ARN" ]; then
+            echo "ERROR: EventBridge target does not point to the SNS Publisher Lambda."
+            echo "Expected Lambda target: $EXPECTED_PUBLISHER_ARN"
+            echo "Actual targets:"
+            printf '%s' "$TARGET_JSON" | jq -r '.Targets[] | .Arn'
+            exit 1
+          fi
+
+          echo "EventBridge target correctly points to SNS Publisher Lambda."
 
           echo ""
           echo "Checking SNS subscription..."
