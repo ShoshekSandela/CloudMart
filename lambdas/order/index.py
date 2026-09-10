@@ -618,8 +618,8 @@ def create_order(connection, customer, items):
             unit_price = Decimal(str(product["price"]))
             subtotal = unit_price * quantity
             total_amount += subtotal
-            order_items.append({"product_id": product_id, "quantity": quantity,
-                                "unit_price": unit_price, "subtotal": subtotal})
+            order_items.append({"product_id": product_id, "product_name": product["name"],
+                                "quantity": quantity, "unit_price": unit_price, "subtotal": subtotal})
             inventory_events.append({"product_id": int(product_id), "product_name": product["name"],
                                      "old_stock": old_stock, "new_stock": old_stock - quantity,
                                      "threshold": int(product["low_stock_threshold"])})
@@ -689,9 +689,20 @@ def publish_order_placed_event(order):
         "total_amount": float(
             order["total_amount"]
         ),
+        "items_summary": "\\n\\n".join(
+            [
+                f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\\n"
+                f"Product ID: {item['product_id']}\\n"
+                f"Quantity: {item['quantity']}\\n"
+                f"Unit Price: {float(item['unit_price']):.2f}\\n"
+                f"Subtotal: {float(item['subtotal']):.2f}"
+                for item in order["items"]
+            ]
+        ),
         "items": [
             {
                 "product_id": item["product_id"],
+                "product_name": item.get("product_name"),
                 "quantity": item["quantity"],
                 "unit_price": float(
                     item["unit_price"]
@@ -756,9 +767,20 @@ def publish_order_event(detail_type, order):
         "customer_email": order.get("customer_email"),
         "status": order.get("status"),
         "total_amount": float(order["total_amount"]),
+        "items_summary": "\\n\\n".join(
+            [
+                f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\\n"
+                f"Product ID: {item['product_id']}\\n"
+                f"Quantity: {item['quantity']}\\n"
+                f"Unit Price: {float(item['unit_price']):.2f}\\n"
+                f"Subtotal: {float(item['subtotal']):.2f}"
+                for item in (order.get("items") or [])
+            ]
+        ),
         "items": [
             {
                 "product_id": int(item["product_id"]),
+                "product_name": item.get("product_name"),
                 "quantity": int(item["quantity"]),
                 "unit_price": float(item["unit_price"]),
                 "subtotal": float(item["subtotal"]),
