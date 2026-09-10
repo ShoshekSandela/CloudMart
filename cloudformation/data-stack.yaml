@@ -160,7 +160,9 @@ Resources:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub "/cloudmart/${Environment}/database/username"
-      Type: SecureString
+      # CloudFormation AWS::SSM::Parameter supports String/StringList only.
+      # Keep the credential value supplied as a NoEcho CloudFormation parameter.
+      Type: String
       Value: !Ref DBUsername
       Description: CloudMart RDS master username
       Tags:
@@ -171,7 +173,9 @@ Resources:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub "/cloudmart/${Environment}/database/password"
-      Type: SecureString
+      # CloudFormation AWS::SSM::Parameter supports String/StringList only.
+      # Keep the credential value supplied as a NoEcho CloudFormation parameter.
+      Type: String
       Value: !Ref DBPassword
       Description: CloudMart RDS master password
       Tags:
