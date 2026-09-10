@@ -1122,6 +1122,37 @@ jobs:
 
 
       # =====================================================
+      # INITIALIZE CLOUDMART DATABASE SCHEMA
+      # =====================================================
+      #
+      # RDS creates the MySQL server/database, but it does not execute
+      # database/schema.sql. The Product Lambda contains the schema.sql
+      # and exposes a CI/CD-only initialize_database action.
+      #
+      # This MUST run before customer synchronization because the Order
+      # Lambda reads/writes the customers and orders tables.
+      #
+
+      - name: Initialize CloudMart database schema
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Initializing CloudMart database schema..."
+
+          aws lambda invoke             --function-name "cloudmart-dev-product"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_database"}'             /tmp/database-init.json
+
+          cat /tmp/database-init.json
+
+          if ! jq -e '.statusCode == 200' /tmp/database-init.json >/dev/null; then
+            echo "ERROR: CloudMart database schema initialization failed."
+            exit 1
+          fi
+
+          echo "CloudMart database schema initialized successfully."
+
+
+      # =====================================================
       # SYNCHRONIZE CONFIGURED CUSTOMER EMAIL
       # =====================================================
 
@@ -2192,3 +2223,4 @@ jobs:
           echo "=========================================="
           echo "EVENTBRIDGE -> SNS VERIFICATION PASSED"
           echo "=========================================="
+
