@@ -172,6 +172,8 @@ Resources:
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: !Sub |
               {"message":"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart","topicArn":"${CloudMartLowStockTopic}"}
+        - Id: LowStockSNSTarget
+          Arn: !Ref CloudMartLowStockTopic
   # ============================================================
   # ORDER LIFECYCLE EVENTS -> SNS
   # ============================================================
