@@ -118,6 +118,66 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+
+  # =========================================================
+  # DATABASE SSM PARAMETERS
+  # =========================================================
+
+  CloudMartDBHostParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/cloudmart/${Environment}/database/host"
+      Type: String
+      Value: !GetAtt CloudMartRDS.Endpoint.Address
+      Description: CloudMart RDS MySQL endpoint
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  CloudMartDBPortParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/cloudmart/${Environment}/database/port"
+      Type: String
+      Value: !GetAtt CloudMartRDS.Endpoint.Port
+      Description: CloudMart RDS MySQL port
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  CloudMartDBNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/cloudmart/${Environment}/database/name"
+      Type: String
+      Value: !Ref DBName
+      Description: CloudMart database name
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  CloudMartDBUsernameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/cloudmart/${Environment}/database/username"
+      Type: SecureString
+      Value: !Ref DBUsername
+      Description: CloudMart RDS master username
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  CloudMartDBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/cloudmart/${Environment}/database/password"
+      Type: SecureString
+      Value: !Ref DBPassword
+      Description: CloudMart RDS master password
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
     Condition: CreateReportBucket
