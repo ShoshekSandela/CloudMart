@@ -213,14 +213,6 @@ jobs:
         run: |
           aws sts get-caller-identity
 
-      - name: Verify Data Stack
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text
-
       - name: Validate IAM Stack
         run: |
           aws cloudformation validate-template \
