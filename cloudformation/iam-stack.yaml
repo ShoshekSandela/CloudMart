@@ -126,6 +126,12 @@ Resources:
               - lambda:InvokeFunction
             Resource:
               - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-order
+          - Sid: InitializeCloudMartDatabase
+            Effect: Allow
+            Action:
+              - lambda:InvokeFunction
+            Resource:
+              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-product
 
 
   # =========================================================
