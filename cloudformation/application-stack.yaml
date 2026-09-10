@@ -71,6 +71,10 @@ Parameters:
     Default: "225"
     Description: Change this value to force a new API Gateway deployment.
 
+  SnsPublisherRoleArn:
+    Type: String
+    Description: ARN of an existing IAM role for the SNS publisher Lambda. Provide an existing role ARN that allows Lambda to publish to the SNS topics.
+
 Resources:
 
   CloudMartRestApi:
@@ -251,31 +255,7 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-failed"
                   - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-completed"
 
-  SnsPublisherRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub "${ProjectName}-${Environment}-sns-publisher-role"
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      Policies:
-        - PolicyName: AllowPublishToTopics
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - sns:Publish
-                Resource:
-                  - !Ref CloudMartOrderNotificationTopic
-                  - !Ref CloudMartCustomerOrderNotificationTopic
-                  - !Ref CloudMartLowStockTopic
+  # The SNS publisher Lambda expects an existing role ARN to be supplied via the SnsPublisherRoleArn parameter.
 
   SnsPublisherFunction:
     Type: AWS::Serverless::Function
@@ -284,7 +264,7 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: ../lambdas/sns_publisher/
-      Role: !GetAtt SnsPublisherRole.Arn
+      Role: !Ref SnsPublisherRoleArn
       Timeout: 10
       MemorySize: 128
       Environment:
