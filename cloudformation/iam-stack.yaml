@@ -129,44 +129,6 @@ Resources:
 
 
   # =========================================================
-  # GITHUB ACTIONS DATABASE SSM PARAMETER PERMISSION
-  # =========================================================
-  #
-  # The Data Stack creates the database connection parameters in
-  # AWS Systems Manager Parameter Store. Because CloudFormation
-  # runs under the GitHub Actions role, that role must be allowed
-  # to create, update, tag, and delete those parameters.
-  #
-  # This permission is limited to the CloudMart database path.
-  #
-
-  GitHubActionsDatabaseSSMPolicy:
-    Type: AWS::IAM::Policy
-
-    Properties:
-      PolicyName: CloudMartGitHubActionsDatabaseSSMPolicy
-
-      Roles:
-        - !Ref GitHubActionsRoleName
-
-      PolicyDocument:
-        Version: "2012-10-17"
-
-        Statement:
-
-          - Sid: ManageCloudMartDatabaseParameters
-            Effect: Allow
-            Action:
-              - ssm:GetParameter
-              - ssm:PutParameter
-              - ssm:DeleteParameter
-              - ssm:AddTagsToResource
-              - ssm:RemoveTagsFromResource
-            Resource:
-              - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/*
-
-
-  # =========================================================
   # PRODUCT LAMBDA ROLE
   # =========================================================
 
