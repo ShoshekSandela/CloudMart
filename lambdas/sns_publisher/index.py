@@ -22,12 +22,6 @@ def lambda_handler(event, context):
             payload = {"message": event}
 
     message = payload.get('message') if isinstance(payload, dict) else str(payload)
-    # Normalize escaped newline sequences that may arrive as literal "\\n" in the payload
-    if isinstance(message, str):
-        # handle double-escaped and single-escaped newlines
-        message = message.replace('\\\\n', '\n').replace('\\n', '\n').replace('\\r', '\r')
-        # also normalize CRLF sequences to simple newlines for email clients
-        message = message.replace('\r\n', '\n')
     topic_arn = payload.get('topicArn') if isinstance(payload, dict) else None
     subject = payload.get('subject') if isinstance(payload, dict) else None
 
