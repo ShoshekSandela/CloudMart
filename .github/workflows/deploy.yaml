@@ -91,7 +91,195 @@ jobs:
   # =========================================================
   # DATA STACK
   # =========================================================
-  # CREATE DATABASE SECURE SSM PARAMETERS
+
+  deploy-data:
+    name: Deploy Data Stack
+    runs-on: ubuntu-latest
+
+    needs:
+      - deploy-network
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      - name: Verify Network Stack
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name cloudmart-network-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text
+
+      - name: Validate Data Stack
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://cloudformation/data-stack.yaml \
+            --region "$AWS_REGION"
+
+      - name: Deploy Data Stack
+        env:
+          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking database credentials..."
+
+          if [ -z "$DB_USERNAME" ]; then
+            echo "ERROR: CLOUDMART_DB_USERNAME is missing."
+            exit 1
+          fi
+
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
+            exit 1
+          fi
+
+          echo "Database credentials are available."
+
+          aws cloudformation deploy \
+            --template-file cloudformation/data-stack.yaml \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --parameter-overrides \
+              Environment=dev \
+              DBInstanceClass=db.t3.micro \
+              DBName=cloudmart \
+              AllocatedStorage=20 \
+              DBUsername="$DB_USERNAME" \
+              DBPassword="$DB_PASSWORD" \
+              ExistingReportBucketName=cloudmart-dev-reports \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      - name: Verify Data Stack
+        run: |
+          set -euo pipefail
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name cloudmart-data-dev \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text)
+
+          echo "Data Stack Status: $STATUS"
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Data stack is ready."
+              ;;
+            *)
+              echo "ERROR: Data stack is not ready."
+              exit 1
+              ;;
+          esac
+
+      # =====================================================
+      # CREATE DATABASE SECURE SSM PARAMETERS
+      # =====================================================
+      #
+      # DB host, port, and name are managed by data-stack.yaml.
+      # CloudFormation cannot create SecureString parameters, so only
+      # username/password are created here from GitHub Secrets.
+      #
+
+      - name: Create or Update Secure Database SSM Parameters
+        env:
+          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$DB_USERNAME" ]; then
+            echo "ERROR: CLOUDMART_DB_USERNAME secret is missing."
+            exit 1
+          fi
+
+          if [ -z "$DB_PASSWORD" ]; then
+            echo "ERROR: CLOUDMART_DB_PASSWORD secret is missing."
+            exit 1
+          fi
+
+          aws ssm put-parameter \
+            --name "/cloudmart/dev/database/username" \
+            --type "SecureString" \
+            --value "$DB_USERNAME" \
+            --overwrite \
+            --region "$AWS_REGION"
+
+          aws ssm put-parameter \
+            --name "/cloudmart/dev/database/password" \
+            --type "SecureString" \
+            --value "$DB_PASSWORD" \
+            --overwrite \
+            --region "$AWS_REGION"
+
+          echo "Secure database SSM parameters created/updated."
+
+      # =====================================================
+      # VERIFY DATABASE SSM PARAMETERS
+      # =====================================================
+
+      - name: Verify Database SSM Parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Verifying database SSM parameters..."
+
+          for PARAMETER_NAME in \
+            "/cloudmart/dev/database/host" \
+            "/cloudmart/dev/database/port" \
+            "/cloudmart/dev/database/name" \
+            "/cloudmart/dev/database/username" \
+            "/cloudmart/dev/database/password"
+          do
+            aws ssm get-parameter \
+              --name "$PARAMETER_NAME" \
+              --region "$AWS_REGION" \
+              --query "Parameter.Name" \
+              --output text
+          done
+
+          USERNAME_TYPE=$(aws ssm get-parameter \
+            --name "/cloudmart/dev/database/username" \
+            --region "$AWS_REGION" \
+            --query "Parameter.Type" \
+            --output text)
+
+          if [ "$USERNAME_TYPE" != "SecureString" ]; then
+            echo "ERROR: Database username is not SecureString."
+            exit 1
+          fi
+
+          PASSWORD_TYPE=$(aws ssm get-parameter \
+            --name "/cloudmart/dev/database/password" \
+            --region "$AWS_REGION" \
+            --query "Parameter.Type" \
+            --output text)
+
+          if [ "$PASSWORD_TYPE" != "SecureString" ]; then
+            echo "ERROR: Database password is not SecureString."
+            exit 1
+          fi
+
+          echo "Database SSM parameter verification passed."
+
+
   # =========================================================
   #
   # DB host, port, and name are now managed by data-stack.yaml.
