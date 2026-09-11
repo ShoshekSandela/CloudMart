@@ -150,11 +150,24 @@ jobs:
           echo "Checking existing database SSM parameters before CloudFormation deployment..."
 
           STACK_EXISTS="false"
-          STACK_STATUS="$(aws cloudformation describe-stacks             --stack-name cloudmart-data-${ENVIRONMENT}             --region "$AWS_REGION"             --query "Stacks[0].StackStatus"             --output text 2>/dev/null || true)"
+          STACK_STATUS="$(aws cloudformation describe-stacks             --stack-name "cloudmart-data-${ENVIRONMENT}"             --region "$AWS_REGION"             --query "Stacks[0].StackStatus"             --output text 2>/dev/null || true)"
 
           if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
-            STACK_EXISTS="true"
             echo "Existing data stack status: $STACK_STATUS"
+
+            if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+              echo "Data stack is in ROLLBACK_COMPLETE."
+              echo "Deleting failed data stack before recreation..."
+
+              aws cloudformation delete-stack                 --stack-name "cloudmart-data-${ENVIRONMENT}"                 --region "$AWS_REGION"
+
+              aws cloudformation wait stack-delete-complete                 --stack-name "cloudmart-data-${ENVIRONMENT}"                 --region "$AWS_REGION"
+
+              echo "Failed data stack deleted."
+              STACK_EXISTS="false"
+            else
+              STACK_EXISTS="true"
+            fi
           else
             echo "Data stack does not currently exist."
           fi
@@ -221,9 +234,9 @@ jobs:
 
           echo "Database credentials are available."
 
-          aws cloudformation deploy \
+          if ! aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
-            --stack-name cloudmart-data-${ENVIRONMENT} \
+            --stack-name "cloudmart-data-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
@@ -235,6 +248,23 @@ jobs:
               ExistingReportBucketName="cloudmart-${ENVIRONMENT}-reports" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+          then
+            echo "Data stack deployment failed. Showing CloudFormation failure events..."
+
+            aws cloudformation describe-stacks \
+              --stack-name "cloudmart-data-${ENVIRONMENT}" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].[StackStatus,StackStatusReason]" \
+              --output table || true
+
+            aws cloudformation describe-stack-events \
+              --stack-name "cloudmart-data-${ENVIRONMENT}" \
+              --region "$AWS_REGION" \
+              --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+              --output table || true
+
+            exit 1
+          fi
 
       - name: Verify Data Stack
         run: |
