@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "225"
+    Default: "226"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -671,6 +671,33 @@ Resources:
       ParentId: !Ref OrdersResource
       PathPart: "{id}"
 
+  OrderStatusResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !Ref OrdersByIdResource
+      PathPart: status
+
+  PatchOrderStatusMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - OrderLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref OrderStatusResource
+      HttpMethod: PATCH
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
+            - OrderLambdaArn: !GetAtt OrderFunction.Arn
+
   PostOrdersMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
@@ -860,6 +887,7 @@ Resources:
       - GetOrdersMethod
       - GetOrderByIdMethod
       - PutOrderByIdMethod
+      - PatchOrderStatusMethod
     Properties:
       RestApiId: !Ref CloudMartRestApi
       Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"

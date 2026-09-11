@@ -1630,62 +1630,13 @@ def lambda_handler(event, context):
         # ----------------------------------------------------
         # POST /orders
         #
-        # Normal request creates a PENDING order and publishes
-        # OrderPlaced. A lifecycle request can update an existing
-        # order with CONFIRMED, CANCELED or FAILED and publishes
-        # the matching EventBridge event.
+        # Creates a PENDING order and publishes OrderPlaced.
+        # Order status changes are handled separately by
+        # PATCH /orders/{id}/status.
         # ----------------------------------------------------
         if method == "POST":
 
             payload = parse_body(event)
-
-            if payload.get("status") is not None:
-                auth = get_authorization_context(event)
-                require_admin(auth)
-
-                try:
-                    order_id = int(payload.get("order_id"))
-                except (TypeError, ValueError) as exc:
-                    raise ValueError("order_id must be an integer") from exc
-
-                if order_id <= 0:
-                    raise ValueError("order_id must be greater than zero")
-
-                new_status = str(payload.get("status")).upper().strip()
-
-                connection = get_db_connection()
-                changed = update_order_status(
-                    connection,
-                    order_id,
-                    new_status,
-                )
-
-                order = get_order_by_id(connection, order_id)
-
-                if not order:
-                    return error_response(
-                        404,
-                        "ORDER_NOT_FOUND",
-                        f"Order {order_id} not found",
-                    )
-
-                if changed:
-                    event_type = {
-                        "CONFIRMED": "OrderConfirmed",
-                        "CANCELED": "OrderCanceled",
-                        "FAILED": "OrderFailed",
-                        "COMPLETED": "OrderCompleted",
-                    }[new_status]
-
-                    if not publish_order_event(event_type, order):
-                        logger.error(
-                            "Order %s changed to %s but %s could not be published",
-                            order_id,
-                            new_status,
-                            event_type,
-                        )
-
-                return response(200, order)
 
             auth = get_authorization_context(event)
 
@@ -1731,6 +1682,73 @@ def lambda_handler(event, context):
                 )
 
             return response(201, order)
+
+        # ----------------------------------------------------
+        # PATCH /orders/{id}/status
+        #
+        # Updates only the order status. This replaces the old
+        # POST /orders status-update behavior.
+        # Status changes remain ADMIN-only, matching the existing
+        # authorization rule.
+        # ----------------------------------------------------
+        if method == "PATCH":
+
+            order_id = get_path_order_id(event)
+
+            if order_id is None:
+                raise ValueError(
+                    "order id is required in the path"
+                )
+
+            payload = parse_body(event)
+
+            auth = get_authorization_context(event)
+            require_admin(auth)
+
+            new_status = payload.get("status")
+
+            if new_status is None:
+                raise ValueError(
+                    "status is required"
+                )
+
+            connection = get_db_connection()
+
+            changed = update_order_status(
+                connection,
+                order_id,
+                new_status,
+            )
+
+            order = get_order_by_id(
+                connection,
+                order_id,
+            )
+
+            if not order:
+                return error_response(
+                    404,
+                    "ORDER_NOT_FOUND",
+                    f"Order {order_id} not found",
+                )
+
+            if changed:
+                event_type = {
+                    "CONFIRMED": "OrderConfirmed",
+                    "CANCELED": "OrderCanceled",
+                    "FAILED": "OrderFailed",
+                    "COMPLETED": "OrderCompleted",
+                }[str(new_status).upper().strip()]
+
+                if not publish_order_event(event_type, order):
+                    logger.error(
+                        "Order %s changed to %s but %s could not be published",
+                        order_id,
+                        str(new_status).upper().strip(),
+                        event_type,
+                    )
+
+            return response(200, order)
 
         # ----------------------------------------------------
         # PUT /orders/{id}
@@ -1826,7 +1844,7 @@ def lambda_handler(event, context):
         return error_response(
             405,
             "METHOD_NOT_ALLOWED",
-            "Supported methods are GET, POST, PUT, OPTIONS",
+            "Supported methods are GET, POST, PUT, PATCH, OPTIONS",
         )
 
     except PermissionError as exc:
