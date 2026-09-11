@@ -24,6 +24,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT }}
 
 jobs:
 
@@ -60,17 +61,17 @@ jobs:
         run: |
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
       - name: Verify Network Stack
         run: |
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -114,10 +115,22 @@ jobs:
         run: |
           aws sts get-caller-identity
 
+      - name: Verify Environment Configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${ENVIRONMENT:-}" ]; then
+            echo "ERROR: GitHub repository variable CLOUDMART_ENVIRONMENT is missing."
+            exit 1
+          fi
+
+          echo "CloudMart Environment: $ENVIRONMENT"
+
       - name: Verify Network Stack
         run: |
           aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text
@@ -127,6 +140,63 @@ jobs:
           aws cloudformation validate-template \
             --template-body file://cloudformation/data-stack.yaml \
             --region "$AWS_REGION"
+
+      - name: Migrate Existing Database SSM Parameters
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking existing database SSM parameters before CloudFormation deployment..."
+
+          STACK_EXISTS="false"
+          STACK_STATUS="$(aws cloudformation describe-stacks             --stack-name cloudmart-data-${ENVIRONMENT}             --region "$AWS_REGION"             --query "Stacks[0].StackStatus"             --output text 2>/dev/null || true)"
+
+          if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
+            STACK_EXISTS="true"
+            echo "Existing data stack status: $STACK_STATUS"
+          else
+            echo "Data stack does not currently exist."
+          fi
+
+          # CloudFormation cannot adopt an SSM parameter that was created
+          # manually with the same name. On the first migration, remove only
+          # the three non-sensitive parameters that data-stack.yaml will own.
+          #
+          # Once CloudFormation owns these resources, they are left untouched.
+          DB_SSM_PREFIX="/cloudmart/${ENVIRONMENT}/database"
+
+          for PARAMETER_NAME in \
+            "${DB_SSM_PREFIX}/host" \
+            "${DB_SSM_PREFIX}/port" \
+            "${DB_SSM_PREFIX}/name"
+          do
+            SHOULD_DELETE="false"
+
+            if [ "$STACK_EXISTS" = "false" ]; then
+              SHOULD_DELETE="true"
+            else
+              RESOURCE_ID="$(aws cloudformation describe-stack-resources                 --stack-name cloudmart-data-${ENVIRONMENT}                 --region "$AWS_REGION"                 --query "StackResources[?PhysicalResourceId=='$PARAMETER_NAME'].LogicalResourceId | [0]"                 --output text 2>/dev/null || true)"
+
+              if [ -z "$RESOURCE_ID" ] || [ "$RESOURCE_ID" = "None" ]; then
+                SHOULD_DELETE="true"
+              fi
+            fi
+
+            if [ "$SHOULD_DELETE" = "true" ]; then
+              if aws ssm get-parameter                 --name "$PARAMETER_NAME"                 --region "$AWS_REGION"                 >/dev/null 2>&1; then
+
+                echo "Removing pre-existing manually managed parameter: $PARAMETER_NAME"
+
+                aws ssm delete-parameter                   --name "$PARAMETER_NAME"                   --region "$AWS_REGION"
+              else
+                echo "Parameter does not exist: $PARAMETER_NAME"
+              fi
+            else
+              echo "CloudFormation already owns: $PARAMETER_NAME"
+            fi
+          done
+
+          echo "Database SSM parameter migration check completed."
 
       - name: Deploy Data Stack
         env:
@@ -152,16 +222,16 @@ jobs:
 
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
               DBInstanceClass=db.t3.micro \
               DBName=cloudmart \
               AllocatedStorage=20 \
               DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
-              ExistingReportBucketName=cloudmart-dev-reports \
+              ExistingReportBucketName="cloudmart-${ENVIRONMENT}-reports" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -170,7 +240,7 @@ jobs:
           set -euo pipefail
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -215,14 +285,14 @@ jobs:
           fi
 
           aws ssm put-parameter \
-            --name "/cloudmart/dev/database/username" \
+            --name "/cloudmart/${ENVIRONMENT}/database/username" \
             --type "SecureString" \
             --value "$DB_USERNAME" \
             --overwrite \
             --region "$AWS_REGION"
 
           aws ssm put-parameter \
-            --name "/cloudmart/dev/database/password" \
+            --name "/cloudmart/${ENVIRONMENT}/database/password" \
             --type "SecureString" \
             --value "$DB_PASSWORD" \
             --overwrite \
@@ -241,12 +311,14 @@ jobs:
 
           echo "Verifying database SSM parameters..."
 
+          DB_SSM_PREFIX="/cloudmart/${ENVIRONMENT}/database"
+
           for PARAMETER_NAME in \
-            "/cloudmart/dev/database/host" \
-            "/cloudmart/dev/database/port" \
-            "/cloudmart/dev/database/name" \
-            "/cloudmart/dev/database/username" \
-            "/cloudmart/dev/database/password"
+            "${DB_SSM_PREFIX}/host" \
+            "${DB_SSM_PREFIX}/port" \
+            "${DB_SSM_PREFIX}/name" \
+            "${DB_SSM_PREFIX}/username" \
+            "${DB_SSM_PREFIX}/password"
           do
             aws ssm get-parameter \
               --name "$PARAMETER_NAME" \
@@ -256,7 +328,7 @@ jobs:
           done
 
           USERNAME_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/database/username" \
+            --name "/cloudmart/${ENVIRONMENT}/database/username" \
             --region "$AWS_REGION" \
             --query "Parameter.Type" \
             --output text)
@@ -267,7 +339,7 @@ jobs:
           fi
 
           PASSWORD_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/database/password" \
+            --name "/cloudmart/${ENVIRONMENT}/database/password" \
             --region "$AWS_REGION" \
             --query "Parameter.Type" \
             --output text)
@@ -306,9 +378,9 @@ jobs:
             exit 1
           fi
 
-          aws ssm put-parameter             --name "/cloudmart/dev/database/username"             --type "SecureString"             --value "$DB_USERNAME"             --overwrite             --region "$AWS_REGION"
+          aws ssm put-parameter             --name "/cloudmart/${ENVIRONMENT}/database/username"             --type "SecureString"             --value "$DB_USERNAME"             --overwrite             --region "$AWS_REGION"
 
-          aws ssm put-parameter             --name "/cloudmart/dev/database/password"             --type "SecureString"             --value "$DB_PASSWORD"             --overwrite             --region "$AWS_REGION"
+          aws ssm put-parameter             --name "/cloudmart/${ENVIRONMENT}/database/password"             --type "SecureString"             --value "$DB_PASSWORD"             --overwrite             --region "$AWS_REGION"
 
           echo "Secure database SSM parameters created/updated."
 
@@ -323,20 +395,20 @@ jobs:
 
           echo "Verifying database SSM parameters..."
 
-          aws ssm get-parameter             --name "/cloudmart/dev/database/host"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+          aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/database/host"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
 
-          aws ssm get-parameter             --name "/cloudmart/dev/database/port"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+          aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/database/port"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
 
-          aws ssm get-parameter             --name "/cloudmart/dev/database/name"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
+          aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/database/name"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
 
-          USERNAME_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/username"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
+          USERNAME_TYPE=$(aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/database/username"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
 
           if [ "$USERNAME_TYPE" != "SecureString" ]; then
             echo "ERROR: Database username is not SecureString."
             exit 1
           fi
 
-          PASSWORD_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/password"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
+          PASSWORD_TYPE=$(aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/database/password"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
 
           if [ "$PASSWORD_TYPE" != "SecureString" ]; then
             echo "ERROR: Database password is not SecureString."
@@ -375,7 +447,7 @@ jobs:
       - name: Verify Data Stack
         run: |
           aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text
@@ -393,7 +465,7 @@ jobs:
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text 2>/dev/null || echo "DOES_NOT_EXIST")
@@ -411,11 +483,11 @@ jobs:
           echo "Deleting failed IAM stack..."
 
           aws cloudformation delete-stack \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION"
 
           aws cloudformation wait stack-delete-complete \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION"
 
           echo "IAM stack deleted."
@@ -425,10 +497,10 @@ jobs:
 
           aws cloudformation deploy \
             --template-file cloudformation/iam-stack.yaml \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
@@ -436,7 +508,7 @@ jobs:
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -465,7 +537,7 @@ jobs:
           echo "IAM STACK STATUS"
 
           aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].[StackStatus,StackStatusReason]" \
             --output table || true
@@ -473,7 +545,7 @@ jobs:
           echo "IAM STACK FAILURE EVENTS"
 
           aws cloudformation describe-stack-events \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
@@ -535,7 +607,7 @@ jobs:
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -556,7 +628,7 @@ jobs:
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -577,7 +649,7 @@ jobs:
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
+            --stack-name cloudmart-iam-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -630,19 +702,19 @@ jobs:
           echo "Getting Network stack outputs..."
 
           PRIVATE_SUBNET_1=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet1Id'].OutputValue | [0]" \
             --output text)
 
           PRIVATE_SUBNET_2=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet2Id'].OutputValue | [0]" \
             --output text)
 
           LAMBDA_SECURITY_GROUP=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
+            --stack-name cloudmart-network-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='LambdaSecurityGroupId'].OutputValue | [0]" \
             --output text)
@@ -689,10 +761,10 @@ jobs:
             aws iam get-role               --role-name "$role_name"               --query 'Role.Arn'               --output text
           }
 
-          AUTHORIZE_ROLE="cloudmart-dev-lambda-authorizer-role"
-          PRODUCT_ROLE="cloudmart-dev-lambda-product-role"
-          ORDER_ROLE="cloudmart-dev-lambda-order-role"
-          REPORT_ROLE="cloudmart-dev-lambda-report-role"
+          AUTHORIZE_ROLE="cloudmart-${ENVIRONMENT}-lambda-authorizer-role"
+          PRODUCT_ROLE="cloudmart-${ENVIRONMENT}-lambda-product-role"
+          ORDER_ROLE="cloudmart-${ENVIRONMENT}-lambda-order-role"
+          REPORT_ROLE="cloudmart-${ENVIRONMENT}-lambda-report-role"
 
           AUTHORIZER_ROLE_ARN="$(get_role_arn "$AUTHORIZE_ROLE")"
           PRODUCT_ROLE_ARN="$(get_role_arn "$PRODUCT_ROLE")"
@@ -726,25 +798,25 @@ jobs:
           echo "Getting Data stack outputs..."
 
           REPORT_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='ReportBucketName'].OutputValue | [0]" \
             --output text)
 
           DB_HOST=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue | [0]" \
             --output text)
 
           DB_PORT=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='DBPort'].OutputValue | [0]" \
             --output text)
 
           DB_NAME=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+            --stack-name cloudmart-data-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]" \
             --output text)
@@ -1139,7 +1211,7 @@ jobs:
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
-            --stack-name cloudmart-application-dev \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-confirm-changeset \
@@ -1147,7 +1219,7 @@ jobs:
             --resolve-s3 \
             --force-upload \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
               ProjectName=cloudmart \
               OrderLambdaRoleArn="$ORDER_ROLE_ARN" \
               PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
@@ -1155,12 +1227,12 @@ jobs:
               LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
               ProductLambdaRoleArn="$PRODUCT_ROLE_ARN" \
               AuthorizerCacheTTL=300 \
-              TokenParameterName="/cloudmart/dev/auth/token" \
-              DBHostParameterName="/cloudmart/dev/database/host" \
-              DBPortParameterName="/cloudmart/dev/database/port" \
-              DBNameParameterName="/cloudmart/dev/database/name" \
-              DBUsernameParameterName="/cloudmart/dev/database/username" \
-              DBPasswordParameterName="/cloudmart/dev/database/password" \
+              TokenParameterName="/cloudmart/${ENVIRONMENT}/auth/token" \
+              DBHostParameterName="/cloudmart/${ENVIRONMENT}/database/host" \
+              DBPortParameterName="/cloudmart/${ENVIRONMENT}/database/port" \
+              DBNameParameterName="/cloudmart/${ENVIRONMENT}/database/name" \
+              DBUsernameParameterName="/cloudmart/${ENVIRONMENT}/database/username" \
+              DBPasswordParameterName="/cloudmart/${ENVIRONMENT}/database/password" \
               NotificationEmail="$ADMIN_EMAIL" \
               CustomerEmail="$CUSTOMER_EMAIL" \
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"
@@ -1178,11 +1250,11 @@ jobs:
 
           echo "Initializing CloudMart authentication tokens..."
 
-          aws lambda invoke             --function-name "cloudmart-dev-authorizer"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_tokens"}'             /tmp/auth-token-init.json
+          aws lambda invoke             --function-name "cloudmart-${ENVIRONMENT}-authorizer"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_tokens"}'             /tmp/auth-token-init.json
 
           cat /tmp/auth-token-init.json
 
-          echo "ADMIN and CUSTOMER tokens initialized in /cloudmart/dev/auth/token"
+          echo "ADMIN and CUSTOMER tokens initialized in /cloudmart/${ENVIRONMENT}/auth/token"
 
 
       # =====================================================
@@ -1204,7 +1276,7 @@ jobs:
 
           echo "Initializing CloudMart database schema..."
 
-          aws lambda invoke             --function-name "cloudmart-dev-product"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_database"}'             /tmp/database-init.json
+          aws lambda invoke             --function-name "cloudmart-${ENVIRONMENT}-product"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_database"}'             /tmp/database-init.json
 
           cat /tmp/database-init.json
 
@@ -1227,7 +1299,7 @@ jobs:
 
           echo "Synchronizing CUSTOMER_EMAIL into the customers and orders tables..."
 
-          aws lambda invoke             --function-name "cloudmart-dev-order"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"sync_configured_customer"}'             /tmp/customer-sync.json
+          aws lambda invoke             --function-name "cloudmart-${ENVIRONMENT}-order"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"sync_configured_customer"}'             /tmp/customer-sync.json
 
           cat /tmp/customer-sync.json
 
@@ -1248,7 +1320,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          PARAM_JSON="$(aws ssm get-parameter             --name "/cloudmart/dev/auth/token"             --with-decryption             --region "$AWS_REGION"             --output json)"
+          PARAM_JSON="$(aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/auth/token"             --with-decryption             --region "$AWS_REGION"             --output json)"
 
           PARAM_TYPE="$(printf '%s' "$PARAM_JSON" | jq -r '.Parameter.Type')"
           PARAM_VALUE="$(printf '%s' "$PARAM_JSON" | jq -r '.Parameter.Value')"
@@ -1312,7 +1384,7 @@ jobs:
         run: |
 
           STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].StackStatus" \
             --output text)
@@ -1338,7 +1410,7 @@ jobs:
         run: |
 
           AUTHORIZE_LAMBDA=$(aws lambda get-function \
-            --function-name cloudmart-dev-authorizer \
+            --function-name cloudmart-${ENVIRONMENT}-authorizer \
             --region "$AWS_REGION" \
             --query "Configuration.FunctionArn" \
             --output text)
@@ -1361,7 +1433,7 @@ jobs:
         run: |
 
           PRODUCT_LAMBDA=$(aws lambda get-function \
-            --function-name cloudmart-dev-product \
+            --function-name cloudmart-${ENVIRONMENT}-product \
             --region "$AWS_REGION" \
             --query "Configuration.FunctionArn" \
             --output text)
@@ -1385,13 +1457,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          EVENT_BUS="cloudmart-dev-event-bus"
+          EVENT_BUS="cloudmart-${ENVIRONMENT}-event-bus"
 
           declare -A EXPECTED_TYPES=(
-            [cloudmart-dev-order-placed]="OrderPlaced"
-            [cloudmart-dev-order-confirmed]="OrderConfirmed"
-            [cloudmart-dev-order-canceled]="OrderCanceled"
-            [cloudmart-dev-order-failed]="OrderFailed"
+            [cloudmart-${ENVIRONMENT}-order-placed]="OrderPlaced"
+            [cloudmart-${ENVIRONMENT}-order-confirmed]="OrderConfirmed"
+            [cloudmart-${ENVIRONMENT}-order-canceled]="OrderCanceled"
+            [cloudmart-${ENVIRONMENT}-order-failed]="OrderFailed"
           )
 
           for RULE_NAME in "${!EXPECTED_TYPES[@]}"; do
@@ -1457,7 +1529,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-dev"
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
           if [ -z "${ADMIN_EMAIL:-}" ]; then
             echo "ERROR: CLOUDMART_ADMIN_EMAIL is missing."
@@ -1542,7 +1614,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-dev"
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
           if [ -z "${CUSTOMER_EMAIL:-}" ]; then
             echo "ERROR: CLOUDMART_CUSTOMER_EMAIL is missing."
@@ -1625,7 +1697,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          FUNCTION_NAME="cloudmart-dev-order"
+          FUNCTION_NAME="cloudmart-${ENVIRONMENT}-order"
           SOURCE_FILE="lambdas/order/index.py"
           DEPLOYED_ZIP="/tmp/cloudmart-order-deployed.zip"
           DEPLOYED_DIR="/tmp/cloudmart-order-deployed"
@@ -1720,7 +1792,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          LOG_GROUP="/aws/lambda/cloudmart-dev-order"
+          LOG_GROUP="/aws/lambda/cloudmart-${ENVIRONMENT}-order"
 
           COUNT="$(aws logs describe-log-groups \
             --log-group-name-prefix "$LOG_GROUP" \
@@ -1746,9 +1818,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-dev"
-          RULE_NAME="cloudmart-dev-low-stock"
-          EVENT_BUS="cloudmart-dev-event-bus"
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
+          RULE_NAME="cloudmart-${ENVIRONMENT}-low-stock"
+          EVENT_BUS="cloudmart-${ENVIRONMENT}-event-bus"
 
           echo "Checking Inventory Change EventBridge rule..."
 
@@ -1860,7 +1932,7 @@ jobs:
           # EventBridge -> SNS Publisher Lambda -> SNS topic.
           # Therefore the EventBridge target must be the SNS Publisher Lambda.
           EXPECTED_PUBLISHER_ARN=$(aws lambda get-function \
-            --function-name "cloudmart-dev-sns-publisher" \
+            --function-name "cloudmart-${ENVIRONMENT}-sns-publisher" \
             --region "$AWS_REGION" \
             --query "Configuration.FunctionArn" \
             --output text)
@@ -1968,7 +2040,7 @@ jobs:
         run: |
 
           aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs" \
             --output table
@@ -1985,7 +2057,7 @@ jobs:
           echo "APPLICATION STACK STATUS"
 
           aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "Stacks[0].[StackStatus,StackStatusReason]" \
             --output table || true
@@ -1993,7 +2065,7 @@ jobs:
           echo "APPLICATION STACK FAILURE EVENTS"
 
           aws cloudformation describe-stack-events \
-            --stack-name cloudmart-application-dev \
+            --stack-name cloudmart-application-${ENVIRONMENT} \
             --region "$AWS_REGION" \
             --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
             --output table || true
@@ -2022,7 +2094,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-dev"
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
           if [ -z "${ADMIN_EMAIL:-}" ]; then
             echo "ERROR: ADMIN_EMAIL is not configured."
@@ -2100,9 +2172,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-dev"
-          RULE_NAME="cloudmart-dev-low-stock"
-          EVENT_BUS="cloudmart-dev-event-bus"
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
+          RULE_NAME="cloudmart-${ENVIRONMENT}-low-stock"
+          EVENT_BUS="cloudmart-${ENVIRONMENT}-event-bus"
 
           echo "=========================================="
           echo "VERIFY EVENTBRIDGE -> SNS"
@@ -2279,7 +2351,7 @@ jobs:
           # CloudMart notification flow:
           # EventBridge -> SNS Publisher Lambda -> SNS topic.
           EXPECTED_PUBLISHER_ARN="$(aws lambda get-function \
-            --function-name "cloudmart-dev-sns-publisher" \
+            --function-name "cloudmart-${ENVIRONMENT}-sns-publisher" \
             --region "$AWS_REGION" \
             --query "Configuration.FunctionArn" \
             --output text)"
