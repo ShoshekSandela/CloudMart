@@ -24,7 +24,7 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT }}
+  ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
 
 jobs:
 
@@ -120,8 +120,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [ -z "${ENVIRONMENT:-}" ]; then
-            echo "ERROR: GitHub repository variable CLOUDMART_ENVIRONMENT is missing."
+          if [[ "$ENVIRONMENT" != "dev" && "$ENVIRONMENT" != "test" && "$ENVIRONMENT" != "prod" ]]; then
+            echo "ERROR: CLOUDMART_ENVIRONMENT must be one of: dev, test, prod."
+            echo "Current value: $ENVIRONMENT"
             exit 1
           fi
 
