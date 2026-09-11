@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "227"
+    Default: "228"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -172,8 +172,6 @@ Resources:
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: !Sub |
               {"message":"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart","topicArn":"${CloudMartLowStockTopic}"}
-        - Id: LowStockSNSTarget
-          Arn: !Ref CloudMartLowStockTopic
   # ============================================================
   # ORDER LIFECYCLE EVENTS -> SNS
   # ============================================================
@@ -335,20 +333,6 @@ Resources:
         detail-type:
           - OrderPlaced
       Targets:
-        - Id: OrderPlacedLambdaAdmin
-          Arn: !GetAtt SnsPublisherFunction.Arn
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART ADMIN ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\n\nPlease review the order details in CloudMart.\n\n— CloudMart","topicArn":"${CloudMartOrderNotificationTopic}"}
-
         - Id: OrderPlacedLambdaCustomer
           Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
@@ -378,20 +362,6 @@ Resources:
         detail-type:
           - OrderConfirmed
       Targets:
-        - Id: OrderConfirmedLambdaAdmin
-          Arn: !GetAtt SnsPublisherFunction.Arn
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART ADMIN ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\n\nPlease review the order details in CloudMart.\n\n— CloudMart","topicArn":"${CloudMartOrderNotificationTopic}"}
-
         - Id: OrderConfirmedLambdaCustomer
           Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
@@ -421,20 +391,6 @@ Resources:
         detail-type:
           - OrderCanceled
       Targets:
-        - Id: OrderCanceledLambdaAdmin
-          Arn: !GetAtt SnsPublisherFunction.Arn
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART ADMIN ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\n\nPlease review the order details in CloudMart.\n\n— CloudMart","topicArn":"${CloudMartOrderNotificationTopic}"}
-
         - Id: OrderCanceledLambdaCustomer
           Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
@@ -464,20 +420,6 @@ Resources:
         detail-type:
           - OrderFailed
       Targets:
-        - Id: OrderFailedLambdaAdmin
-          Arn: !GetAtt SnsPublisherFunction.Arn
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART ADMIN ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\n\nPlease review the order details in CloudMart.\n\n— CloudMart","topicArn":"${CloudMartOrderNotificationTopic}"}
-
         - Id: OrderFailedLambdaCustomer
           Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
@@ -507,20 +449,6 @@ Resources:
         detail-type:
           - OrderCompleted
       Targets:
-        - Id: OrderCompletedLambdaAdmin
-          Arn: !GetAtt SnsPublisherFunction.Arn
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART ADMIN ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been completed.\n\nPlease review the order details in CloudMart.\n\n— CloudMart","topicArn":"${CloudMartOrderNotificationTopic}"}
-
         - Id: OrderCompletedLambdaCustomer
           Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
@@ -665,6 +593,36 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
+
+  # ============================================================
+  # ASYNCHRONOUS ORDER STOCK PROCESSING
+  # OrderPlaced -> check RDS stock -> CONFIRMED or FAILED
+  # ============================================================
+
+  OrderPlacedProcessingEventRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-placed-processing"
+      Description: Processes newly placed PENDING orders asynchronously.
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source:
+          - cloudmart.order
+        detail-type:
+          - OrderPlaced
+      Targets:
+        - Id: OrderPlacedProcessingLambda
+          Arn: !GetAtt OrderFunction.Arn
+
+  OrderPlacedProcessingLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OrderFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt OrderPlacedProcessingEventRule.Arn
 
   OrdersResource:
     Type: AWS::ApiGateway::Resource
