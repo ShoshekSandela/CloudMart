@@ -94,7 +94,7 @@ def initialize_admin_token():
     return str(config["admin_token"]), False
 
 
-def initialize_customer_tokens(connection):
+def initialize_customer_tokens(connection, force_rotate=False):
     generated_tokens = []
 
     with connection.cursor() as cursor:
@@ -110,7 +110,7 @@ def initialize_customer_tokens(connection):
             )
             existing = cursor.fetchone()
 
-            if existing and str(existing["status"]).upper() == "ACTIVE":
+            if existing and str(existing["status"]).upper() == "ACTIVE" and not force_rotate:
                 continue
 
             token = generate_token()
@@ -144,6 +144,43 @@ def initialize_customer_tokens(connection):
 
     connection.commit()
     return generated_tokens
+
+
+def rotate_customer_tokens():
+    """
+    Generate a fresh token for each of the five configured customers.
+
+    The raw tokens are returned only in this Lambda response. RDS stores
+    only SHA-256 hashes. The Admin token in SSM is not changed.
+    """
+    connection = None
+    try:
+        connection = get_db_connection()
+        customer_tokens = initialize_customer_tokens(
+            connection,
+            force_rotate=True,
+        )
+
+        if len(customer_tokens) != CUSTOMER_TOKEN_COUNT:
+            raise RuntimeError(
+                f"Expected {CUSTOMER_TOKEN_COUNT} customer tokens to be rotated, "
+                f"but generated {len(customer_tokens)}."
+            )
+
+        return {
+            "statusCode": 200,
+            "message": "Five customer authentication tokens rotated successfully",
+            "customer_token_count": CUSTOMER_TOKEN_COUNT,
+            "customer_tokens": customer_tokens,
+        }
+    except Exception:
+        if connection:
+            connection.rollback()
+        logger.exception("Customer token rotation failed")
+        raise
+    finally:
+        if connection:
+            connection.close()
 
 
 def initialize_tokens():
@@ -271,8 +308,13 @@ def build_policy(principal_id, identity, api_arn, stage):
 
 
 def lambda_handler(event, context):
-    if event.get("action") == "initialize_tokens":
+    action = event.get("action")
+
+    if action == "initialize_tokens":
         return initialize_tokens()
+
+    if action == "rotate_customer_tokens":
+        return rotate_customer_tokens()
 
     method_arn = event.get("methodArn")
     authorization_header = event.get("authorizationToken")
