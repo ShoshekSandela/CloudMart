@@ -188,7 +188,10 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  CloudMartOrderNotificationSubscription:
+  # CloudFormation-managed ADMIN email subscription.
+  # A new logical ID is used so CloudFormation creates a fresh subscription
+  # if the previous subscription resource was deleted or left in Deleted state.
+  CloudMartAdminOrderNotificationEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
       TopicArn: !Ref CloudMartOrderNotificationTopic
