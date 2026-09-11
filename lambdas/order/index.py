@@ -819,7 +819,7 @@ def publish_order_placed_event(order):
         "total_amount": float(
             order["total_amount"]
         ),
-        "items_summary": "\\n\\n".join(
+        "items_summary": "\n\n".join(
             [
                 f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\\n"
                 f"Product ID: {item['product_id']}\\n"
@@ -897,7 +897,7 @@ def publish_order_event(detail_type, order):
         "customer_email": order.get("customer_email"),
         "status": order.get("status"),
         "total_amount": float(order["total_amount"]),
-        "items_summary": "\\n\\n".join(
+        "items_summary": "\n\n".join(
             [
                 f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\\n"
                 f"Product ID: {item['product_id']}\\n"
