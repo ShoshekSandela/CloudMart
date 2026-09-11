@@ -1400,6 +1400,10 @@ jobs:
             exit 1
           fi
 
+          # Normalize accidental whitespace/escaped @ from GitHub variables.
+          ADMIN_EMAIL="$(printf '%s' "$ADMIN_EMAIL" | tr -d '\r' | xargs)"
+          ADMIN_EMAIL="${ADMIN_EMAIL//\\@/@}"
+
           TOPIC_ARN="$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='OrderNotificationTopicArn'].OutputValue | [0]"             --output text)"
 
           if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
@@ -1412,13 +1416,19 @@ jobs:
 
           SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic             --topic-arn "$TOPIC_ARN"             --region "$AWS_REGION"             --output json)"
 
+          echo "Current SNS subscriptions:"
+          printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r '
+            .Subscriptions[] |
+            "Protocol=\(.Protocol) Endpoint=\(.Endpoint) ARN=\(.SubscriptionArn)"
+          '
+
           SUBSCRIPTION_ARN="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
               jq -r --arg email "$ADMIN_EMAIL" '
                 [.Subscriptions[]
                   | select(
-                      .Protocol == "email"
-                      and .Endpoint == $email
+                      (.Protocol // "" | ascii_downcase) == "email"
+                      and ((.Endpoint // "" | ascii_downcase | gsub("^\\s+|\\s+$"; "")) == ($email | ascii_downcase))
                       and .SubscriptionArn != "Deleted"
                     )
                   | .SubscriptionArn][0] // empty
@@ -1426,17 +1436,19 @@ jobs:
           )"
 
           if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: CloudFormation did not create the ADMIN SNS email subscription."
+            echo "ERROR: ADMIN SNS email subscription was not found."
             echo "Expected endpoint: $ADMIN_EMAIL"
+            echo "The subscription must be created by CloudFormation."
             exit 1
           fi
 
-          echo "ADMIN SNS subscription: $SUBSCRIPTION_ARN"
+          echo "ADMIN SNS subscription found: $SUBSCRIPTION_ARN"
 
           if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
             echo "WARNING: ADMIN SNS subscription is PendingConfirmation."
-            echo "AWS requires the recipient to confirm the SNS email."
-            echo "The deployment will continue; no manual subscription will be created."
+            echo "Open the SNS confirmation email sent to $ADMIN_EMAIL."
+            echo "Click Confirm subscription."
+            echo "No manual SNS subscription will be created."
             exit 0
           fi
 
@@ -1473,6 +1485,10 @@ jobs:
             exit 1
           fi
 
+          # Normalize accidental whitespace/escaped @ from GitHub variables.
+          CUSTOMER_EMAIL="$(printf '%s' "$CUSTOMER_EMAIL" | tr -d '\r' | xargs)"
+          CUSTOMER_EMAIL="${CUSTOMER_EMAIL//\\@/@}"
+
           TOPIC_ARN="$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='CustomerOrderNotificationTopicArn'].OutputValue | [0]"             --output text)"
 
           if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
@@ -1485,13 +1501,19 @@ jobs:
 
           SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic             --topic-arn "$TOPIC_ARN"             --region "$AWS_REGION"             --output json)"
 
+          echo "Current SNS subscriptions:"
+          printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r '
+            .Subscriptions[] |
+            "Protocol=\(.Protocol) Endpoint=\(.Endpoint) ARN=\(.SubscriptionArn)"
+          '
+
           SUBSCRIPTION_ARN="$(
             printf '%s' "$SUBSCRIPTIONS_JSON" |
               jq -r --arg email "$CUSTOMER_EMAIL" '
                 [.Subscriptions[]
                   | select(
-                      .Protocol == "email"
-                      and .Endpoint == $email
+                      (.Protocol // "" | ascii_downcase) == "email"
+                      and ((.Endpoint // "" | ascii_downcase | gsub("^\\s+|\\s+$"; "")) == ($email | ascii_downcase))
                       and .SubscriptionArn != "Deleted"
                     )
                   | .SubscriptionArn][0] // empty
@@ -1499,17 +1521,19 @@ jobs:
           )"
 
           if [ -z "$SUBSCRIPTION_ARN" ] || [ "$SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: CloudFormation did not create the CUSTOMER SNS email subscription."
+            echo "ERROR: CUSTOMER SNS email subscription was not found."
             echo "Expected endpoint: $CUSTOMER_EMAIL"
+            echo "The subscription must be created by CloudFormation."
             exit 1
           fi
 
-          echo "CUSTOMER SNS subscription: $SUBSCRIPTION_ARN"
+          echo "CUSTOMER SNS subscription found: $SUBSCRIPTION_ARN"
 
           if [ "$SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
             echo "WARNING: CUSTOMER SNS subscription is PendingConfirmation."
-            echo "AWS requires the recipient to confirm the SNS email."
-            echo "The deployment will continue; no manual subscription will be created."
+            echo "Open the SNS confirmation email sent to $CUSTOMER_EMAIL."
+            echo "Click Confirm subscription."
+            echo "No manual SNS subscription will be created."
             exit 0
           fi
 
