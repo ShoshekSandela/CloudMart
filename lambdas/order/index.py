@@ -67,23 +67,38 @@ def resolve_customer_identity(
     auth,
 ):
     """
-    Resolve CUSTOMER identity from the deployment configuration.
+    Resolve CUSTOMER identity from the authenticated token context.
 
-    The Authorizer proves that the caller is a CUSTOMER. The configured
-    CUSTOMER_ID/CUSTOMER_EMAIL are the source of truth for the identity,
-    so Postman cannot choose or override the customer email.
+    The Authorizer validates the customer token against the RDS
+    customer_tokens table and supplies the authenticated customer_id.
+    The request body cannot override this identity.
     """
     if auth["role"] != "CUSTOMER":
         return None
 
-    customer = sync_configured_customer(
-        connection,
-        configured_email=auth.get("email"),
-        configured_customer_id=auth.get("customer_id"),
-    )
+    customer_id = auth.get("customer_id")
+    if customer_id in (None, ""):
+        raise PermissionError("Authenticated customer_id is missing")
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                customer_id,
+                customer_name,
+                customer_email
+            FROM customers
+            WHERE customer_id = %s
+            LIMIT 1
+            """,
+            (int(customer_id),),
+        )
+        customer = cursor.fetchone()
+
+    if not customer:
+        raise PermissionError("Authenticated customer does not exist")
 
     return customer
-
 
 
 # ============================================================
@@ -1497,7 +1512,7 @@ def error_response(status_code, code, message):
 
 
 def authorize_order_access(connection, auth, order):
-    """Allow ADMIN all orders; CUSTOMER only its configured customer orders."""
+    """Allow ADMIN all orders; CUSTOMER only its authenticated customer orders."""
     if auth["role"] == "ADMIN":
         return
 

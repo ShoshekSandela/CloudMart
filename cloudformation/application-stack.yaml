@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "226"
+    Default: "227"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -542,14 +542,20 @@ Resources:
       Handler: index.lambda_handler
       CodeUri: ../lambdas/authorizer/
       Role: !Ref LambdaAuthorizerRoleArn
-      Timeout: 5
+      Timeout: 10
       MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds:
+          - !Ref LambdaSecurityGroupId
+        SubnetIds: !Ref PrivateSubnetIds
       Environment:
         Variables:
           TOKEN_PARAMETER_NAME: !Ref TokenParameterName
-          ADMIN_EMAIL: !Ref NotificationEmail
-          CUSTOMER_EMAIL: !Ref CustomerEmail
-          CUSTOMER_ID: "1"
+          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
+          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
+          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
+          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
+          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
       Tags:
         Project: CloudMart
         Environment: !Ref Environment

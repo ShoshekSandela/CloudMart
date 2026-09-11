@@ -1011,6 +1011,27 @@ jobs:
 
         shell: bash
         run: |
+          set -euo pipefail
+
+          # Normalize accidental whitespace/escaped @ in GitHub variables
+          # before CloudFormation creates the SNS email subscriptions.
+          ADMIN_EMAIL="$(printf '%s' "$ADMIN_EMAIL" | tr -d '\r' | xargs)"
+          ADMIN_EMAIL="${ADMIN_EMAIL//\\@/@}"
+          CUSTOMER_EMAIL="$(printf '%s' "$CUSTOMER_EMAIL" | tr -d '\r' | xargs)"
+          CUSTOMER_EMAIL="${CUSTOMER_EMAIL//\\@/@}"
+
+          if [ -z "$ADMIN_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_ADMIN_EMAIL is missing."
+            exit 1
+          fi
+
+          if [ -z "$CUSTOMER_EMAIL" ]; then
+            echo "ERROR: CLOUDMART_CUSTOMER_EMAIL is missing."
+            exit 1
+          fi
+
+          echo "Using configured ADMIN email: $ADMIN_EMAIL"
+          echo "Using configured CUSTOMER email: $CUSTOMER_EMAIL"
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -1041,24 +1062,6 @@ jobs:
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"
 
           echo "Application Stack deployment completed successfully."
-
-      # =====================================================
-      # INITIALIZE RANDOM ADMIN / CUSTOMER TOKENS
-      # =====================================================
-
-      - name: Initialize CloudMart ADMIN and CUSTOMER tokens
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Initializing CloudMart authentication tokens..."
-
-          aws lambda invoke             --function-name "cloudmart-${ENVIRONMENT}-authorizer"             --region "$AWS_REGION"             --cli-binary-format raw-in-base64-out             --payload '{"action":"initialize_tokens"}'             /tmp/auth-token-init.json
-
-          cat /tmp/auth-token-init.json
-
-          echo "ADMIN and CUSTOMER tokens initialized in /cloudmart/${ENVIRONMENT}/auth/token"
-
 
       # =====================================================
       # INITIALIZE CLOUDMART DATABASE SCHEMA
@@ -1092,6 +1095,38 @@ jobs:
 
 
       # =====================================================
+      # INITIALIZE CLOUDMART AUTHENTICATION TOKENS
+      # =====================================================
+      #
+      # The ADMIN token is stored in SSM SecureString. Five CUSTOMER
+      # tokens are generated once and stored in RDS as SHA-256 hashes.
+      # The raw tokens are returned only when first generated.
+      #
+
+      - name: Initialize CloudMart authentication tokens
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Initializing CloudMart authentication tokens..."
+
+          aws lambda invoke \
+            --function-name "cloudmart-${ENVIRONMENT}-authorizer" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"initialize_tokens"}' \
+            /tmp/auth-token-init.json
+
+          cat /tmp/auth-token-init.json
+
+          if ! jq -e '.statusCode == 200' /tmp/auth-token-init.json >/dev/null; then
+            echo "ERROR: Authentication token initialization failed."
+            exit 1
+          fi
+
+          echo "Authentication token initialization completed."
+
+      # =====================================================
       # SYNCHRONIZE CONFIGURED CUSTOMER EMAIL
       # =====================================================
 
@@ -1115,15 +1150,19 @@ jobs:
 
 
       # =====================================================
-      # VERIFY GENERATED AUTH TOKEN PARAMETER
+      # VERIFY GENERATED AUTH TOKEN PARAMETER AND CUSTOMER TOKENS
       # =====================================================
 
-      - name: Verify Generated Auth Token Parameter
+      - name: Verify Authentication Tokens
         shell: bash
         run: |
           set -euo pipefail
 
-          PARAM_JSON="$(aws ssm get-parameter             --name "/cloudmart/${ENVIRONMENT}/auth/token"             --with-decryption             --region "$AWS_REGION"             --output json)"
+          PARAM_JSON="$(aws ssm get-parameter \
+            --name "/cloudmart/${ENVIRONMENT}/auth/token" \
+            --with-decryption \
+            --region "$AWS_REGION" \
+            --output json)"
 
           PARAM_TYPE="$(printf '%s' "$PARAM_JSON" | jq -r '.Parameter.Type')"
           PARAM_VALUE="$(printf '%s' "$PARAM_JSON" | jq -r '.Parameter.Value')"
@@ -1138,16 +1177,10 @@ jobs:
             exit 1
           fi
 
-          if ! printf '%s' "$PARAM_VALUE" | jq -e '.customer_token | type == "string" and length > 0' >/dev/null; then
-            echo "ERROR: CUSTOMER token was not generated."
-            exit 1
-          fi
+          echo "ADMIN token exists in SSM SecureString."
 
-          echo "Generated ADMIN token exists."
-          echo "Generated CUSTOMER token exists."
-          echo "SSM authentication configuration verification passed."
-
-
+          echo "Five CUSTOMER tokens are provisioned by the Authorizer initialization action."
+          echo "RDS customer_tokens verification is performed by the initialization action."
 
       # =====================================================
       # VERIFY LOW-STOCK TEMPLATE BEFORE STACK VERIFICATION

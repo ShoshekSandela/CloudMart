@@ -410,7 +410,7 @@ Resources:
                 Resource: "arn:aws:logs:*:*:*"
 
 
-              # Read and initialize authentication tokens in SSM
+              # Read and initialize the ADMIN token in SSM
               - Effect: Allow
 
                 Action:
@@ -419,6 +419,26 @@ Resources:
 
                 Resource:
                   - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+
+              # Read the existing database connection parameters.
+              # Customer token hashes are stored and verified in RDS.
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/*
+
+              # Required for a Lambda configured for VPC access.
+              - Effect: Allow
+
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+
+                Resource: "*"
 
       Tags:
 

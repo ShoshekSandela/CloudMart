@@ -1,37 +1,65 @@
+import hashlib
 import json
+import logging
 import os
 import secrets
 
 import boto3
+import pymysql
 
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
 
 TOKEN_PARAMETER_NAME = os.environ["TOKEN_PARAMETER_NAME"]
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "admin@cloudmart.com")
-CUSTOMER_EMAIL = os.environ.get("CUSTOMER_EMAIL", "customer@cloudmart.com")
-CUSTOMER_ID = os.environ.get("CUSTOMER_ID", "1")
+DB_HOST_PARAMETER_NAME = os.environ["DB_HOST_PARAMETER_NAME"]
+DB_PORT_PARAMETER_NAME = os.environ["DB_PORT_PARAMETER_NAME"]
+DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
+DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
+DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
+
+CUSTOMER_TOKEN_COUNT = 5
 
 
 def generate_token():
     return secrets.token_urlsafe(32)
 
 
-def initialize_tokens():
-    """
-    Initialize exactly two persistent random tokens.
+def get_ssm_parameter(name, decrypt=False):
+    result = ssm.get_parameter(Name=name, WithDecryption=decrypt)
+    return result["Parameter"]["Value"].strip()
 
-    The deployment pipeline invokes this Lambda directly with:
-    {"action": "initialize_tokens"}
 
-    Normal API requests never generate/rotate tokens.
-    """
+def get_db_connection():
+    host = get_ssm_parameter(DB_HOST_PARAMETER_NAME)
+    port = int(get_ssm_parameter(DB_PORT_PARAMETER_NAME))
+    database = get_ssm_parameter(DB_NAME_PARAMETER_NAME)
+    username = get_ssm_parameter(DB_USERNAME_PARAMETER_NAME, decrypt=True)
+    password = get_ssm_parameter(DB_PASSWORD_PARAMETER_NAME, decrypt=True)
+
+    return pymysql.connect(
+        host=host,
+        port=port,
+        user=username,
+        password=password,
+        database=database,
+        connect_timeout=5,
+        read_timeout=5,
+        write_timeout=5,
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+    )
+
+
+def hash_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def initialize_admin_token():
     try:
-        result = ssm.get_parameter(
-            Name=TOKEN_PARAMETER_NAME,
-            WithDecryption=True,
-        )
-        raw_value = result["Parameter"]["Value"].strip()
+        raw_value = get_ssm_parameter(TOKEN_PARAMETER_NAME, decrypt=True)
     except ssm.exceptions.ParameterNotFound:
         raw_value = ""
 
@@ -43,121 +71,180 @@ def initialize_tokens():
     if not isinstance(config, dict):
         config = {}
 
-    changed = False
-
     if not config.get("admin_token"):
         config["admin_token"] = generate_token()
-        changed = True
-
-    if not config.get("customer_token"):
-        config["customer_token"] = generate_token()
-        changed = True
-
-    # GitHub Actions / CloudFormation configuration is the source of truth
-    # for the email associated with each persistent token. Tokens themselves
-    # are only generated when missing and are never rotated by deployment.
-    if config.get("admin_email") != ADMIN_EMAIL:
-        config["admin_email"] = ADMIN_EMAIL
-        changed = True
-
-    if config.get("customer_email") != CUSTOMER_EMAIL:
-        config["customer_email"] = CUSTOMER_EMAIL
-        changed = True
-
-    if str(config.get("customer_id", "")) != str(CUSTOMER_ID):
-        try:
-            configured_customer_id = int(CUSTOMER_ID)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Configured CUSTOMER_ID must be an integer") from exc
-
-        if configured_customer_id <= 0:
-            raise ValueError("Configured CUSTOMER_ID must be positive")
-
-        config["customer_id"] = configured_customer_id
-        changed = True
-
-    if changed or not raw_value:
         ssm.put_parameter(
             Name=TOKEN_PARAMETER_NAME,
-            Value=json.dumps(config),
+            Value=json.dumps({"admin_token": config["admin_token"]}),
+            Type="SecureString",
+            Overwrite=True,
+        )
+        return config["admin_token"], True
+
+    # Normalize the parameter so it contains only the Admin token.
+    normalized = {"admin_token": str(config["admin_token"])}
+    if config != normalized:
+        ssm.put_parameter(
+            Name=TOKEN_PARAMETER_NAME,
+            Value=json.dumps(normalized),
             Type="SecureString",
             Overwrite=True,
         )
 
-    return {
-        "message": "ADMIN and CUSTOMER tokens initialized",
-        "parameter": TOKEN_PARAMETER_NAME,
-        "admin_token_generated": True,
-        "customer_token_generated": True,
-    }
+    return str(config["admin_token"]), False
+
+
+def initialize_customer_tokens(connection):
+    generated_tokens = []
+
+    with connection.cursor() as cursor:
+        for customer_id in range(1, CUSTOMER_TOKEN_COUNT + 1):
+            cursor.execute(
+                """
+                SELECT token_id, status
+                FROM customer_tokens
+                WHERE customer_id = %s
+                LIMIT 1
+                """,
+                (customer_id,),
+            )
+            existing = cursor.fetchone()
+
+            if existing and str(existing["status"]).upper() == "ACTIVE":
+                continue
+
+            token = generate_token()
+            token_hash = hash_token(token)
+
+            if existing:
+                cursor.execute(
+                    """
+                    UPDATE customer_tokens
+                    SET token_hash = %s,
+                        status = 'ACTIVE'
+                    WHERE token_id = %s
+                    """,
+                    (token_hash, existing["token_id"]),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO customer_tokens
+                        (customer_id, token_hash, status)
+                    VALUES
+                        (%s, %s, 'ACTIVE')
+                    """,
+                    (customer_id, token_hash),
+                )
+
+            generated_tokens.append({
+                "customer_id": customer_id,
+                "token": token,
+            })
+
+    connection.commit()
+    return generated_tokens
+
+
+def initialize_tokens():
+    """
+    Initialize one persistent Admin token in SSM and five persistent
+    customer tokens in RDS. Raw customer tokens are returned only when
+    they are newly generated; RDS stores only SHA-256 hashes.
+    """
+    connection = None
+    try:
+        admin_token, admin_generated = initialize_admin_token()
+        connection = get_db_connection()
+        customer_tokens = initialize_customer_tokens(connection)
+
+        return {
+            "statusCode": 200,
+            "message": "CloudMart authentication tokens initialized",
+            "admin_token_generated": admin_generated,
+            "customer_token_count": CUSTOMER_TOKEN_COUNT,
+            "new_customer_tokens": customer_tokens,
+            "admin_token": admin_token if admin_generated else None,
+        }
+    except Exception:
+        if connection:
+            connection.rollback()
+        logger.exception("Authentication token initialization failed")
+        raise
+    finally:
+        if connection:
+            connection.close()
 
 
 def get_authentication_config():
-    result = ssm.get_parameter(
-        Name=TOKEN_PARAMETER_NAME,
-        WithDecryption=True,
-    )
-
-    value = result["Parameter"]["Value"].strip()
+    value = get_ssm_parameter(TOKEN_PARAMETER_NAME, decrypt=True)
 
     try:
         config = json.loads(value)
     except json.JSONDecodeError as exc:
         raise ValueError("Authorization parameter must contain JSON") from exc
 
-    if not isinstance(config, dict):
-        raise ValueError("Authorization configuration must be a JSON object")
-
-    if not config.get("admin_token") or not config.get("customer_token"):
-        raise ValueError("Both ADMIN and CUSTOMER tokens must be initialized")
+    if not isinstance(config, dict) or not config.get("admin_token"):
+        raise ValueError("ADMIN token is not initialized")
 
     return config
 
 
-def find_identity(config, token):
+def find_customer_identity(connection, token):
+    token_hash = hash_token(token)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                ct.customer_id,
+                c.customer_email
+            FROM customer_tokens ct
+            LEFT JOIN customers c
+                ON c.customer_id = ct.customer_id
+            WHERE ct.token_hash = %s
+              AND ct.status = 'ACTIVE'
+            LIMIT 1
+            """,
+            (token_hash,),
+        )
+        customer = cursor.fetchone()
+
+    if not customer or not customer.get("customer_email"):
+        return None
+
+    return {
+        "role": "CUSTOMER",
+        "email": str(customer["customer_email"]),
+        "customer_id": int(customer["customer_id"]),
+    }
+
+
+def find_identity(config, token, connection):
     if secrets.compare_digest(token, str(config["admin_token"])):
         return {
             "role": "ADMIN",
-            "email": config.get("admin_email", ADMIN_EMAIL),
+            "email": None,
             "customer_id": None,
         }
 
-    if secrets.compare_digest(token, str(config["customer_token"])):
-        return {
-            "role": "CUSTOMER",
-            "email": config.get("customer_email", CUSTOMER_EMAIL),
-            "customer_id": config.get("customer_id"),
-        }
-
-    return None
+    return find_customer_identity(connection, token)
 
 
 def build_policy(principal_id, identity, api_arn, stage):
     context = {
         "role": identity["role"],
-        "email": str(identity["email"]),
     }
+
+    if identity.get("email") is not None:
+        context["email"] = str(identity["email"])
 
     if identity.get("customer_id") is not None:
         context["customer_id"] = str(identity["customer_id"])
 
     if identity["role"] == "ADMIN":
-        # ADMIN can use every API Gateway method.
         resources = [f"{api_arn}/*/*/*"]
     else:
-        # CUSTOMER can:
-        # GET  /products
-        # GET  /products/{id}
-        # POST /orders
-        # GET  /orders
-        # GET  /orders/{id}
-        # PUT  /orders/{id}
-        #
-        # CUSTOMER cannot:
-        # POST /products
-        # PUT /products/{id}
-        # DELETE /products/{id}
-        # POST /orders/{id}  (order lifecycle/status)
         resources = [
             f"{api_arn}/{stage}/GET/products",
             f"{api_arn}/{stage}/GET/products/*",
@@ -184,7 +271,6 @@ def build_policy(principal_id, identity, api_arn, stage):
 
 
 def lambda_handler(event, context):
-    # Used only by GitHub Actions to initialize the tokens before API use.
     if event.get("action") == "initialize_tokens":
         return initialize_tokens()
 
@@ -195,50 +281,57 @@ def lambda_handler(event, context):
         raise Exception("Unauthorized")
 
     token = authorization_header.strip()
-
     if token.lower().startswith("bearer "):
         token = token[7:].strip()
 
     if not token:
         raise Exception("Unauthorized")
 
+    connection = None
     try:
         config = get_authentication_config()
-        identity = find_identity(config, token)
-    except Exception:
-        raise Exception("Unauthorized")
 
-    if not identity:
-        raise Exception("Unauthorized")
+        if secrets.compare_digest(token, str(config["admin_token"])):
+            identity = {
+                "role": "ADMIN",
+                "email": None,
+                "customer_id": None,
+            }
+        else:
+            connection = get_db_connection()
+            identity = find_customer_identity(connection, token)
 
-    parts = method_arn.split("/")
+        if not identity:
+            raise Exception("Unauthorized")
 
-    if len(parts) < 2:
-        raise Exception("Unauthorized")
+        parts = method_arn.split("/")
+        if len(parts) < 2:
+            raise Exception("Unauthorized")
 
-    api_arn = parts[0]
-    stage = parts[1]
+        api_arn = parts[0]
+        stage = parts[1]
 
-    if identity["role"] == "ADMIN":
-        principal_id = "cloudmart-admin"
-    else:
-        customer_identity = (
-            identity.get("customer_id")
-            or identity.get("email")
-            or "user"
+        if identity["role"] == "ADMIN":
+            principal_id = "cloudmart-admin"
+        else:
+            principal_id = f"cloudmart-customer-{identity['customer_id']}"
+
+        logger.info(
+            "Authorization successful: principal=%s role=%s customer_id=%s",
+            principal_id,
+            identity["role"],
+            identity.get("customer_id"),
         )
-        principal_id = f"cloudmart-customer-{customer_identity}"
 
-    print(json.dumps({
-        "message": "Authorization successful",
-        "principalId": principal_id,
-        "role": identity["role"],
-        "email": identity.get("email"),
-    }))
-
-    return build_policy(
-        principal_id=principal_id,
-        identity=identity,
-        api_arn=api_arn,
-        stage=stage,
-    )
+        return build_policy(
+            principal_id=principal_id,
+            identity=identity,
+            api_arn=api_arn,
+            stage=stage,
+        )
+    except Exception:
+        logger.exception("Authorization failed")
+        raise Exception("Unauthorized")
+    finally:
+        if connection:
+            connection.close()

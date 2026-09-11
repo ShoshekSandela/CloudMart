@@ -26,6 +26,32 @@ CREATE TABLE IF NOT EXISTS customers (
 
 
 -- ============================================================
+-- 2. CUSTOMER TOKENS
+-- ============================================================
+-- Stores only SHA-256 hashes of customer authentication tokens.
+-- The raw customer tokens are never stored in RDS.
+-- Five customer tokens are provisioned by the deployment pipeline.
+
+CREATE TABLE IF NOT EXISTS customer_tokens (
+    token_id BIGINT NOT NULL AUTO_INCREMENT,
+    customer_id BIGINT NOT NULL,
+    token_hash CHAR(64) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (token_id),
+    UNIQUE KEY uk_customer_tokens_customer_id (customer_id),
+    UNIQUE KEY uk_customer_tokens_token_hash (token_hash),
+    INDEX idx_customer_tokens_status (status)
+
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================
 -- 2. CATEGORIES
 -- ============================================================
 
@@ -267,6 +293,28 @@ WHERE NOT EXISTS (
     FROM customers
     WHERE customer_email = 'customer@cloudmart.com'
 );
+
+-- Ensure five customer identities exist for the five provisioned
+-- authentication tokens. Existing customer rows are preserved.
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 2, 'CloudMart Customer 2', 'customer2@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 2)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer2@cloudmart.com');
+
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 3, 'CloudMart Customer 3', 'customer3@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 3)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer3@cloudmart.com');
+
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 4, 'CloudMart Customer 4', 'customer4@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 4)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer4@cloudmart.com');
+
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 5, 'CloudMart Customer 5', 'customer5@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 5)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer5@cloudmart.com');
 
 
 -- ============================================================
