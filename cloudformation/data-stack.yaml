@@ -117,6 +117,162 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  CloudMartDatabaseSSMRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: CloudMartDatabaseSSMManagement
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/*"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudMartDatabaseSSMFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt CloudMartDatabaseSSMRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          ssm = boto3.client("ssm")
+
+          def send_response(event, context, status, data, physical_id):
+              response = {
+                  "Status": status,
+                  "Reason": data.get("Reason", "See CloudWatch Logs for details"),
+                  "PhysicalResourceId": physical_id,
+                  "StackId": event["StackId"],
+                  "RequestId": event["RequestId"],
+                  "LogicalResourceId": event["LogicalResourceId"],
+                  "Data": data,
+              }
+
+              body = json.dumps(response).encode("utf-8")
+              request = urllib.request.Request(
+                  event["ResponseURL"],
+                  data=body,
+                  headers={
+                      "content-type": "",
+                      "content-length": str(len(body)),
+                  },
+                  method="PUT",
+              )
+              urllib.request.urlopen(request)
+
+          def handler(event, context):
+              environment = event["ResourceProperties"]["Environment"]
+              prefix = f"/cloudmart/{environment}/database"
+              physical_id = f"CloudMartDatabaseSSM-{environment}"
+
+              try:
+                  request_type = event["RequestType"]
+
+                  if request_type in ("Create", "Update"):
+                      parameters = [
+                          (
+                              f"{prefix}/host",
+                              "String",
+                              event["ResourceProperties"]["DBHost"],
+                          ),
+                          (
+                              f"{prefix}/port",
+                              "String",
+                              str(event["ResourceProperties"]["DBPort"]),
+                          ),
+                          (
+                              f"{prefix}/name",
+                              "String",
+                              event["ResourceProperties"]["DBName"],
+                          ),
+                          (
+                              f"{prefix}/username",
+                              "SecureString",
+                              event["ResourceProperties"]["DBUsername"],
+                          ),
+                          (
+                              f"{prefix}/password",
+                              "SecureString",
+                              event["ResourceProperties"]["DBPassword"],
+                          ),
+                      ]
+
+                      for name, parameter_type, value in parameters:
+                          ssm.put_parameter(
+                              Name=name,
+                              Type=parameter_type,
+                              Value=value,
+                              Overwrite=True,
+                              Description=f"CloudMart database {name.rsplit('/', 1)[-1]} parameter",
+                          )
+
+                  elif request_type == "Delete":
+                      for suffix in ("host", "port", "name", "username", "password"):
+                          try:
+                              ssm.delete_parameter(Name=f"{prefix}/{suffix}")
+                          except ssm.exceptions.ParameterNotFound:
+                              pass
+
+                  send_response(
+                      event,
+                      context,
+                      "SUCCESS",
+                      {"Message": "CloudMart database SSM parameters synchronized."},
+                      physical_id,
+                  )
+
+              except Exception as exc:
+                  send_response(
+                      event,
+                      context,
+                      "FAILED",
+                      {"Reason": str(exc)},
+                      physical_id,
+                  )
+
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  CloudMartDatabaseSSM:
+    Type: Custom::CloudMartDatabaseSSM
+    DependsOn:
+      - CloudMartRDS
+      - CloudMartDatabaseSSMFunction
+    Properties:
+      ServiceToken: !GetAtt CloudMartDatabaseSSMFunction.Arn
+      Environment: !Ref Environment
+      DBHost: !GetAtt CloudMartRDS.Endpoint.Address
+      DBPort: !GetAtt CloudMartRDS.Endpoint.Port
+      DBName: !Ref DBName
+      DBUsername: !Ref DBUsername
+      DBPassword: !Ref DBPassword
+
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
     Condition: CreateReportBucket
@@ -162,12 +318,6 @@ Outputs:
     Value: !Ref DBName
     Export:
       Name: !Sub CloudMart-${Environment}-DBName
-
-  DBUsername:
-    Description: RDS MySQL master username
-    Value: !Ref DBUsername
-    Export:
-      Name: !Sub CloudMart-${Environment}-DBUsername
 
   DBInstanceIdentifier:
     Description: CloudMart RDS instance identifier
