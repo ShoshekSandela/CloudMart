@@ -117,43 +117,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # CloudFormation manages the non-sensitive database configuration parameters.
-  # SecureString parameters are not supported by AWS::SSM::Parameter, so the
-  # username/password SecureString parameters remain managed by the deployment
-  # workflow from GitHub Secrets.
-  DBHostParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/cloudmart/${Environment}/database/host"
-      Type: String
-      Value: !GetAtt CloudMartRDS.Endpoint.Address
-      Description: CloudMart RDS MySQL endpoint
-      Tags:
-        Environment: !Ref Environment
-        Project: CloudMart
-
-  DBPortParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/cloudmart/${Environment}/database/port"
-      Type: String
-      Value: !GetAtt CloudMartRDS.Endpoint.Port
-      Description: CloudMart RDS MySQL port
-      Tags:
-        Environment: !Ref Environment
-        Project: CloudMart
-
-  DBNameParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub "/cloudmart/${Environment}/database/name"
-      Type: String
-      Value: !Ref DBName
-      Description: CloudMart database name
-      Tags:
-        Environment: !Ref Environment
-        Project: CloudMart
-
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
     Condition: CreateReportBucket
