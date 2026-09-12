@@ -1655,7 +1655,7 @@ def lambda_handler(event, context):
                             failure_reason
                             or "Order could not be confirmed because stock is unavailable"
                         ),
-                        "order": final_order,
+                     
                     },
                 )
 
