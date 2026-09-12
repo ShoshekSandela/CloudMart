@@ -1670,35 +1670,75 @@ def lambda_handler(event, context):
             return response(201, final_order)
 
         # ----------------------------------------------------
-        # PATCH /orders/{id}/status
+        # PATCH /orders
         #
-        # Updates only the order status. This replaces the old
-        # POST /orders status-update behavior.
-        # Status changes remain ADMIN-only, matching the existing
-        # authorization rule.
+        # CUSTOMER: cancel own PENDING/CONFIRMED order.
+        # ADMIN: update order status.
+        #
+        # The legacy PATCH /orders/{id}/status route remains supported.
         # ----------------------------------------------------
         if method == "PATCH":
 
-            order_id = get_path_order_id(event)
-
-            if order_id is None:
-                raise ValueError(
-                    "order id is required in the path"
-                )
-
             payload = parse_body(event)
-
             auth = get_authorization_context(event)
-            require_admin(auth)
 
-            new_status = payload.get("status")
+            order_id = get_path_order_id(event) or payload.get("order_id")
+            if order_id is None:
+                raise ValueError("order_id is required")
 
-            if new_status is None:
-                raise ValueError(
-                    "status is required"
-                )
+            try:
+                order_id = int(order_id)
+            except (TypeError, ValueError):
+                raise ValueError("order_id must be an integer")
+
+            new_status = str(payload.get("status") or "").upper().strip()
+            if not new_status:
+                raise ValueError("status is required")
 
             connection = get_db_connection()
+
+            current_order = get_order_by_id(connection, order_id)
+            if not current_order:
+                return error_response(
+                    404,
+                    "ORDER_NOT_FOUND",
+                    f"Order {order_id} not found",
+                )
+
+            if auth["role"] == "CUSTOMER":
+                customer = resolve_customer_identity(connection, auth)
+
+                if int(current_order["customer_id"]) != int(customer["customer_id"]):
+                    raise PermissionError(
+                        "Customers can update only their own orders"
+                    )
+
+                if new_status != "CANCELED":
+                    raise PermissionError(
+                        "Customers can only cancel their own orders"
+                    )
+
+                current_status = str(current_order["status"]).upper()
+                if current_status not in ("PENDING", "CONFIRMED"):
+                    raise ValueError(
+                        f"Order {order_id} cannot be canceled from status {current_status}"
+                    )
+
+            elif auth["role"] == "ADMIN":
+                allowed_admin_statuses = {
+                    "CONFIRMED",
+                    "CANCELED",
+                    "FAILED",
+                    "COMPLETED",
+                }
+                if new_status not in allowed_admin_statuses:
+                    raise ValueError(
+                        "Invalid status. ADMIN can set CONFIRMED, CANCELED, FAILED, or COMPLETED"
+                    )
+            else:
+                raise PermissionError(
+                    "Valid CUSTOMER or ADMIN role is required"
+                )
 
             changed = update_order_status(
                 connection,
@@ -1712,6 +1752,7 @@ def lambda_handler(event, context):
             )
 
             if not order:
+                connection.rollback()
                 return error_response(
                     404,
                     "ORDER_NOT_FOUND",
@@ -1724,13 +1765,13 @@ def lambda_handler(event, context):
                     "CANCELED": "OrderCanceled",
                     "FAILED": "OrderFailed",
                     "COMPLETED": "OrderCompleted",
-                }[str(new_status).upper().strip()]
+                }[new_status]
 
                 if not publish_order_event(event_type, order):
                     logger.error(
                         "Order %s changed to %s but %s could not be published",
                         order_id,
-                        str(new_status).upper().strip(),
+                        new_status,
                         event_type,
                     )
 

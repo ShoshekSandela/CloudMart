@@ -289,6 +289,9 @@ def build_policy(principal_id, identity, api_arn, stage):
             f"{api_arn}/{stage}/GET/orders",
             f"{api_arn}/{stage}/GET/orders/*",
             f"{api_arn}/{stage}/PUT/orders/*",
+            f"{api_arn}/{stage}/PATCH/orders",
+            f"{api_arn}/{stage}/PATCH/orders/*/status",
+            f"{api_arn}/{stage}/GET/customers/*",
         ]
 
     return {

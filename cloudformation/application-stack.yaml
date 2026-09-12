@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "229"
+    Default: "230"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -631,6 +631,24 @@ Resources:
       ParentId: !GetAtt CloudMartRestApi.RootResourceId
       PathPart: orders
 
+  PatchOrdersMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - OrderLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref OrdersResource
+      HttpMethod: PATCH
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
+            - OrderLambdaArn: !GetAtt OrderFunction.Arn
+
   OrdersByIdResource:
     Type: AWS::ApiGateway::Resource
     Properties:
@@ -841,6 +859,105 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
+  # ============================================================
+  # CUSTOMERS
+  #
+  # Customer CRUD uses the existing Product Lambda so no new
+  # Lambda/source file is introduced.
+  # ============================================================
+
+  CustomersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !GetAtt CloudMartRestApi.RootResourceId
+      PathPart: customers
+
+  CustomerByIdResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !Ref CustomersResource
+      PathPart: "{id}"
+
+  GetCustomerMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ProductLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref CustomerByIdResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+
+  PostCustomerMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ProductLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref CustomersResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+
+  PutCustomerMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ProductLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref CustomerByIdResource
+      HttpMethod: PUT
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+
+  DeleteCustomerMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ProductLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref CustomerByIdResource
+      HttpMethod: DELETE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+
   ApiGatewayDeploymentV2:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
@@ -855,6 +972,11 @@ Resources:
       - GetOrderByIdMethod
       - PutOrderByIdMethod
       - PatchOrderStatusMethod
+      - PatchOrdersMethod
+      - GetCustomerMethod
+      - PostCustomerMethod
+      - PutCustomerMethod
+      - DeleteCustomerMethod
     Properties:
       RestApiId: !Ref CloudMartRestApi
       Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"
