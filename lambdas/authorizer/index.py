@@ -268,7 +268,12 @@ def find_identity(config, token, connection):
     return find_customer_identity(connection, token)
 
 
-def build_policy(principal_id, identity, api_arn, stage):
+def build_policy(principal_id, identity, method_arn):
+    """Allow only the exact API Gateway method requested.
+
+    The authorizer never returns a wildcard Resource.  Authorization is based
+    on the authenticated role plus the exact HTTP method/path in method_arn.
+    """
     context = {
         "role": identity["role"],
     }
@@ -279,20 +284,51 @@ def build_policy(principal_id, identity, api_arn, stage):
     if identity.get("customer_id") is not None:
         context["customer_id"] = str(identity["customer_id"])
 
+    # methodArn format:
+    # arn:partition:execute-api:region:account:api-id/stage/HTTP-VERB/path
+    parts = method_arn.split("/", 2)
+    if len(parts) < 3:
+        raise Exception("Invalid methodArn")
+
+    method = parts[2].split("/", 1)[0].upper()
+    path = "/" + parts[2].split("/", 1)[1] if "/" in parts[2] else "/"
+
+    def is_product_path():
+        return path == "/products" or (
+            path.startswith("/products/") and len(path.split("/")) == 3
+        )
+
+    def is_order_path():
+        pieces = path.split("/")
+        return (
+            path == "/orders"
+            or (len(pieces) == 3 and pieces[1] == "orders" and pieces[2])
+            or (len(pieces) == 4 and pieces[1] == "orders" and pieces[2] and pieces[3] == "status")
+        )
+
+    def is_customer_by_id_path():
+        pieces = path.split("/")
+        return len(pieces) == 3 and pieces[1] == "customers" and pieces[2]
+
+    allowed = False
+
     if identity["role"] == "ADMIN":
-        resources = [f"{api_arn}/*/*/*"]
+        allowed = (
+            (is_product_path() and method in {"GET", "POST", "PUT", "DELETE"})
+            or (is_order_path() and method in {"GET", "POST", "PUT", "PATCH"})
+            or (is_customer_by_id_path() and method in {"GET", "PUT", "DELETE"})
+            or (path == "/customers" and method == "POST")
+        )
     else:
-        resources = [
-            f"{api_arn}/{stage}/GET/products",
-            f"{api_arn}/{stage}/GET/products/*",
-            f"{api_arn}/{stage}/POST/orders",
-            f"{api_arn}/{stage}/GET/orders",
-            f"{api_arn}/{stage}/GET/orders/*",
-            f"{api_arn}/{stage}/PUT/orders/*",
-            f"{api_arn}/{stage}/PATCH/orders",
-            f"{api_arn}/{stage}/PATCH/orders/*/status",
-            f"{api_arn}/{stage}/GET/customers/*",
-        ]
+        allowed = (
+            (is_product_path() and method == "GET")
+            or (path == "/orders" and method in {"POST", "GET", "PATCH"})
+            or (len(path.split("/")) == 3 and path.startswith("/orders/") and method in {"GET", "PUT"})
+            or (is_customer_by_id_path() and method == "GET")
+        )
+
+    if not allowed:
+        raise Exception("Unauthorized")
 
     return {
         "principalId": principal_id,
@@ -302,7 +338,7 @@ def build_policy(principal_id, identity, api_arn, stage):
                 {
                     "Action": "execute-api:Invoke",
                     "Effect": "Allow",
-                    "Resource": resources,
+                    "Resource": method_arn,
                 }
             ],
         },
@@ -371,8 +407,7 @@ def lambda_handler(event, context):
         return build_policy(
             principal_id=principal_id,
             identity=identity,
-            api_arn=api_arn,
-            stage=stage,
+            method_arn=method_arn,
         )
     except Exception:
         logger.exception("Authorization failed")
