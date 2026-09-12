@@ -509,7 +509,10 @@ Resources:
         Fn::Sub:
           - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
           - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
-      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
+      # Exact methodArn policies are request-specific, so disable authorizer caching.
+      # TOKEN authorizer caching is keyed by the token and can reuse a policy
+      # generated for a different API method/path.
+      AuthorizerResultTtlInSeconds: 0
 
   ProductFunction:
     Type: AWS::Serverless::Function
