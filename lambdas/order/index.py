@@ -599,11 +599,12 @@ class StockError(Exception):
 
 
 def create_order(connection, customer, items):
-    """Create a PENDING order without reserving inventory.
+    """Create a PENDING order without changing inventory.
 
-    Inventory is checked and reserved asynchronously by the OrderPlaced
-    EventBridge processing rule. This keeps the API response fast while the
-    order moves automatically from PENDING to CONFIRMED or FAILED.
+    The PENDING order is created first so the customer receives the
+    OrderPlaced notification. The caller then performs the stock check
+    immediately in the same API invocation and moves the order to
+    CONFIRMED or FAILED. Inventory is deducted only for CONFIRMED orders.
     """
     with connection.cursor() as cursor:
         customer_id = int(customer["customer_id"])
@@ -691,6 +692,7 @@ def process_order_placed_event(connection, order_id):
     order_id = int(order_id)
     inventory_events = []
     new_status = None
+    failure_reason = None
 
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -727,21 +729,36 @@ def process_order_placed_event(connection, order_id):
 
         if not items:
             new_status = "FAILED"
+            failure_reason = "Order contains no valid items"
         else:
             insufficient_product = None
             for item in items:
-                if item["deleted_at"] is not None or item["product_status"] != "ACTIVE":
+                if item["deleted_at"] is not None:
                     insufficient_product = item
+                    failure_reason = (
+                        f"Product {item['product_id']} is deleted and cannot be ordered"
+                    )
+                    break
+                if item["product_status"] != "ACTIVE":
+                    insufficient_product = item
+                    failure_reason = (
+                        f"Product {item['product_id']} is not active and cannot be ordered"
+                    )
                     break
                 if int(item["stock_quantity"]) < int(item["quantity"]):
                     insufficient_product = item
+                    failure_reason = (
+                        f"Insufficient stock for product {item['product_id']}: "
+                        f"requested {int(item['quantity'])}, "
+                        f"available {int(item['stock_quantity'])}"
+                    )
                     break
 
             if insufficient_product:
                 new_status = "FAILED"
                 logger.warning(
-                    "Order %s failed stock check for product %s",
-                    order_id, insufficient_product["product_id"],
+                    "Order %s failed stock check: %s",
+                    order_id, failure_reason,
                 )
             else:
                 new_status = "CONFIRMED"
@@ -780,13 +797,20 @@ def process_order_placed_event(connection, order_id):
         publish_inventory_event_from_order(**change)
 
     order = get_order_by_id(connection, order_id)
-    if order and not publish_order_event(
-        "OrderConfirmed" if new_status == "CONFIRMED" else "OrderFailed",
-        order,
-    ):
-        logger.error("Order %s changed to %s but lifecycle event could not be published", order_id, new_status)
+    if order:
+        event_type = "OrderConfirmed" if new_status == "CONFIRMED" else "OrderFailed"
+        if not publish_order_event(
+            event_type,
+            order,
+            failure_reason=failure_reason,
+        ):
+            logger.error(
+                "Order %s changed to %s but lifecycle event could not be published",
+                order_id,
+                new_status,
+            )
 
-    return True, new_status
+    return True, new_status, failure_reason
 
 
 def publish_inventory_event_from_order(product_id, product_name, old_stock, new_stock, threshold):
@@ -889,13 +913,14 @@ def publish_order_placed_event(order):
 # ORDER LIFECYCLE EVENT HELPERS
 # ============================================================
 
-def publish_order_event(detail_type, order):
+def publish_order_event(detail_type, order, failure_reason=None):
     detail = {
         "order_id": int(order["order_id"]),
         "customer_id": int(order["customer_id"]),
         "customer_name": order.get("customer_name"),
         "customer_email": order.get("customer_email"),
         "status": order.get("status"),
+        "failure_reason": failure_reason if detail_type == "OrderFailed" else None,
         "total_amount": float(order["total_amount"]),
         "items_summary": "\n\n".join(
             [
@@ -1438,12 +1463,16 @@ def lambda_handler(event, context):
             if order_id in (None, ""):
                 raise ValueError("OrderPlaced event is missing order_id")
             connection = get_db_connection()
-            processed, status = process_order_placed_event(connection, order_id)
+            processed, status, failure_reason = process_order_placed_event(
+                connection,
+                order_id,
+            )
             return {
                 "statusCode": 200,
                 "processed": processed,
                 "order_id": int(order_id),
                 "status": status,
+                "failure_reason": failure_reason,
             }
         except Exception:
             if connection:
@@ -1548,9 +1577,9 @@ def lambda_handler(event, context):
         # ----------------------------------------------------
         # POST /orders
         #
-        # Creates a PENDING order and publishes OrderPlaced.
-        # Order status changes are handled separately by
-        # PATCH /orders/{id}/status.
+        # Creates PENDING, publishes OrderPlaced, then immediately checks
+        # inventory and moves the order to CONFIRMED or FAILED.
+        # PATCH /orders/{id}/status remains for ADMIN status changes.
         # ----------------------------------------------------
         if method == "POST":
 
@@ -1593,13 +1622,52 @@ def lambda_handler(event, context):
                 items,
             )
 
+            # Publish the PENDING lifecycle event first so the customer
+            # receives the Order Placed notification before the final
+            # CONFIRMED/FAILED notification.
             if not publish_order_placed_event(order):
                 logger.error(
                     "Order %s created but OrderPlaced could not be published",
                     order["order_id"],
                 )
 
-            return response(201, order)
+            # Perform the inventory decision immediately. EventBridge still
+            # receives the OrderPlaced event and acts as a retry/safety path;
+            # because this function locks the order row, a duplicate
+            # EventBridge invocation will simply see the final status and skip.
+            processed, final_status, failure_reason = process_order_placed_event(
+                connection,
+                order["order_id"],
+            )
+
+            final_order = get_order_by_id(connection, order["order_id"])
+            if not final_order:
+                raise LookupError(
+                    f"Order {order['order_id']} was not found after processing"
+                )
+
+            if final_status == "FAILED":
+                return response(
+                    409,
+                    {
+                        "code": "INSUFFICIENT_STOCK",
+                        "message": (
+                            failure_reason
+                            or "Order could not be confirmed because stock is unavailable"
+                        ),
+                        "order": final_order,
+                    },
+                )
+
+            if final_status == "CONFIRMED":
+                return response(201, final_order)
+
+            logger.warning(
+                "Order %s was not moved to a final status during synchronous processing: %s",
+                order["order_id"],
+                final_status,
+            )
+            return response(201, final_order)
 
         # ----------------------------------------------------
         # PATCH /orders/{id}/status
