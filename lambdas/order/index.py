@@ -683,15 +683,14 @@ def process_order_placed_event(connection, order_id):
     The order row and all involved product rows are locked in one transaction.
     If every requested quantity is available, stock is deducted in the same
     transaction and the order becomes CONFIRMED. If any product lacks stock,
-    the order becomes FAILED and inventory is not changed.
-
-    This function is safe for EventBridge retries: once the order is no longer
-    PENDING, the event is ignored.
+    the order becomes FAILED and inventory is not changed because nothing was
+    deducted. If a confirmed order is later canceled/failed, update_order_status
+    returns its deducted quantity to inventory and publishes Inventory Changed.
+    Lifecycle events are published only after the database transaction commits.
     """
     order_id = int(order_id)
     inventory_events = []
     new_status = None
-    failure_reason = None
 
     with connection.cursor() as cursor:
         cursor.execute("""
@@ -701,18 +700,13 @@ def process_order_placed_event(connection, order_id):
             FOR UPDATE
         """, (order_id,))
         order = cursor.fetchone()
-
         if not order:
             raise LookupError(f"Order {order_id} not found")
 
-        current_status = str(order["status"]).upper()
-        if current_status != "PENDING":
-            logger.info(
-                "Order %s already has status %s; skipping processing",
-                order_id,
-                current_status,
-            )
-            return False, current_status, None
+        # EventBridge can retry delivery. Do not process an order twice.
+        if str(order["status"]).upper() != "PENDING":
+            logger.info("Order %s already has status %s; skipping processing", order_id, order["status"])
+            return False, str(order["status"]).upper()
 
         cursor.execute("""
             SELECT
@@ -733,60 +727,39 @@ def process_order_placed_event(connection, order_id):
 
         if not items:
             new_status = "FAILED"
-            failure_reason = "Order contains no products."
         else:
+            insufficient_product = None
             for item in items:
-                product_id = int(item["product_id"])
-                requested = int(item["quantity"])
-                available = int(item["stock_quantity"])
-
-                if item["deleted_at"] is not None:
-                    new_status = "FAILED"
-                    failure_reason = (
-                        f"Product {product_id} is deleted and is no longer available."
-                    )
+                if item["deleted_at"] is not None or item["product_status"] != "ACTIVE":
+                    insufficient_product = item
+                    break
+                if int(item["stock_quantity"]) < int(item["quantity"]):
+                    insufficient_product = item
                     break
 
-                if item["product_status"] != "ACTIVE":
-                    new_status = "FAILED"
-                    failure_reason = (
-                        f"Product {product_id} is not active and is no longer available."
-                    )
-                    break
-
-                if available < requested:
-                    new_status = "FAILED"
-                    failure_reason = (
-                        f"Insufficient stock for product {product_id}: "
-                        f"requested {requested} but only {available} available."
-                    )
-                    break
-
-            if new_status != "FAILED":
+            if insufficient_product:
+                new_status = "FAILED"
+                logger.warning(
+                    "Order %s failed stock check for product %s",
+                    order_id, insufficient_product["product_id"],
+                )
+            else:
                 new_status = "CONFIRMED"
-
                 for item in items:
-                    product_id = int(item["product_id"])
-                    quantity = int(item["quantity"])
                     old_stock = int(item["stock_quantity"])
+                    quantity = int(item["quantity"])
                     new_stock = old_stock - quantity
-
                     cursor.execute("""
                         UPDATE products
                         SET stock_quantity = stock_quantity - %s,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE product_id = %s
                           AND stock_quantity >= %s
-                    """, (quantity, product_id, quantity))
-
+                    """, (quantity, item["product_id"], quantity))
                     if cursor.rowcount != 1:
-                        raise StockError(
-                            f"Insufficient stock for product {product_id}: "
-                            f"requested {quantity}"
-                        )
-
+                        raise StockError(f"Insufficient stock for product {item['product_id']}")
                     inventory_events.append({
-                        "product_id": product_id,
+                        "product_id": int(item["product_id"]),
                         "product_name": item["product_name"],
                         "old_stock": old_stock,
                         "new_stock": new_stock,
@@ -797,39 +770,23 @@ def process_order_placed_event(connection, order_id):
             "UPDATE orders SET status = %s WHERE order_id = %s",
             (new_status, order_id),
         )
-
         cursor.execute("""
-            INSERT INTO order_status_history
-                (order_id, old_status, new_status, changed_by)
+            INSERT INTO order_status_history (order_id, old_status, new_status, changed_by)
             VALUES (%s, %s, %s, %s)
         """, (order_id, "PENDING", new_status, "order-eventbridge"))
-
         connection.commit()
 
-    # Publish inventory events only after the inventory transaction commits.
     for change in inventory_events:
         publish_inventory_event_from_order(**change)
 
     order = get_order_by_id(connection, order_id)
-    if order:
-        event_type = (
-            "OrderConfirmed" if new_status == "CONFIRMED"
-            else "OrderFailed"
-        )
+    if order and not publish_order_event(
+        "OrderConfirmed" if new_status == "CONFIRMED" else "OrderFailed",
+        order,
+    ):
+        logger.error("Order %s changed to %s but lifecycle event could not be published", order_id, new_status)
 
-        # Include the failure reason in the lifecycle event so the customer
-        # notification contains the actual reason when an order fails.
-        if failure_reason:
-            order["failure_reason"] = failure_reason
-
-        if not publish_order_event(event_type, order):
-            logger.error(
-                "Order %s changed to %s but lifecycle event could not be published",
-                order_id,
-                new_status,
-            )
-
-    return True, new_status, failure_reason
+    return True, new_status
 
 
 def publish_inventory_event_from_order(product_id, product_name, old_stock, new_stock, threshold):
@@ -939,7 +896,6 @@ def publish_order_event(detail_type, order):
         "customer_name": order.get("customer_name"),
         "customer_email": order.get("customer_email"),
         "status": order.get("status"),
-        "failure_reason": order.get("failure_reason"),
         "total_amount": float(order["total_amount"]),
         "items_summary": "\n\n".join(
             [
@@ -1482,16 +1438,12 @@ def lambda_handler(event, context):
             if order_id in (None, ""):
                 raise ValueError("OrderPlaced event is missing order_id")
             connection = get_db_connection()
-            processed, status, failure_reason = process_order_placed_event(
-                connection,
-                order_id,
-            )
+            processed, status = process_order_placed_event(connection, order_id)
             return {
                 "statusCode": 200,
                 "processed": processed,
                 "order_id": int(order_id),
                 "status": status,
-                "failure_reason": failure_reason,
             }
         except Exception:
             if connection:
@@ -1596,9 +1548,9 @@ def lambda_handler(event, context):
         # ----------------------------------------------------
         # POST /orders
         #
-        # Creates a PENDING order, publishes OrderPlaced, then immediately
-        # checks stock. The normal API response is CONFIRMED or a clear
-        # 409 FAILED response. EventBridge remains as a retry/safety path.
+        # Creates a PENDING order and publishes OrderPlaced.
+        # Order status changes are handled separately by
+        # PATCH /orders/{id}/status.
         # ----------------------------------------------------
         if method == "POST":
 
@@ -1641,56 +1593,12 @@ def lambda_handler(event, context):
                 items,
             )
 
-            # Publish OrderPlaced first so the customer receives the PENDING
-            # lifecycle notification. Then process the same order immediately.
-            # EventBridge also has a processing rule as a safety net; if it
-            # receives the event after this synchronous processing, it sees a
-            # non-PENDING order and safely skips it.
-            order_placed_published = publish_order_placed_event(order)
-            if not order_placed_published:
+            if not publish_order_placed_event(order):
                 logger.error(
                     "Order %s created but OrderPlaced could not be published",
                     order["order_id"],
                 )
 
-            try:
-                processed, final_status, failure_reason = process_order_placed_event(
-                    connection,
-                    order["order_id"],
-                )
-            except Exception:
-                # Keep the API behavior safe if the immediate stock processor
-                # has a transient failure. The EventBridge processing rule can
-                # retry the PENDING order independently.
-                logger.exception(
-                    "Immediate stock processing failed for order %s; "
-                    "leaving the order PENDING for EventBridge retry",
-                    order["order_id"],
-                )
-                processed = False
-                final_status = "PENDING"
-                failure_reason = None
-
-            if final_status == "FAILED":
-                failed_order = get_order_by_id(connection, order["order_id"])
-                return response(
-                    409,
-                    {
-                        "code": "INSUFFICIENT_STOCK",
-                        "message": failure_reason or "Order could not be fulfilled because stock is unavailable.",
-                        "order_id": int(order["order_id"]),
-                        "status": "FAILED",
-                        "order": failed_order,
-                    },
-                )
-
-            if final_status == "CONFIRMED":
-                confirmed_order = get_order_by_id(connection, order["order_id"])
-                return response(201, confirmed_order or order)
-
-            # Only return PENDING when the immediate processor could not
-            # complete. EventBridge will continue processing it.
-            order["status"] = "PENDING"
             return response(201, order)
 
         # ----------------------------------------------------

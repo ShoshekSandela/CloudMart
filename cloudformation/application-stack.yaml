@@ -149,7 +149,7 @@ Resources:
       - CloudMartLowStockTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: Routes low-stock inventory events directly to the ADMIN SNS topic.
+      Description: Routes low-stock Inventory Changed events through the SNS Publisher Lambda to the Admin SNS topic.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -161,8 +161,8 @@ Resources:
           low_stock:
             - true
       Targets:
-        - Id: LowStockAdminSnsTarget
-          Arn: !Ref CloudMartLowStockTopic
+        - Id: LowStockPublisherTarget
+          Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
             InputPathsMap:
               productId: "$.detail.product_id"
@@ -171,7 +171,7 @@ Resources:
               newStock: "$.detail.new_stock"
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: !Sub |
-              {"message":"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"}
+              {"message":"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart","topicArn":"${CloudMartLowStockTopic}"}
   # ============================================================
   # ORDER LIFECYCLE EVENTS -> SNS
   # ============================================================
@@ -320,10 +320,11 @@ Resources:
   OrderPlacedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed"
-      Description: Routes CloudMart OrderPlaced events to the CUSTOMER SNS topic only.
+      Description: Routes CloudMart OrderPlaced events to SNS.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -332,8 +333,8 @@ Resources:
         detail-type:
           - OrderPlaced
       Targets:
-        - Id: OrderPlacedCustomer
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+        - Id: OrderPlacedLambdaCustomer
+          Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -343,15 +344,16 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: |
-              {"message":"CLOUDMART CUSTOMER ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"}
+            InputTemplate: !Sub |
+              {"message":"CLOUDMART CUSTOMER ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
-      Description: Routes CloudMart OrderConfirmed events to the CUSTOMER SNS topic only.
+      Description: Routes CloudMart OrderConfirmed events to SNS.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -360,8 +362,8 @@ Resources:
         detail-type:
           - OrderConfirmed
       Targets:
-        - Id: OrderConfirmedCustomer
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+        - Id: OrderConfirmedLambdaCustomer
+          Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -371,15 +373,16 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: |
-              {"message":"CLOUDMART CUSTOMER ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"}
+            InputTemplate: !Sub |
+              {"message":"CLOUDMART CUSTOMER ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled"
-      Description: Routes CloudMart OrderCanceled events to the CUSTOMER SNS topic only.
+      Description: Routes CloudMart OrderCanceled events to SNS.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -388,8 +391,8 @@ Resources:
         detail-type:
           - OrderCanceled
       Targets:
-        - Id: OrderCanceledCustomer
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+        - Id: OrderCanceledLambdaCustomer
+          Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -399,15 +402,16 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: |
-              {"message":"CLOUDMART CUSTOMER ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"}
+            InputTemplate: !Sub |
+              {"message":"CLOUDMART CUSTOMER ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed"
-      Description: Routes CloudMart OrderFailed events to the CUSTOMER SNS topic only.
+      Description: Routes CloudMart OrderFailed events to SNS.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -416,8 +420,8 @@ Resources:
         detail-type:
           - OrderFailed
       Targets:
-        - Id: OrderFailedCustomer
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+        - Id: OrderFailedLambdaCustomer
+          Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -427,16 +431,16 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-              failureReason: "$.detail.failure_reason"
-            InputTemplate: |
-              {"message":"CLOUDMART CUSTOMER ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\n\nREASON: <failureReason>\n\nThank you for shopping with CloudMart.\n\n— CloudMart"}
+            InputTemplate: !Sub |
+              {"message":"CLOUDMART CUSTOMER ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
   OrderCompletedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-completed"
-      Description: Routes CloudMart OrderCompleted events to the CUSTOMER SNS topic only.
+      Description: Routes CloudMart OrderCompleted events to SNS.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -445,8 +449,8 @@ Resources:
         detail-type:
           - OrderCompleted
       Targets:
-        - Id: OrderCompletedCustomer
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+        - Id: OrderCompletedLambdaCustomer
+          Arn: !GetAtt SnsPublisherFunction.Arn
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -456,8 +460,8 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: |
-              {"message":"CLOUDMART CUSTOMER ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been completed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"}
+            InputTemplate: !Sub |
+              {"message":"CLOUDMART CUSTOMER ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been completed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
