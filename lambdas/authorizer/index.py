@@ -317,7 +317,7 @@ def build_policy(principal_id, identity, method_arn):
             (is_product_path() and method in {"GET", "POST", "PUT", "DELETE"})
             or (is_order_path() and method in {"GET", "POST", "PUT", "PATCH"})
             or (is_customer_by_id_path() and method in {"GET", "PUT", "DELETE"})
-            or (path == "/customers" and method == "POST")
+            or (path == "/customers" and method in {"GET", "POST"})
         )
     else:
         allowed = (
