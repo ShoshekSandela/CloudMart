@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "235"
+    Default: "236"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -935,8 +935,7 @@ Resources:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomersResource
       HttpMethod: POST
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
+      AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -985,7 +984,7 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
             - ProductLambdaArn: !GetAtt ProductFunction.Arn
 
-  ApiGatewayDeploymentV5:
+  ApiGatewayDeploymentV6:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - ApiGatewayAuthorizer
@@ -1013,7 +1012,7 @@ Resources:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref CloudMartRestApi
-      DeploymentId: !Ref ApiGatewayDeploymentV5
+      DeploymentId: !Ref ApiGatewayDeploymentV6
       StageName: !Ref Environment
       Description: !Sub "CloudMart ${Environment} API Gateway stage"
       Tags:

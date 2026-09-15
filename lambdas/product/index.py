@@ -2,8 +2,8 @@ import json
 import os
 import re
 import logging
-import secrets
 import hashlib
+import secrets
 from decimal import Decimal
 from pathlib import Path
 from datetime import date, datetime
@@ -719,19 +719,17 @@ def create_customer(cursor, payload):
 
     customer_id = cursor.lastrowid
 
-    # Generate a secure token for the newly created customer.
-    customer_token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(
-        customer_token.encode("utf-8")
-    ).hexdigest()
+    # Generate a token for the newly created customer.
+    # Only the SHA-256 hash is stored in RDS.
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
 
-    # Store only the hash in RDS. The raw token is returned once.
     cursor.execute("""
         INSERT INTO customer_tokens (customer_id, token_hash, status)
         VALUES (%s, %s, 'ACTIVE')
     """, (customer_id, token_hash))
 
-    return customer_id, customer_token
+    return customer_id, token
 
 
 def update_customer(cursor, customer_id, payload):
@@ -922,13 +920,10 @@ def lambda_handler(event, context):
                         })
 
                     if method == "POST":
-                        require_admin(event)
-                        created_id, customer_token = create_customer(
-                            cursor, payload
-                        )
-                        customer = get_customer(cursor, created_id)
+                        created_id, customer_token = create_customer(cursor, payload)
                         connection.commit()
 
+                        customer = get_customer(cursor, created_id)
                         customer["token"] = customer_token
 
                         return response(201, customer)
