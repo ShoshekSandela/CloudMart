@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "233"
+    Default: "234"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -189,7 +189,7 @@ Resources:
   # CloudFormation-managed ADMIN email subscription.
   # A new logical ID is used so CloudFormation creates a fresh subscription
   # if the previous subscription resource was deleted or left in Deleted state.
-  CloudMartAdminOrderNotificationEmailSubscriptionV2:
+  CloudMartAdminOrderNotificationEmailSubscription:
     Type: AWS::SNS::Subscription
     DependsOn:
       - CloudMartOrderNotificationTopic
@@ -888,6 +888,24 @@ Resources:
       ParentId: !Ref CustomersResource
       PathPart: "{id}"
 
+  GetAllCustomersMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - ProductLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref CustomersResource
+      HttpMethod: GET
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
+            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+
   GetCustomerMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
@@ -981,6 +999,7 @@ Resources:
       - PutOrderByIdMethod
       - PatchOrderStatusMethod
       - PatchOrdersMethod
+      - GetAllCustomersMethod
       - GetCustomerMethod
       - PostCustomerMethod
       - PutCustomerMethod

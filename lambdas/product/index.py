@@ -691,6 +691,16 @@ def get_customer(cursor, customer_id):
     return cursor.fetchone()
 
 
+def get_customers(cursor):
+    """Return all customer records for ADMIN users."""
+    cursor.execute("""
+        SELECT customer_id, customer_name, customer_email, created_at
+        FROM customers
+        ORDER BY customer_id
+    """)
+    return cursor.fetchall()
+
+
 def create_customer(cursor, payload):
     customer_name = payload.get("customer_name", payload.get("name"))
     customer_email = payload.get("customer_email", payload.get("email"))
@@ -887,13 +897,21 @@ def lambda_handler(event, context):
                 )
 
                 if customer_id is None:
-                    if method != "POST":
-                        return response(405, {"message": "Method not allowed"})
+                    if method == "GET":
+                        require_admin(event)
+                        customers = get_customers(cursor)
+                        return response(200, {
+                            "count": len(customers),
+                            "customers": customers,
+                        })
 
-                    require_admin(event)
-                    created_id = create_customer(cursor, payload)
-                    connection.commit()
-                    return response(201, get_customer(cursor, created_id))
+                    if method == "POST":
+                        require_admin(event)
+                        created_id = create_customer(cursor, payload)
+                        connection.commit()
+                        return response(201, get_customer(cursor, created_id))
+
+                    return response(405, {"message": "Method not allowed"})
 
                 try:
                     customer_id = int(customer_id)
