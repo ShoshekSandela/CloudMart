@@ -1239,24 +1239,19 @@ def get_order_by_id(connection, order_id):
 # ============================================================
 
 def get_customer_id_from_query(event):
-    """
-    Return an explicitly supplied customer ID for ADMIN requests.
-
-    CUSTOMER requests must not use a caller-supplied customerId. Their
-    customer identity is resolved from the authenticated Authorization token
-    in the lambda_handler().
-    """
-    query = event.get("queryStringParameters") or {}
+    query = event.get(
+        "queryStringParameters"
+    ) or {}
 
     value = query.get("customerId")
 
-    # Compatibility with customer_id if used by an ADMIN/internal caller.
+    # Compatibility with customer_id if used.
     if value is None:
         value = query.get("customer_id")
 
     if value is None or str(value).strip() == "":
         raise ValueError(
-            "customerId query parameter is required for ADMIN requests"
+            "customerId query parameter is required"
         )
 
     try:
@@ -1272,6 +1267,65 @@ def get_customer_id_from_query(event):
         )
 
     return customer_id
+
+
+def get_all_orders(connection):
+    """Return all orders for ADMIN requests, newest first."""
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT
+                o.order_id,
+                o.customer_id,
+                c.customer_name AS customer_name,
+                c.customer_email AS customer_email,
+                o.status,
+                o.total_amount,
+                o.created_at,
+                o.updated_at
+            FROM orders o
+            LEFT JOIN customers c
+                ON c.customer_id = o.customer_id
+            ORDER BY
+                o.created_at DESC,
+                o.order_id DESC
+            """
+        )
+
+        orders = cursor.fetchall()
+
+        for order in orders:
+            order["order_id"] = int(order["order_id"])
+            order["customer_id"] = int(order["customer_id"])
+
+            cursor.execute(
+                """
+                SELECT
+                    oi.order_item_id,
+                    oi.product_id,
+                    p.name AS product_name,
+                    oi.quantity,
+                    oi.unit_price,
+                    oi.subtotal
+                FROM order_items oi
+                LEFT JOIN products p
+                    ON p.product_id = oi.product_id
+                WHERE oi.order_id = %s
+                ORDER BY oi.order_item_id
+                """,
+                (order["order_id"],),
+            )
+
+            items = cursor.fetchall()
+
+            for item in items:
+                item["order_item_id"] = int(item["order_item_id"])
+                item["product_id"] = int(item["product_id"])
+                item["quantity"] = int(item["quantity"])
+
+            order["items"] = items
+
+        return orders
 
 
 def get_orders_by_customer(
@@ -1562,28 +1616,36 @@ def lambda_handler(event, context):
                 customer_id = int(
                     customer["customer_id"]
                 )
-            elif auth["role"] == "ADMIN":
-                # ADMIN may explicitly select which customer's orders to view.
-                customer_id = get_customer_id_from_query(
-                    event
-                )
-            else:
-                raise PermissionError(
-                    "Valid CUSTOMER or ADMIN role is required"
+
+                orders = get_orders_by_customer(
+                    connection,
+                    customer_id,
                 )
 
-            orders = get_orders_by_customer(
-                connection,
-                customer_id,
-            )
+                return response(
+                    200,
+                    {
+                        "customer_id": customer_id,
+                        "count": len(orders),
+                        "orders": orders,
+                    },
+                )
 
-            return response(
-                200,
-                {
-                    "customer_id": customer_id,
-                    "count": len(orders),
-                    "orders": orders,
-                },
+            if auth["role"] == "ADMIN":
+                # ADMIN can see every customer's orders.
+                # No customerId query parameter is required.
+                orders = get_all_orders(connection)
+
+                return response(
+                    200,
+                    {
+                        "count": len(orders),
+                        "orders": orders,
+                    },
+                )
+
+            raise PermissionError(
+                "Valid CUSTOMER or ADMIN role is required"
             )
 
         # ----------------------------------------------------
