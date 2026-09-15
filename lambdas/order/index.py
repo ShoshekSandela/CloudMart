@@ -1239,19 +1239,24 @@ def get_order_by_id(connection, order_id):
 # ============================================================
 
 def get_customer_id_from_query(event):
-    query = event.get(
-        "queryStringParameters"
-    ) or {}
+    """
+    Return an explicitly supplied customer ID for ADMIN requests.
+
+    CUSTOMER requests must not use a caller-supplied customerId. Their
+    customer identity is resolved from the authenticated Authorization token
+    in the lambda_handler().
+    """
+    query = event.get("queryStringParameters") or {}
 
     value = query.get("customerId")
 
-    # Compatibility with customer_id if used.
+    # Compatibility with customer_id if used by an ADMIN/internal caller.
     if value is None:
         value = query.get("customer_id")
 
     if value is None or str(value).strip() == "":
         raise ValueError(
-            "customerId query parameter is required"
+            "customerId query parameter is required for ADMIN requests"
         )
 
     try:
@@ -1548,6 +1553,8 @@ def lambda_handler(event, context):
             # GET /orders?customerId=X
             # ------------------------------------------------
             if auth["role"] == "CUSTOMER":
+                # CUSTOMER identity comes only from the authenticated token.
+                # Do not require or trust customerId/customer_id from the URL.
                 customer = resolve_customer_identity(
                     connection,
                     auth,
@@ -1555,9 +1562,14 @@ def lambda_handler(event, context):
                 customer_id = int(
                     customer["customer_id"]
                 )
-            else:
+            elif auth["role"] == "ADMIN":
+                # ADMIN may explicitly select which customer's orders to view.
                 customer_id = get_customer_id_from_query(
                     event
+                )
+            else:
+                raise PermissionError(
+                    "Valid CUSTOMER or ADMIN role is required"
                 )
 
             orders = get_orders_by_customer(
