@@ -68,7 +68,7 @@ Parameters:
 
   ApiDeploymentVersion:
     Type: String
-    Default: "232"
+    Default: "233"
     Description: Change this value to force a new API Gateway deployment.
 
   SnsPublisherRoleArn:
@@ -191,6 +191,8 @@ Resources:
   # if the previous subscription resource was deleted or left in Deleted state.
   CloudMartAdminOrderNotificationEmailSubscription:
     Type: AWS::SNS::Subscription
+    DependsOn:
+      - CloudMartOrderNotificationTopic
     Properties:
       TopicArn: !Ref CloudMartOrderNotificationTopic
       Protocol: email
