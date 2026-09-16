@@ -22,43 +22,9 @@ env:
   ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
 
 jobs:
-  deploy-network:
-    name: Deploy Network Stack
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy network stack
-        run: |
-          set -euo pipefail
-          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-          CFN_ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || true)
-
-          DEPLOY_ARGS=(
-            --template-file cloudformation/network-stack.yaml
-            --stack-name "$STACK_NAME"
-            --region "$AWS_REGION"
-            --parameter-overrides Environment="$ENVIRONMENT"
-            --capabilities CAPABILITY_NAMED_IAM
-            --no-fail-on-empty-changeset
-          )
-
-          # Use the CloudFormation execution role after IAM has created it; bootstrap uses the current role.
-          if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
-            DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
-          fi
-
-          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
-
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
-    needs: deploy-network
     steps:
       - uses: actions/checkout@v5
       - name: Configure AWS credentials
@@ -94,6 +60,40 @@ jobs:
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='GitHubActionsRoleArn'].OutputValue | [0]" \
             --output text
+
+  deploy-network:
+    name: Deploy Network Stack
+    runs-on: ubuntu-latest
+    needs: deploy-iam
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy network stack
+        run: |
+          set -euo pipefail
+          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+          CFN_ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || true)
+
+          DEPLOY_ARGS=(
+            --template-file cloudformation/network-stack.yaml
+            --stack-name "$STACK_NAME"
+            --region "$AWS_REGION"
+            --parameter-overrides Environment="$ENVIRONMENT"
+            --capabilities CAPABILITY_NAMED_IAM
+            --no-fail-on-empty-changeset
+          )
+
+          # Use the CloudFormation execution role after IAM has created it; bootstrap uses the current role.
+          if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
+            DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
+          fi
+
+          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
 
   deploy-data:
     name: Deploy Data Stack
