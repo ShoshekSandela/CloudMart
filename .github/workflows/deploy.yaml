@@ -18,10 +18,43 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: ${{ vars.AWS_REGION }}
   ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
 
 jobs:
+  deploy-network:
+    name: Deploy Network Stack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy network stack
+        run: |
+          set -euo pipefail
+          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+          CFN_ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || true)
+
+          DEPLOY_ARGS=(
+            --template-file cloudformation/network-stack.yaml
+            --stack-name "$STACK_NAME"
+            --region "$AWS_REGION"
+            --parameter-overrides Environment="$ENVIRONMENT"
+            --capabilities CAPABILITY_NAMED_IAM
+            --no-fail-on-empty-changeset
+          )
+
+          # Use the CloudFormation execution role after IAM has created it; bootstrap uses the current role.
+          if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
+            DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
+          fi
+
+          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
+
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
@@ -56,40 +89,6 @@ jobs:
 
           aws cloudformation deploy "${DEPLOY_ARGS[@]}"
 
-
-  deploy-network:
-    name: Deploy Network Stack
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy network stack
-        run: |
-          set -euo pipefail
-          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-          CFN_ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || true)
-
-          DEPLOY_ARGS=(
-            --template-file cloudformation/network-stack.yaml
-            --stack-name "$STACK_NAME"
-            --region "$AWS_REGION"
-            --parameter-overrides Environment="$ENVIRONMENT"
-            --capabilities CAPABILITY_NAMED_IAM
-            --no-fail-on-empty-changeset
-          )
-
-          # Use the CloudFormation execution role after IAM has created it; bootstrap uses the current role.
-          if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
-            DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
-          fi
-
-          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
-
   deploy-data:
     name: Deploy Data Stack
     runs-on: ubuntu-latest
@@ -110,13 +109,37 @@ jobs:
           test -n "$DB_USERNAME" || { echo "CLOUDMART_DB_USERNAME is missing"; exit 1; }
           test -n "$DB_PASSWORD" || { echo "CLOUDMART_DB_PASSWORD is missing"; exit 1; }
 
+          STACK_NAME="cloudmart-data-${ENVIRONMENT}"
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+
           CFN_ROLE_ARN=$(aws iam get-role \
-            --role-name "cloudmart-${ENVIRONMENT}-cloudformation-execution-role" \
+            --role-name "$ROLE_NAME" \
             --query 'Role.Arn' --output text)
+
+          # A failed first deployment can leave an empty REVIEW_IN_PROGRESS
+          # CloudFormation stack. Remove only that unfinished stack automatically.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
+
+          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "Removing unfinished Data stack: $STACK_NAME"
+            aws cloudformation delete-stack \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            echo "Unfinished Data stack removed."
+          fi
 
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
-            --stack-name "cloudmart-data-${ENVIRONMENT}" \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --role-arn "$CFN_ROLE_ARN" \
             --parameter-overrides \
@@ -126,7 +149,6 @@ jobs:
               AllocatedStorage=20 \
               DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
-              ExistingReportBucketName="" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
