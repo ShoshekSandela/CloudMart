@@ -28,12 +28,12 @@ Parameters:
     Default: 10.0.12.0/24
 
   AvailabilityZone1:
-    Type: AWS::EC2::AvailabilityZone::Name
+    Type: String
     Default: us-east-1a
     Description: Availability Zone for the public and first private subnet.
 
   AvailabilityZone2:
-    Type: AWS::EC2::AvailabilityZone::Name
+    Type: String
     Default: us-east-1b
     Description: Availability Zone for the second private subnet.
 
