@@ -27,6 +27,16 @@ Parameters:
     Type: String
     Default: 10.0.12.0/24
 
+  AvailabilityZone1:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+    Description: Availability Zone for the public and first private subnet.
+
+  AvailabilityZone2:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1b
+    Description: Availability Zone for the second private subnet.
+
 Resources:
   # Main CloudMart VPC for all application resources.
   CloudMartVPC:
@@ -64,7 +74,7 @@ Resources:
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PublicSubnetCidr
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: !Ref AvailabilityZone1
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -80,7 +90,7 @@ Resources:
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PrivateSubnet1Cidr
-      AvailabilityZone: !Select [0, !GetAZs '']
+      AvailabilityZone: !Ref AvailabilityZone1
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -98,7 +108,7 @@ Resources:
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PrivateSubnet2Cidr
-      AvailabilityZone: !Select [1, !GetAZs '']
+      AvailabilityZone: !Ref AvailabilityZone2
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
