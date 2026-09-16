@@ -40,14 +40,6 @@ Parameters:
     Default: 20
     MinValue: 20
 
-  ExistingReportBucketName:
-    Type: String
-    Default: ""
-    Description: Optional existing report bucket name; leave empty to create the CloudMart report bucket.
-
-Conditions:
-  CreateReportBucket: !Equals [!Ref ExistingReportBucketName, ""]
-
 Resources:
   # Places RDS in the private database subnets.
   CloudMartDBSubnetGroup:
@@ -121,7 +113,7 @@ Resources:
       Value: !Ref DBName
       Description: CloudMart database name
 
-  # Stores the encrypted RDS username.
+  # Stores the RDS username in the code-managed parameter.
   DBUsernameParameter:
     Type: AWS::SSM::Parameter
     Properties:
@@ -131,7 +123,7 @@ Resources:
       Value: !Ref DBUsername
       Description: CloudMart RDS username
 
-  # Stores the encrypted RDS password.
+  # Stores the RDS password in the code-managed parameter.
   DBPasswordParameter:
     Type: AWS::SSM::Parameter
     Properties:
@@ -154,11 +146,9 @@ Resources:
   # Stores generated CloudMart reports and is private by default.
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
-    Condition: CreateReportBucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub cloudmart-${Environment}-reports
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -220,15 +210,11 @@ Outputs:
     Export:
       Name: !Sub CloudMart-${Environment}-AuthTokenParameterName
   ReportBucketName:
-    Value: !If [CreateReportBucket, !Ref CloudMartReportBucket, !Ref ExistingReportBucketName]
+    Value: !Ref CloudMartReportBucket
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketName
 
   ReportBucketArn:
-    Value:
-      !If
-        - CreateReportBucket
-        - !GetAtt CloudMartReportBucket.Arn
-        - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
+    Value: !GetAtt CloudMartReportBucket.Arn
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketArn
