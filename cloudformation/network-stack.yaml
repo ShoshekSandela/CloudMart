@@ -79,6 +79,7 @@ Resources:
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -96,6 +97,7 @@ Resources:
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
@@ -262,7 +264,8 @@ Resources:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SubnetIds:
+        - !Ref PrivateSubnet1
       SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
   # Private EventBridge API access from the VPC.
@@ -273,7 +276,8 @@ Resources:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.events
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SubnetIds:
+        - !Ref PrivateSubnet1
       SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
   # Private SNS API access from the VPC.
@@ -284,7 +288,8 @@ Resources:
       ServiceName: !Sub com.amazonaws.${AWS::Region}.sns
       VpcEndpointType: Interface
       PrivateDnsEnabled: true
-      SubnetIds: [!Ref PrivateSubnet1, !Ref PrivateSubnet2]
+      SubnetIds:
+        - !Ref PrivateSubnet1
       SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
 Outputs:
