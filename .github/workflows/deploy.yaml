@@ -25,6 +25,7 @@ jobs:
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
+    needs: deploy-network
     steps:
       - uses: actions/checkout@v5
       - name: Configure AWS credentials
@@ -43,7 +44,7 @@ jobs:
             --template-file cloudformation/iam-stack.yaml
             --stack-name "$STACK_NAME"
             --region "$AWS_REGION"
-            --parameter-overrides Environment="$ENVIRONMENT" GitHubRepository="ShoshekSandela/CloudMart"
+            --parameter-overrides Environment="$ENVIRONMENT"
             --capabilities CAPABILITY_NAMED_IAM
             --no-fail-on-empty-changeset
           )
@@ -55,16 +56,10 @@ jobs:
 
           aws cloudformation deploy "${DEPLOY_ARGS[@]}"
 
-          aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='GitHubActionsRoleArn'].OutputValue | [0]" \
-            --output text
 
   deploy-network:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
-    needs: deploy-iam
     steps:
       - uses: actions/checkout@v5
       - name: Configure AWS credentials
