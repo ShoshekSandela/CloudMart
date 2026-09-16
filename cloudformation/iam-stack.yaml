@@ -1,702 +1,357 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudMart IAM Configuration Stack.
-  Creates IAM roles required by CloudMart Lambda functions and EC2.
-  The API authentication token is managed separately by GitHub Actions
-  in AWS Systems Manager Parameter Store as a SecureString.
+  CloudMart IAM Stack. Creates all CloudMart IAM roles and their permissions
+  in code, including the GitHub deployment role, Lambda roles, EC2 role,
+  and the CloudFormation execution role.
 
 Parameters:
-
   Environment:
     Type: String
     Default: dev
-    AllowedValues:
-      - dev
-      - test
-      - prod
-    Description: Deployment environment
+    AllowedValues: [dev, test, prod]
+    Description: Deployment environment name.
 
-  GitHubActionsRoleName:
+  GitHubRepository:
     Type: String
-    Default: CloudMart-GitHubActions-Role
-    Description: Existing IAM role used by GitHub Actions
-
-
-# =========================================================
-# RESOURCES
-# =========================================================
+    Default: ShoshekSandela/CloudMart
+    Description: GitHub repository allowed to assume the deployment role.
 
 Resources:
 
-  # =========================================================
-  # GITHUB ACTIONS SNS VERIFICATION PERMISSION
-  # =========================================================
-  #
-  # The deployment workflow verifies the low-stock SNS email
-  # subscription after deploying the application stack.
-  # GetSubscriptionAttributes requires permission on the
-  # subscription ARN (not only the topic ARN).
-  #
-  # This attaches the required read-only SNS permissions to the
-  # existing CloudMart-GitHubActions-Role.
-
-  GitHubActionsSnsVerificationPolicy:
-    Type: AWS::IAM::Policy
-
+  # Allows GitHub Actions to authenticate with AWS using OIDC.
+  GitHubActionsRole:
+    Type: AWS::IAM::Role
     Properties:
-      PolicyName: CloudMartGitHubActionsSnsVerificationPolicy
-
-      Roles:
-        - !Ref GitHubActionsRoleName
-
-      PolicyDocument:
+      RoleName: !Sub cloudmart-${Environment}-github-actions-role
+      Description: CloudMart GitHub Actions deployment role.
+      AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubRepository}:ref:refs/heads/main
+                  - !Sub repo:${GitHubRepository}:ref:refs/heads/feature/order-flow
+                  - !Sub repo:${GitHubRepository}:ref:refs/heads/fix/database-ssm
+      # CloudFormation permissions are supplied by the AWS-managed policy; the workflow only operates on CloudMart stacks.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+      Policies:
+        - PolicyName: CloudMartGitHubActionsDeploymentHelpers
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Allows the workflow to read only the CloudMart CloudFormation execution role ARN.
+              - Sid: ReadCloudFormationExecutionRole
+                Effect: Allow
+                Action: iam:GetRole
+                Resource: !GetAtt CloudFormationExecutionRole.Arn
 
-          - Sid: ListLowStockTopicSubscriptions
-            Effect: Allow
-            Action:
-              - sns:ListSubscriptionsByTopic
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock
+              # Allows the workflow to pass only the CloudMart CloudFormation execution role.
+              - Sid: PassCloudFormationExecutionRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
 
-          - Sid: GetLowStockSubscriptionAttributes
-            Effect: Allow
-            Action:
-              - sns:GetSubscriptionAttributes
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock:*
 
-          - Sid: ListOrderNotificationTopicSubscriptions
-            Effect: Allow
-            Action:
-              - sns:ListSubscriptionsByTopic
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+              # Allows the workflow to initialize the Authorizer after deployment.
+              - Sid: InitializeAuthorizer
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-authorizer
 
-          - Sid: SubscribeToOrderNotificationTopic
-            Effect: Allow
-            Action:
-              - sns:Subscribe
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+              # Allows the workflow to initialize the Product Lambda database schema.
+              - Sid: InitializeProductLambda
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-product
 
-          - Sid: GetOrderNotificationSubscriptionAttributes
-            Effect: Allow
-            Action:
-              - sns:GetSubscriptionAttributes
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
+              # Allows the workflow to synchronize the configured customer after deployment.
+              - Sid: SynchronizeCustomer
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-order
 
-  # =========================================================
-  # GITHUB ACTIONS LAMBDA INITIALIZATION PERMISSION
-  # =========================================================
-  #
-  # deploy.yaml invokes the Authorizer Lambda directly after the
-  # application stack is deployed. This permission belongs to the
-  # GitHub Actions role, not to the Lambda Authorizer execution role.
-  #
+              # Allows the workflow to verify configured SNS email subscriptions.
+              - Sid: VerifyNotificationSubscriptions
+                Effect: Allow
+                Action:
+                  - sns:ListSubscriptionsByTopic
+                  - sns:GetSubscriptionAttributes
+                  - sns:Subscribe
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock:*
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-customer-order-notifications
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-customer-order-notifications:*
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
 
-  GitHubActionsAuthorizerInitializationPolicy:
-    Type: AWS::IAM::Policy
-
+  # CloudFormation uses this role to create the infrastructure on behalf of GitHub Actions.
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
     Properties:
-      PolicyName: CloudMartGitHubActionsAuthorizerInitializationPolicy
-
-      Roles:
-        - !Ref GitHubActionsRoleName
-
-      PolicyDocument:
+      RoleName: !Sub cloudmart-${Environment}-cloudformation-execution-role
+      Description: CloudMart CloudFormation service role used by GitHub Actions.
+      AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      # AWS-managed provisioning policies keep CloudFormation permissions centralized in the IAM stack.
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
+        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
+        - arn:aws:iam::aws:policy/AmazonRDSFullAccess
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
+        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
+        - arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
+        - arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess
+        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
+        - arn:aws:iam::aws:policy/IAMFullAccess
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
 
-          - Sid: InitializeCloudMartAuthorizer
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-authorizer
-
-          - Sid: InvokeCloudMartOrderLambda
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-order
-          - Sid: InitializeCloudMartDatabase
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-product
-
-
-  # =========================================================
-  # PRODUCT LAMBDA ROLE
-  # =========================================================
-
+  # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
     Type: AWS::IAM::Role
-
     Properties:
       RoleName: !Sub cloudmart-${Environment}-lambda-product-role
-
+      Description: CloudMart Product Lambda execution role.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
           - Effect: Allow
-
             Principal:
-              Service:
-                - lambda.amazonaws.com
-
-            Action:
-              - sts:AssumeRole
-
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
-
-        - PolicyName: CloudMartProductLambdaPolicy
-
+        - PolicyName: CloudMartProductPolicy
           PolicyDocument:
             Version: "2012-10-17"
-
             Statement:
-
-              # CloudWatch Logs
-              - Effect: Allow
-
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
-
-
-              # SSM Parameter Store
-              - Effect: Allow
-
-                Action:
-                  - ssm:GetParameter
-
+              # Reads only the database parameters required by Product Lambda.
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+                Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-              
-
-              # Publish inventory change events to the CloudMart EventBridge bus
-              - Effect: Allow
-                Action:
-                  - events:PutEvents
-                Resource:
-                  - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
-
-              # VPC access for Product Lambda
-              - Effect: Allow
-
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DescribeSubnets
-                  - ec2:DeleteNetworkInterface
-
-                Resource: "*"
-
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+              # Publishes Product inventory events to the CloudMart event bus only.
+              - Sid: PublishProductEvents
+                Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
       Tags:
-
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
 
-
-  # =========================================================
-  # INVENTORY EVENT LAMBDA ROLE
-  # =========================================================
-
-
+  # Gives Order Lambda access to database parameters and the CloudMart event bus.
   OrderLambdaRole:
     Type: AWS::IAM::Role
-
     Properties:
       RoleName: !Sub cloudmart-${Environment}-lambda-order-role
-
+      Description: CloudMart Order Lambda execution role.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
           - Effect: Allow
-
             Principal:
-              Service:
-                - lambda.amazonaws.com
-
-            Action:
-              - sts:AssumeRole
-
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
-
-        - PolicyName: CloudMartOrderLambdaPolicy
-
+        - PolicyName: CloudMartOrderPolicy
           PolicyDocument:
             Version: "2012-10-17"
-
             Statement:
-
-              # CloudWatch Logs
-              - Effect: Allow
-
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
-
-
-              # SSM Parameter Store
-              - Effect: Allow
-
-                Action:
-                  - ssm:GetParameter
-
+              # Reads only the database parameters required by Order Lambda.
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+                Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-
-              # Publish order lifecycle events to the CloudMart EventBridge bus
-              - Effect: Allow
-                Action:
-                  - events:PutEvents
-                Resource:
-                  - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
-
-              # VPC access for Order Lambda
-              - Effect: Allow
-
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DescribeSubnets
-                  - ec2:DeleteNetworkInterface
-
-                Resource: "*"
-
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+              # Publishes Order lifecycle events to the CloudMart event bus only.
+              - Sid: PublishOrderEvents
+                Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
       Tags:
-
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
 
-
-  # =========================================================
-  # REPORT LAMBDA ROLE
-  # =========================================================
-
-  ReportLambdaRole:
-    Type: AWS::IAM::Role
-
-    Properties:
-      RoleName: !Sub cloudmart-${Environment}-lambda-report-role
-
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-
-        Statement:
-          - Effect: Allow
-
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-
-            Action:
-              - sts:AssumeRole
-
-      Policies:
-
-        - PolicyName: CloudMartReportLambdaPolicy
-
-          PolicyDocument:
-            Version: "2012-10-17"
-
-            Statement:
-
-              # CloudWatch Logs
-              - Effect: Allow
-
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
-
-
-              # S3 report bucket access
-              - Effect: Allow
-
-                Action:
-                  - s3:GetObject
-                  - s3:PutObject
-                  - s3:DeleteObject
-                  - s3:ListBucket
-
-                Resource:
-                  - !Sub arn:aws:s3:::cloudmart-${Environment}-reports
-                  - !Sub arn:aws:s3:::cloudmart-${Environment}-reports/*
-
-
-              # SSM Parameter Store
-              - Effect: Allow
-
-                Action:
-                  - ssm:GetParameter
-
-                Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-
-      Tags:
-
-        - Key: Project
-          Value: CloudMart
-
-        - Key: Environment
-          Value: !Ref Environment
-
-
-  # =========================================================
-  # LAMBDA AUTHORIZER ROLE
-  # =========================================================
-
+  # Gives the Authorizer access to its token and database parameters.
   LambdaAuthorizerRole:
     Type: AWS::IAM::Role
-
     Properties:
       RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
-
+      Description: CloudMart API Authorizer Lambda execution role.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
           - Effect: Allow
-
             Principal:
-              Service:
-                - lambda.amazonaws.com
-
-            Action:
-              - sts:AssumeRole
-
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
       Policies:
-
         - PolicyName: CloudMartAuthorizerPolicy
-
           PolicyDocument:
             Version: "2012-10-17"
-
             Statement:
-
-              # CloudWatch Logs
-              - Effect: Allow
-
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
-
-
-              # Read and initialize the ADMIN token in SSM
-              - Effect: Allow
-
+              # Reads and initializes the CloudMart authentication token.
+              - Sid: ManageAuthToken
+                Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:PutParameter
-
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+              # Reads database connection parameters used during token validation.
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+                Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
-
-              # Read the existing database connection parameters.
-              # Customer token hashes are stored and verified in RDS.
-              - Effect: Allow
-
-                Action:
-                  - ssm:GetParameter
-
-                Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-
-              # Required for a Lambda configured for VPC access.
-              - Effect: Allow
-
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DeleteNetworkInterface
-
-                Resource: "*"
-
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
       Tags:
-
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
 
-
-  # =========================================================
-  # EC2 ROLE
-  # =========================================================
-
+  # Gives the Operations EC2 instance Session Manager and database parameter access.
   EC2Role:
     Type: AWS::IAM::Role
-
     Properties:
       RoleName: !Sub cloudmart-${Environment}-ec2-role
-
+      Description: CloudMart Operations EC2 instance role.
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
-
         Statement:
           - Effect: Allow
-
             Principal:
-              Service:
-                - ec2.amazonaws.com
-
-            Action:
-              - sts:AssumeRole
-
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
-
-        - PolicyName: CloudMartEC2Policy
-
+        - PolicyName: CloudMartEC2DatabaseRead
           PolicyDocument:
             Version: "2012-10-17"
-
             Statement:
-
-              # CloudWatch Logs
-              - Effect: Allow
-
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-
-                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
-
-
-              # Read application configuration from SSM
-              - Effect: Allow
-
-                Action:
-                  - ssm:GetParameter
-
+              # Reads only the database connection parameters needed by the EC2 environment.
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+                Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
-                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
       Tags:
-
         - Key: Project
           Value: CloudMart
-
         - Key: Environment
           Value: !Ref Environment
 
-
-  # =========================================================
-  # EC2 INSTANCE PROFILE
-  # =========================================================
-
+  # Connects the EC2 role to the EC2 instance created by the Application stack.
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
-
     Properties:
       InstanceProfileName: !Sub cloudmart-${Environment}-ec2-instance-profile
-
       Roles:
         - !Ref EC2Role
 
-
-# =========================================================
-# OUTPUTS
-# =========================================================
-
 Outputs:
+  # ARN used by GitHub Actions to authenticate with AWS.
+  GitHubActionsRoleArn:
+    Description: GitHub Actions IAM role ARN.
+    Value: !GetAtt GitHubActionsRole.Arn
+    Export:
+      Name: !Sub CloudMart-${Environment}-GitHubActionsRoleArn
 
-  # =========================================================
-  # GITHUB ACTIONS EVENTBRIDGE SMOKE TEST PERMISSION
-  # Allows the GitHub Actions role to publish the automated
-  # smoke-test event to the CloudMart custom EventBridge bus.
-  # =========================================================
+  # ARN used by CloudFormation to create and update CloudMart resources.
+  CloudFormationExecutionRoleArn:
+    Description: CloudFormation execution role ARN.
+    Value: !GetAtt CloudFormationExecutionRole.Arn
+    Export:
+      Name: !Sub CloudMart-${Environment}-CloudFormationExecutionRoleArn
+
+  # ARN used by the Product Lambda function.
   ProductLambdaRoleArn:
-    Description: Product Lambda IAM Role ARN
-
+    Description: Product Lambda IAM role ARN.
     Value: !GetAtt ProductLambdaRole.Arn
-
     Export:
       Name: !Sub CloudMart-${Environment}-ProductLambdaRoleArn
 
-
-  ProductLambdaRoleName:
-    Description: Product Lambda IAM Role Name
-
-    Value: !Ref ProductLambdaRole
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleName
-
-
-  # =========================================================
-  # INVENTORY EVENT LAMBDA
-  # =========================================================
-
-
-
+  # ARN used by the Order Lambda function.
   OrderLambdaRoleArn:
-    Description: Order Lambda IAM Role ARN
-
+    Description: Order Lambda IAM role ARN.
     Value: !GetAtt OrderLambdaRole.Arn
-
     Export:
       Name: !Sub CloudMart-${Environment}-OrderLambdaRoleArn
 
-
-  OrderLambdaRoleName:
-    Description: Order Lambda IAM Role Name
-
-    Value: !Ref OrderLambdaRole
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleName
-
-
-  # =========================================================
-  # REPORT LAMBDA
-  # =========================================================
-
-  ReportLambdaRoleArn:
-    Description: Report Lambda IAM Role ARN
-
-    Value: !GetAtt ReportLambdaRole.Arn
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleArn
-
-
-  ReportLambdaRoleName:
-    Description: Report Lambda IAM Role Name
-
-    Value: !Ref ReportLambdaRole
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleName
-
-
-  # =========================================================
-  # AUTHORIZE LAMBDA
-  # =========================================================
-
-  # THIS IS THE IMPORTANT FIX.
-  #
-  # deploy.yaml expects:
-  #
-  # LambdaAuthorizerRoleArn
-  #
-  # Previously the template had:
-  #
-  # AuthorizerLambdaRoleArn
-  #
-  # which caused:
-  #
-  # Authorizer Role: None
-
+  # ARN used by the API Authorizer Lambda function.
   LambdaAuthorizerRoleArn:
-    Description: Lambda Authorizer IAM Role ARN
-
+    Description: Lambda Authorizer IAM role ARN.
     Value: !GetAtt LambdaAuthorizerRole.Arn
-
     Export:
       Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleArn
 
-
-  # Keep the old output for compatibility
-  AuthorizerLambdaRoleArn:
-    Description: Lambda Authorizer IAM Role ARN - Legacy Output
-
-    Value: !GetAtt LambdaAuthorizerRole.Arn
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-AuthorizerLambdaRoleArn
-
-
-  LambdaAuthorizerRoleName:
-    Description: Lambda Authorizer IAM Role Name
-
-    Value: !Ref LambdaAuthorizerRole
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleName
-
-
-  # =========================================================
-  # EC2
-  # =========================================================
-
+  # ARN used by the Operations EC2 instance.
   EC2RoleArn:
-    Description: EC2 IAM Role ARN
-
+    Description: EC2 IAM role ARN.
     Value: !GetAtt EC2Role.Arn
-
     Export:
       Name: !Sub CloudMart-${Environment}-EC2RoleArn
 
-
+  # Instance profile attached to the Operations EC2 instance.
   EC2InstanceProfileName:
-    Description: EC2 Instance Profile Name
-
+    Description: EC2 instance profile name.
     Value: !Ref EC2InstanceProfile
-
     Export:
       Name: !Sub CloudMart-${Environment}-EC2InstanceProfileName
-
-
-  # =========================================================
-  # SSM AUTH TOKEN
-  # =========================================================
-
-  AuthTokenParameterName:
-    Description: SSM SecureString parameter name managed by GitHub Actions
-
-    Value: !Sub /cloudmart/${Environment}/auth/token
-
-    Export:
-      Name: !Sub CloudMart-${Environment}-AuthTokenParameterName

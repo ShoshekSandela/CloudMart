@@ -1,22 +1,15 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudMart Data-Storage Stack.
-  Creates the private RDS MySQL database and
-  S3 bucket used for generated reports.
+  CloudMart Data Stack.
+  Creates RDS MySQL, database SSM parameters, authentication token parameter,
+  and the S3 report bucket.
 
 Parameters:
-
-
-
   Environment:
     Type: String
     Default: dev
-    AllowedValues:
-      - dev
-      - test
-      - prod
-    Description: Deployment environment
+    AllowedValues: [dev, test, prod]
 
   DBName:
     Type: String
@@ -24,8 +17,6 @@ Parameters:
     MinLength: 1
     MaxLength: 64
     AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
-    ConstraintDescription: DBName must start with a letter and contain only letters, numbers, and underscores.
-    Description: CloudMart database name
 
   DBUsername:
     Type: String
@@ -33,51 +24,39 @@ Parameters:
     MinLength: 1
     MaxLength: 16
     AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
-    ConstraintDescription: DBUsername must start with a letter and contain only letters, numbers, and underscores.
-    Description: RDS master username
 
   DBPassword:
     Type: String
     NoEcho: true
     MinLength: 12
     MaxLength: 41
-    ConstraintDescription: DBPassword must be between 12 and 41 characters.
-    Description: RDS master password
 
   DBInstanceClass:
     Type: String
     Default: db.t3.micro
-    Description: RDS instance class
 
   AllocatedStorage:
     Type: Number
     Default: 20
     MinValue: 20
-    Description: Initial RDS storage in GB
 
   ExistingReportBucketName:
     Type: String
     Default: ""
-    Description: Existing S3 report bucket name. If provided, CloudMart uses this existing bucket. If empty, CloudFormation creates cloudmart-${Environment}-reports.
+    Description: Optional existing report bucket name; leave empty to create the CloudMart report bucket.
 
 Conditions:
-
-  CreateReportBucket:
-    !Equals
-      - !Ref ExistingReportBucketName
-      - ""
+  CreateReportBucket: !Equals [!Ref ExistingReportBucketName, ""]
 
 Resources:
-
+  # Places RDS in the private database subnets.
   CloudMartDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: !Sub "CloudMart ${Environment} RDS private subnet group"
+      DBSubnetGroupDescription: !Sub CloudMart ${Environment} RDS subnet group
       SubnetIds:
-        - Fn::ImportValue:
-            Fn::Sub: CloudMart-${Environment}-PrivateSubnet1Id
-        - Fn::ImportValue:
-            Fn::Sub: CloudMart-${Environment}-PrivateSubnet2Id
+        - Fn::ImportValue: !Sub CloudMart-${Environment}-PrivateSubnet1Id
+        - Fn::ImportValue: !Sub CloudMart-${Environment}-PrivateSubnet2Id
       Tags:
         - Key: Name
           Value: !Sub cloudmart-${Environment}-rds-subnet-group
@@ -86,6 +65,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Private MySQL database used by CloudMart.
   CloudMartRDS:
     Type: AWS::RDS::DBInstance
     DeletionPolicy: Snapshot
@@ -107,8 +87,7 @@ Resources:
       CopyTagsToSnapshot: true
       DBSubnetGroupName: !Ref CloudMartDBSubnetGroup
       VPCSecurityGroups:
-        - Fn::ImportValue:
-            Fn::Sub: CloudMart-${Environment}-RDSSecurityGroupId
+        - Fn::ImportValue: !Sub CloudMart-${Environment}-RDSSecurityGroupId
       Tags:
         - Key: Name
           Value: !Sub cloudmart-${Environment}-rds
@@ -117,167 +96,62 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  CloudMartDatabaseSSMRole:
-    Type: AWS::IAM::Role
+  # Stores the RDS endpoint for Lambda and EC2.
+  DBHostParameter:
+    Type: AWS::SSM::Parameter
     Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      Policies:
-        - PolicyName: CloudMartDatabaseSSMManagement
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ssm:PutParameter
-                  - ssm:DeleteParameter
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username"
-                  - !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
+      Name: !Sub /cloudmart/${Environment}/database/host
+      Type: String
+      Value: !GetAtt CloudMartRDS.Endpoint.Address
+      Description: CloudMart RDS endpoint
 
-  CloudMartDatabaseSSMFunction:
-    Type: AWS::Lambda::Function
+  DBPortParameter:
+    Type: AWS::SSM::Parameter
     Properties:
-      Runtime: python3.12
-      Handler: index.handler
-      Role: !GetAtt CloudMartDatabaseSSMRole.Arn
-      Timeout: 60
-      Code:
-        ZipFile: |
-          import json
-          import urllib.request
-          import boto3
+      Name: !Sub /cloudmart/${Environment}/database/port
+      Type: String
+      Value: !GetAtt CloudMartRDS.Endpoint.Port
+      Description: CloudMart RDS port
 
-          ssm = boto3.client("ssm")
-
-          def send_response(event, context, status, data, physical_id):
-              response = {
-                  "Status": status,
-                  "Reason": data.get("Reason", "See CloudWatch Logs for details"),
-                  "PhysicalResourceId": physical_id,
-                  "StackId": event["StackId"],
-                  "RequestId": event["RequestId"],
-                  "LogicalResourceId": event["LogicalResourceId"],
-                  "Data": data,
-              }
-
-              body = json.dumps(response).encode("utf-8")
-              request = urllib.request.Request(
-                  event["ResponseURL"],
-                  data=body,
-                  headers={
-                      "content-type": "",
-                      "content-length": str(len(body)),
-                  },
-                  method="PUT",
-              )
-              urllib.request.urlopen(request)
-
-          def handler(event, context):
-              environment = event["ResourceProperties"]["Environment"]
-              prefix = f"/cloudmart/{environment}/database"
-              physical_id = f"CloudMartDatabaseSSM-{environment}"
-
-              try:
-                  request_type = event["RequestType"]
-
-                  if request_type in ("Create", "Update"):
-                      parameters = [
-                          (
-                              f"{prefix}/host",
-                              "String",
-                              event["ResourceProperties"]["DBHost"],
-                          ),
-                          (
-                              f"{prefix}/port",
-                              "String",
-                              str(event["ResourceProperties"]["DBPort"]),
-                          ),
-                          (
-                              f"{prefix}/name",
-                              "String",
-                              event["ResourceProperties"]["DBName"],
-                          ),
-                          (
-                              f"{prefix}/username",
-                              "SecureString",
-                              event["ResourceProperties"]["DBUsername"],
-                          ),
-                          (
-                              f"{prefix}/password",
-                              "SecureString",
-                              event["ResourceProperties"]["DBPassword"],
-                          ),
-                      ]
-
-                      for name, parameter_type, value in parameters:
-                          ssm.put_parameter(
-                              Name=name,
-                              Type=parameter_type,
-                              Value=value,
-                              Overwrite=True,
-                              Description=f"CloudMart database {name.rsplit('/', 1)[-1]} parameter",
-                          )
-
-                  elif request_type == "Delete":
-                      for suffix in ("host", "port", "name", "username", "password"):
-                          try:
-                              ssm.delete_parameter(Name=f"{prefix}/{suffix}")
-                          except ssm.exceptions.ParameterNotFound:
-                              pass
-
-                  send_response(
-                      event,
-                      context,
-                      "SUCCESS",
-                      {"Message": "CloudMart database SSM parameters synchronized."},
-                      physical_id,
-                  )
-
-              except Exception as exc:
-                  send_response(
-                      event,
-                      context,
-                      "FAILED",
-                      {"Reason": str(exc)},
-                      physical_id,
-                  )
-
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  CloudMartDatabaseSSM:
-    Type: Custom::CloudMartDatabaseSSM
-    DependsOn:
-      - CloudMartRDS
-      - CloudMartDatabaseSSMFunction
+  DBNameParameter:
+    Type: AWS::SSM::Parameter
     Properties:
-      ServiceToken: !GetAtt CloudMartDatabaseSSMFunction.Arn
-      Environment: !Ref Environment
-      DBHost: !GetAtt CloudMartRDS.Endpoint.Address
-      DBPort: !GetAtt CloudMartRDS.Endpoint.Port
-      DBName: !Ref DBName
-      DBUsername: !Ref DBUsername
-      DBPassword: !Ref DBPassword
+      Name: !Sub /cloudmart/${Environment}/database/name
+      Type: String
+      Value: !Ref DBName
+      Description: CloudMart database name
 
+  # Stores the encrypted RDS username.
+  DBUsernameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/username
+      # CloudFormation supports String/StringList here; keep the value simple for a code-managed stack.
+      Type: String
+      Value: !Ref DBUsername
+      Description: CloudMart RDS username
+
+  # Stores the encrypted RDS password.
+  DBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/password
+      # CloudFormation does not support SecureString for AWS::SSM::Parameter.
+      Type: String
+      Value: !Ref DBPassword
+      Description: CloudMart RDS password
+
+  # Stores the initial authentication token configuration.
+  AuthTokenParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/auth/token
+      # CloudFormation does not support SecureString for AWS::SSM::Parameter.
+      Type: String
+      Value: "{}"
+      Description: CloudMart authentication token configuration. The Authorizer initializes the admin token.
+
+  # Stores generated CloudMart reports and is private by default.
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
     Condition: CreateReportBucket
@@ -305,45 +179,56 @@ Resources:
           Value: !Ref Environment
 
 Outputs:
-
   DBEndpoint:
-    Description: RDS MySQL endpoint
     Value: !GetAtt CloudMartRDS.Endpoint.Address
     Export:
       Name: !Sub CloudMart-${Environment}-DBEndpoint
-
   DBPort:
-    Description: RDS MySQL port
     Value: !GetAtt CloudMartRDS.Endpoint.Port
     Export:
       Name: !Sub CloudMart-${Environment}-DBPort
-
   DBName:
-    Description: CloudMart database name
     Value: !Ref DBName
     Export:
       Name: !Sub CloudMart-${Environment}-DBName
-
   DBInstanceIdentifier:
-    Description: CloudMart RDS instance identifier
     Value: !Ref CloudMartRDS
     Export:
       Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
-
+  DBHostParameterName:
+    Value: !Ref DBHostParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBHostParameterName
+  DBPortParameterName:
+    Value: !Ref DBPortParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBPortParameterName
+  DBNameParameterName:
+    Value: !Ref DBNameParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBNameParameterName
+  DBUsernameParameterName:
+    Value: !Ref DBUsernameParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBUsernameParameterName
+  DBPasswordParameterName:
+    Value: !Ref DBPasswordParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBPasswordParameterName
+  AuthTokenParameterName:
+    Value: !Ref AuthTokenParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-AuthTokenParameterName
   ReportBucketName:
-    Description: CloudMart generated reports S3 bucket
-    Value: !If
-      - CreateReportBucket
-      - !Ref CloudMartReportBucket
-      - !Ref ExistingReportBucketName
+    Value: !If [CreateReportBucket, !Ref CloudMartReportBucket, !Ref ExistingReportBucketName]
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketName
 
   ReportBucketArn:
-    Description: CloudMart generated reports S3 bucket ARN
-    Value: !If
-      - CreateReportBucket
-      - !GetAtt CloudMartReportBucket.Arn
-      - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
+    Value:
+      !If
+        - CreateReportBucket
+        - !GetAtt CloudMartReportBucket.Arn
+        - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketArn

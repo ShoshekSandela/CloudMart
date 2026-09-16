@@ -3,11 +3,10 @@ Transform: AWS::Serverless-2016-10-31
 
 Description: >
   CloudMart Application Stack.
-  API Gateway with Lambda TOKEN Authorizer, Product Lambda,
-  Order Lambda, authenticated order API, EventBridge inventory events and SNS low-stock notifications.
+  Creates API Gateway, Lambda functions, EventBridge rules, SNS notifications,
+  and the Operations EC2 environment. IAM roles are imported from the IAM stack.
 
 Parameters:
-
   Environment:
     Type: String
     Default: dev
@@ -17,71 +16,31 @@ Parameters:
     Type: String
     Default: cloudmart
 
-  LambdaAuthorizerRoleArn:
-    Type: String
-
-  ProductLambdaRoleArn:
-    Type: String
-
-  OrderLambdaRoleArn:
-    Type: String
-
-  PrivateSubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-
-  LambdaSecurityGroupId:
-    Type: AWS::EC2::SecurityGroup::Id
-
   AuthorizerCacheTTL:
     Type: Number
-    Default: 300
+    Default: 0
     MinValue: 0
     MaxValue: 3600
-
-  TokenParameterName:
-    Type: String
-
-  DBHostParameterName:
-    Type: String
-
-  DBPortParameterName:
-    Type: String
-
-  DBNameParameterName:
-    Type: String
-
-  DBUsernameParameterName:
-    Type: String
-
-  DBPasswordParameterName:
-    Type: String
 
   NotificationEmail:
     Type: String
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-    Description: ADMIN email used for low-stock and admin order notifications.
 
   CustomerEmail:
     Type: String
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-    Description: CUSTOMER email used for customer identity and order notifications.
 
   ApiDeploymentVersion:
     Type: String
-    Default: "236"
-    Description: Change this value to force a new API Gateway deployment.
+    Default: "1"
 
-  SnsPublisherRoleArn:
+  EC2InstanceType:
     Type: String
-    Default: ""
-    Description: ARN of an existing IAM role for the SNS publisher Lambda. Provide an existing role ARN that allows Lambda to publish to the SNS topics. Leave empty to let CloudFormation create the role (requires deployer IAM to allow IAM role creation).
-
-Conditions:
-  SnsPublisherRoleProvided: !Not [!Equals [!Ref SnsPublisherRoleArn, ""]]
-  CreateSnsPublisherRole: !Equals [!Ref SnsPublisherRoleArn, ""]
+    Default: t3.micro
 
 Resources:
 
+  # REST API entry point for CloudMart clients.
   CloudMartRestApi:
     Type: AWS::ApiGateway::RestApi
     Properties:
@@ -95,6 +54,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Central event bus for order and inventory lifecycle events.
   CloudMartEventBus:
     Type: AWS::Events::EventBus
     Properties:
@@ -105,19 +65,12 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Sends low-stock notifications to the configured admin email.
   CloudMartLowStockTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
 
-  # Create a fresh SNS email subscription.
-  # The previous CloudMartLowStockSubscription is in the Deleted state,
-  # so a new logical resource is required.
   CloudMartLowStockEmailSubscription:
     Type: AWS::SNS::Subscription
     Properties:
@@ -128,8 +81,7 @@ Resources:
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
-      Topics:
-        - !Ref CloudMartLowStockTopic
+      Topics: [!Ref CloudMartLowStockTopic]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -145,24 +97,20 @@ Resources:
 
   LowStockEventRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartLowStockTopicPolicy
+    DependsOn: CloudMartLowStockTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: Routes low-stock Inventory Changed events through the SNS Publisher Lambda to the Admin SNS topic.
+      Description: Routes low-stock Inventory Changed events directly to the admin SNS topic.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
-        source:
-          - cloudmart.product
-        detail-type:
-          - "Inventory Changed"
+        source: [cloudmart.product]
+        detail-type: ["Inventory Changed"]
         detail:
-          low_stock:
-            - true
+          low_stock: [true]
       Targets:
-        - Id: LowStockPublisherTarget
-          Arn: !GetAtt SnsPublisherFunction.Arn
+        - Id: LowStockSnsTarget
+          Arn: !Ref CloudMartLowStockTopic
           InputTransformer:
             InputPathsMap:
               productId: "$.detail.product_id"
@@ -170,43 +118,54 @@ Resources:
               oldStock: "$.detail.old_stock"
               newStock: "$.detail.new_stock"
               threshold: "$.detail.low_stock_threshold"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart","topicArn":"${CloudMartLowStockTopic}"}
-  # ============================================================
-  # ORDER LIFECYCLE EVENTS -> SNS
-  # ============================================================
+            InputTemplate: |
+              CLOUDMART LOW STOCK ALERT
+
+              Product: <productName>
+              Product ID: <productId>
+
+              STOCK STATUS
+              Previous Stock: <oldStock>
+              Current Stock: <newStock>
+              Low Stock Limit: <threshold>
+
+              ACTION REQUIRED
+              Please replenish this product soon.
+
+              — CloudMart
 
   CloudMartOrderNotificationTopic:
     Type: AWS::SNS::Topic
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-admin-order-notifications"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
 
-  # CloudFormation-managed ADMIN email subscription.
-  # A new logical ID is used so CloudFormation creates a fresh subscription
-  # if the previous subscription resource was deleted or left in Deleted state.
   CloudMartAdminOrderNotificationEmailSubscription:
     Type: AWS::SNS::Subscription
-    DependsOn:
-      - CloudMartOrderNotificationTopic
     Properties:
       TopicArn: !Ref CloudMartOrderNotificationTopic
       Protocol: email
       Endpoint: !Ref NotificationEmail
 
+  CloudMartCustomerOrderNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-customer-order-notifications"
+
+  CloudMartCustomerOrderNotificationSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref CloudMartCustomerOrderNotificationTopic
+      Protocol: email
+      Endpoint: !Ref CustomerEmail
+
   CloudMartOrderNotificationTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
-      Topics:
-        - !Ref CloudMartOrderNotificationTopic
+      Topics: [!Ref CloudMartOrderNotificationTopic]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowEventBridgePublishOrderEvents
+          - Sid: AllowEventBridgePublish
             Effect: Allow
             Principal:
               Service: events.amazonaws.com
@@ -221,36 +180,14 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-failed"
                   - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-completed"
 
-  # ============================================================
-  # CUSTOMER ORDER NOTIFICATIONS
-  # ============================================================
-
-  CloudMartCustomerOrderNotificationTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-customer-order-notifications"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  CloudMartCustomerOrderNotificationSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref CloudMartCustomerOrderNotificationTopic
-      Protocol: email
-      Endpoint: !Ref CustomerEmail
-
   CloudMartCustomerOrderNotificationTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
-      Topics:
-        - !Ref CloudMartCustomerOrderNotificationTopic
+      Topics: [!Ref CloudMartCustomerOrderNotificationTopic]
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowEventBridgePublishCustomerOrderEvents
+          - Sid: AllowEventBridgePublish
             Effect: Allow
             Principal:
               Service: events.amazonaws.com
@@ -265,60 +202,6 @@ Resources:
                   - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-failed"
                   - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-completed"
 
-  # If no SnsPublisherRoleArn is provided, create an IAM role for the publisher.
-  SnsPublisherRole:
-    Condition: CreateSnsPublisherRole
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      Policies:
-        - PolicyName: AllowPublishToTopics
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - sns:Publish
-                Resource:
-                  - !Ref CloudMartOrderNotificationTopic
-                  - !Ref CloudMartCustomerOrderNotificationTopic
-                  - !Ref CloudMartLowStockTopic
-
-  SnsPublisherFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-sns-publisher"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      CodeUri: ../lambdas/sns_publisher/
-      Role: !If
-        - SnsPublisherRoleProvided
-        - !Ref SnsPublisherRoleArn
-        - !GetAtt SnsPublisherRole.Arn
-      Timeout: 10
-      MemorySize: 128
-      Environment:
-        Variables: {}
-      Tags:
-        Project: CloudMart
-        Environment: !Ref Environment
-
-  SnsPublisherLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref SnsPublisherFunction
-      Principal: events.amazonaws.com
-      SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/*"
-
   OrderPlacedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -326,17 +209,15 @@ Resources:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed"
-      Description: Routes CloudMart OrderPlaced events to SNS.
+      Description: !Sub "Routes OrderPlaced events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
-        source:
-          - cloudmart.order
-        detail-type:
-          - OrderPlaced
+        source: [cloudmart.order]
+        detail-type: [OrderPlaced]
       Targets:
-        - Id: OrderPlacedLambdaCustomer
-          Arn: !GetAtt SnsPublisherFunction.Arn
+        - Id: AdminSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -346,8 +227,64 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART CUSTOMER ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
+            InputTemplate: |
+              CLOUDMART ORDER PLACED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been placed.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+        - Id: CustomerSnsTarget
+          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+              itemsSummary: "$.detail.items_summary"
+            InputTemplate: |
+              CLOUDMART ORDER PLACED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been placed.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -355,17 +292,15 @@ Resources:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
-      Description: Routes CloudMart OrderConfirmed events to SNS.
+      Description: !Sub "Routes OrderConfirmed events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
-        source:
-          - cloudmart.order
-        detail-type:
-          - OrderConfirmed
+        source: [cloudmart.order]
+        detail-type: [OrderConfirmed]
       Targets:
-        - Id: OrderConfirmedLambdaCustomer
-          Arn: !GetAtt SnsPublisherFunction.Arn
+        - Id: AdminSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -375,8 +310,64 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART CUSTOMER ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
+            InputTemplate: |
+              CLOUDMART ORDER CONFIRMED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been confirmed.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+        - Id: CustomerSnsTarget
+          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+              itemsSummary: "$.detail.items_summary"
+            InputTemplate: |
+              CLOUDMART ORDER CONFIRMED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been confirmed.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -384,17 +375,15 @@ Resources:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled"
-      Description: Routes CloudMart OrderCanceled events to SNS.
+      Description: !Sub "Routes OrderCanceled events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
-        source:
-          - cloudmart.order
-        detail-type:
-          - OrderCanceled
+        source: [cloudmart.order]
+        detail-type: [OrderCanceled]
       Targets:
-        - Id: OrderCanceledLambdaCustomer
-          Arn: !GetAtt SnsPublisherFunction.Arn
+        - Id: AdminSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -404,8 +393,64 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART CUSTOMER ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
+            InputTemplate: |
+              CLOUDMART ORDER CANCELED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been canceled.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+        - Id: CustomerSnsTarget
+          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+              itemsSummary: "$.detail.items_summary"
+            InputTemplate: |
+              CLOUDMART ORDER CANCELED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been canceled.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -413,17 +458,15 @@ Resources:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed"
-      Description: Routes CloudMart OrderFailed events to SNS.
+      Description: !Sub "Routes OrderFailed events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
-        source:
-          - cloudmart.order
-        detail-type:
-          - OrderFailed
+        source: [cloudmart.order]
+        detail-type: [OrderFailed]
       Targets:
-        - Id: OrderFailedLambdaCustomer
-          Arn: !GetAtt SnsPublisherFunction.Arn
+        - Id: AdminSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -433,8 +476,64 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART CUSTOMER ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
+            InputTemplate: |
+              CLOUDMART ORDER FAILED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has failed to process.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+        - Id: CustomerSnsTarget
+          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+              itemsSummary: "$.detail.items_summary"
+            InputTemplate: |
+              CLOUDMART ORDER FAILED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has failed to process.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+
   OrderCompletedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -442,17 +541,15 @@ Resources:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-completed"
-      Description: Routes CloudMart OrderCompleted events to SNS.
+      Description: !Sub "Routes OrderCompleted events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
-        source:
-          - cloudmart.order
-        detail-type:
-          - OrderCompleted
+        source: [cloudmart.order]
+        detail-type: [OrderCompleted]
       Targets:
-        - Id: OrderCompletedLambdaCustomer
-          Arn: !GetAtt SnsPublisherFunction.Arn
+        - Id: AdminSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
           InputTransformer:
             InputPathsMap:
               orderId: "$.detail.order_id"
@@ -462,8 +559,65 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: !Sub |
-              {"message":"CLOUDMART CUSTOMER ORDER COMPLETED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been completed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart","topicArn":"${CloudMartCustomerOrderNotificationTopic}"}
+            InputTemplate: |
+              CLOUDMART ORDER COMPLETED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been completed.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+        - Id: CustomerSnsTarget
+          Arn: !Ref CloudMartCustomerOrderNotificationTopic
+          InputTransformer:
+            InputPathsMap:
+              orderId: "$.detail.order_id"
+              customerId: "$.detail.customer_id"
+              customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
+              status: "$.detail.status"
+              total: "$.detail.total_amount"
+              itemsSummary: "$.detail.items_summary"
+            InputTemplate: |
+              CLOUDMART ORDER COMPLETED
+
+              Order #<orderId>
+
+              STATUS: <status>
+
+              CUSTOMER
+              Name: <customerName>
+              Email: <customerEmail>
+
+              ITEMS PURCHASED
+              --------------------------------
+              <itemsSummary>
+
+              --------------------------------
+              TOTAL AMOUNT: <total>
+
+              Your order has been completed.
+
+              Thank you for shopping with CloudMart.
+
+              — CloudMart
+
+  # Validates the Authorization token used by protected API routes.
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
@@ -471,21 +625,24 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: ../lambdas/authorizer/
-      Role: !Ref LambdaAuthorizerRoleArn
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaAuthorizerRoleArn"
       Timeout: 10
       MemorySize: 128
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-        SubnetIds: !Ref PrivateSubnetIds
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
       Environment:
         Variables:
-          TOKEN_PARAMETER_NAME: !Ref TokenParameterName
-          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
-          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
-          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
-          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
-          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
+          TOKEN_PARAMETER_NAME: !Sub /cloudmart/${Environment}/auth/token
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -514,8 +671,9 @@ Resources:
       # Exact methodArn policies are request-specific, so disable authorizer caching.
       # TOKEN authorizer caching is keyed by the token and can reuse a policy
       # generated for a different API method/path.
-      AuthorizerResultTtlInSeconds: 0
+      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
 
+  # Handles product and inventory operations against RDS MySQL.
   ProductFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -531,15 +689,17 @@ Resources:
       MemorySize: 256
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-        SubnetIds: !Ref PrivateSubnetIds
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
       Environment:
         Variables:
-          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
-          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
-          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
-          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
-          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           EVENT_BUS_NAME: !Ref CloudMartEventBus
       Tags:
         Project: CloudMart
@@ -554,6 +714,7 @@ Resources:
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
 
+  # Handles customer order creation and order lifecycle events.
   OrderFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -563,20 +724,23 @@ Resources:
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: ../lambdas/order/
-      Role: !Ref OrderLambdaRoleArn
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-OrderLambdaRoleArn"
       Timeout: 15
       MemorySize: 256
       VpcConfig:
         SecurityGroupIds:
-          - !Ref LambdaSecurityGroupId
-        SubnetIds: !Ref PrivateSubnetIds
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
       Environment:
         Variables:
-          DB_HOST_PARAMETER_NAME: !Ref DBHostParameterName
-          DB_PORT_PARAMETER_NAME: !Ref DBPortParameterName
-          DB_NAME_PARAMETER_NAME: !Ref DBNameParameterName
-          DB_USERNAME_PARAMETER_NAME: !Ref DBUsernameParameterName
-          DB_PASSWORD_PARAMETER_NAME: !Ref DBPasswordParameterName
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           EVENT_BUS_NAME: !Ref CloudMartEventBus
           CUSTOMER_EMAIL: !Ref CustomerEmail
           CUSTOMER_ID: "1"
@@ -628,6 +792,37 @@ Resources:
       Principal: events.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !GetAtt OrderPlacedProcessingEventRule.Arn
+
+  # Creates the managed EC2 operations environment automatically.
+  OperationsEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      SubnetId:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-PublicSubnetId"
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2SecurityGroupId"
+      IamInstanceProfile:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2InstanceProfileName"
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-operations-ec2
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -e
+          dnf install -y mariadb105 || dnf install -y mariadb
+          mkdir -p /opt/cloudmart
+          cat > /opt/cloudmart/README.txt <<'EOF'
+          CloudMart Operations Environment
+          MySQL client is installed for RDS access.
+          Use AWS Systems Manager Session Manager to connect to this instance.
+          EOF
 
   OrdersResource:
     Type: AWS::ApiGateway::Resource
@@ -1043,6 +1238,9 @@ Outputs:
 
   AuthorizerLambdaArn:
     Value: !GetAtt LambdaAuthorizer.Arn
+
+  OperationsEC2InstanceId:
+    Value: !Ref OperationsEC2Instance
 
   ApiGatewayAuthorizerId:
     Value: !Ref ApiGatewayAuthorizer
