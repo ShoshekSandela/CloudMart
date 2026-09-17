@@ -105,279 +105,6 @@ def resolve_customer_identity(
 # CUSTOMER EMAIL VALIDATION
 # ============================================================
 
-def get_configured_customer_identity():
-    """Return the customer identity configured by deployment."""
-    customer_email = os.environ.get("CUSTOMER_EMAIL", "").strip().lower()
-    if not customer_email:
-        raise ValueError("Configured CUSTOMER_EMAIL is missing")
-
-    try:
-        customer_id = int(os.environ.get("CUSTOMER_ID", "1"))
-    except ValueError:
-        raise ValueError("Configured CUSTOMER_ID must be an integer")
-
-    if customer_id <= 0:
-        raise ValueError("Configured CUSTOMER_ID must be positive")
-
-    return customer_id, validate_customer_email(customer_email)
-
-
-def sync_configured_customer(
-    connection,
-    configured_email=None,
-    configured_customer_id=None,
-):
-    """
-    Synchronize the configured CloudMart customer.
-
-    CUSTOMER_ID (default 1) is the permanent identity.
-    CUSTOMER_EMAIL is the deployment/GitHub variable source of truth.
-
-    If that email currently belongs to another customer row, that duplicate
-    customer's orders are reassigned to the configured customer_id before
-    the duplicate row is removed. This avoids creating a new customer every
-    time the configured email changes.
-    """
-    if configured_email is None:
-        configured_email = os.environ.get("CUSTOMER_EMAIL", "").strip().lower()
-    else:
-        configured_email = str(configured_email).strip().lower()
-
-    if not configured_email:
-        raise ValueError("Configured customer email is missing")
-
-    configured_email = validate_customer_email(configured_email)
-
-    if configured_customer_id in (None, ""):
-        configured_customer_id = os.environ.get("CUSTOMER_ID", "1")
-
-    try:
-        configured_customer_id = int(configured_customer_id)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("Configured CUSTOMER_ID must be an integer") from exc
-
-    if configured_customer_id <= 0:
-        raise ValueError("Configured CUSTOMER_ID must be greater than zero")
-
-    with connection.cursor() as cursor:
-        # Lock the configured customer row when it exists.
-        cursor.execute(
-            """
-            SELECT customer_id, customer_name, customer_email
-            FROM customers
-            WHERE customer_id = %s
-            LIMIT 1
-            FOR UPDATE
-            """,
-            (configured_customer_id,),
-        )
-        customer = cursor.fetchone()
-
-        # If the configured email belongs to another row, consolidate that
-        # row into the configured customer ID before updating the email.
-        cursor.execute(
-            """
-            SELECT customer_id, customer_name, customer_email
-            FROM customers
-            WHERE LOWER(customer_email) = %s
-              AND customer_id <> %s
-            LIMIT 1
-            FOR UPDATE
-            """,
-            (configured_email, configured_customer_id),
-        )
-        duplicate = cursor.fetchone()
-
-        if duplicate:
-            duplicate_id = int(duplicate["customer_id"])
-
-            logger.warning(
-                "Consolidating duplicate configured customer email %s: "
-                "customer_id=%s -> customer_id=%s",
-                configured_email,
-                duplicate_id,
-                configured_customer_id,
-            )
-
-            # Reassign any existing orders first so the duplicate customer
-            # row can be safely removed.
-            cursor.execute(
-                """
-                UPDATE orders
-                SET customer_id = %s,
-                    customer_email = %s
-                WHERE customer_id = %s
-                """,
-                (
-                    configured_customer_id,
-                    configured_email,
-                    duplicate_id,
-                ),
-            )
-
-            # If the configured customer row does not exist, we can reuse
-            # the duplicate row's customer name when creating ID 1.
-            if not customer:
-                cursor.execute(
-                    """
-                    INSERT INTO customers
-                        (customer_id, customer_name, customer_email)
-                    VALUES (%s, %s, %s)
-                    """,
-                    (
-                        configured_customer_id,
-                        duplicate["customer_name"],
-                        configured_email,
-                    ),
-                )
-                customer = {
-                    "customer_id": configured_customer_id,
-                    "customer_name": duplicate["customer_name"],
-                    "customer_email": configured_email,
-                }
-
-            cursor.execute(
-                """
-                DELETE FROM customers
-                WHERE customer_id = %s
-                """,
-                (duplicate_id,),
-            )
-
-        elif not customer:
-            customer_name = configured_email.split("@", 1)[0]
-
-            cursor.execute(
-                """
-                INSERT INTO customers
-                    (customer_id, customer_name, customer_email)
-                VALUES (%s, %s, %s)
-                """,
-                (
-                    configured_customer_id,
-                    customer_name,
-                    configured_email,
-                ),
-            )
-
-            customer = {
-                "customer_id": configured_customer_id,
-                "customer_name": customer_name,
-                "customer_email": configured_email,
-            }
-
-        # The configured ID/email are authoritative.
-        cursor.execute(
-            """
-            UPDATE customers
-            SET customer_email = %s
-            WHERE customer_id = %s
-            """,
-            (
-                configured_email,
-                configured_customer_id,
-            ),
-        )
-
-        # Keep the denormalized legacy column synchronized for every
-        # historical order belonging to the configured customer.
-        cursor.execute(
-            """
-            UPDATE orders
-            SET customer_email = %s
-            WHERE customer_id = %s
-              AND (
-                    customer_email IS NULL
-                    OR LOWER(customer_email) <> %s
-              )
-            """,
-            (
-                configured_email,
-                configured_customer_id,
-                configured_email,
-            ),
-        )
-        orders_updated = cursor.rowcount
-
-        connection.commit()
-
-    logger.info(
-        "Configured customer synchronized: customer_id=%s customer_email=%s orders_updated=%s",
-        configured_customer_id,
-        configured_email,
-        orders_updated,
-    )
-
-    # Fetch the final row so callers always receive customer_name as well.
-    # This prevents create_order() from raising KeyError: 'customer_name'.
-    with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT customer_id, customer_name, customer_email
-            FROM customers
-            WHERE customer_id = %s
-            LIMIT 1
-            """,
-            (configured_customer_id,),
-        )
-        final_customer = cursor.fetchone()
-
-    if not final_customer:
-        raise LookupError(
-            f"Configured customer {configured_customer_id} was not found after synchronization"
-        )
-
-    return {
-        "customer_id": int(final_customer["customer_id"]),
-        "customer_name": final_customer["customer_name"],
-        "customer_email": final_customer["customer_email"],
-        "orders_updated": int(orders_updated),
-    }
-
-
-
-
-
-def validate_customer_email(value):
-    """
-    Validate an authenticated/configured customer email.
-
-    The Create Order API does not accept customer_email from the request
-    body. The email comes from the Authorization token's authorizer context
-    and is backed by the deployment configuration.
-    """
-    if value is None:
-        raise ValueError(
-            "customer_email is required"
-        )
-
-    if not isinstance(value, str):
-        raise ValueError(
-            "customer_email must be a string"
-        )
-
-    customer_email = value.strip()
-
-    if not customer_email:
-        raise ValueError(
-            "customer_email is required"
-        )
-
-    if len(customer_email) > 254:
-        raise ValueError(
-            "customer_email is too long"
-        )
-
-    if not re.fullmatch(
-        r"[^@\s]+@[^@\s]+\.[^@\s]+",
-        customer_email,
-    ):
-        raise ValueError(
-            "customer_email must be a valid email address"
-        )
-
-    return customer_email
-
 
 # ============================================================
 # SSM / RDS
@@ -1428,16 +1155,6 @@ def get_orders_by_customer(
 # LAMBDA HANDLER
 # ============================================================
 
-# ============================================================
-# CONFIGURED CUSTOMER EMAIL SYNCHRONIZATION
-#
-# GitHub Actions CUSTOMER_EMAIL is the source of truth.
-# This direct action updates the configured customer and all of its
-# existing orders so historical order rows remain consistent.
-# ============================================================
-
-
-
 def json_serializer(value):
     """Serialize database values that JSON does not handle natively."""
     if isinstance(value, Decimal):
@@ -1485,30 +1202,6 @@ def authorize_order_access(connection, auth, order):
 
 
 def lambda_handler(event, context):
-    if event.get("action") == "sync_configured_customer":
-        connection = None
-        try:
-            connection = get_db_connection()
-            return response(
-                200,
-                sync_configured_customer(connection),
-            )
-        except Exception as exc:
-            if connection:
-                connection.rollback()
-            logger.exception("Configured customer synchronization failed")
-            return response(
-                500,
-                {
-                    "message": "Configured customer synchronization failed",
-                    "error": str(exc),
-                },
-            )
-        finally:
-            if connection:
-                connection.close()
-
-
     # ------------------------------------------------------------
     # EventBridge: process OrderPlaced asynchronously.
     # This path is intentionally separate from API Gateway requests.
@@ -1675,20 +1368,44 @@ def lambda_handler(event, context):
                         "use the Authorization Bearer token"
                     )
 
-            _, items = validate_request(payload)
+            if auth["role"] == "CUSTOMER":
+                _, items = validate_request(payload)
+            else:
+                # ADMIN may choose a customer by ID, but customer email is
+                # never accepted from the request body.
+                admin_customer_id, items = validate_request(
+                    payload,
+                    require_customer_id=True,
+                )
 
             connection = get_db_connection()
 
             if auth["role"] == "CUSTOMER":
-                # CUSTOMER identity comes only from the Authorizer token.
+                # CUSTOMER identity comes exclusively from the Authorization
+                # token. The request body cannot override it.
                 customer = resolve_customer_identity(
                     connection,
                     auth,
                 )
             else:
-                # ADMIN creates orders for the configured CUSTOMER identity.
-                # Postman cannot select an arbitrary customer email.
-                customer = sync_configured_customer(connection)
+                # ADMIN can create an order for an existing customer by ID.
+                # Email still comes from RDS, never from the request body.
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT customer_id, customer_name, customer_email
+                        FROM customers
+                        WHERE customer_id = %s
+                        LIMIT 1
+                        """,
+                        (admin_customer_id,),
+                    )
+                    customer = cursor.fetchone()
+
+                if not customer:
+                    raise LookupError(
+                        f"Customer {admin_customer_id} not found"
+                    )
 
             order = create_order(
                 connection,

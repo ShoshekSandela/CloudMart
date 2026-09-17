@@ -258,15 +258,3 @@ jobs:
           jq -e '.statusCode == 200' /tmp/auth.json >/dev/null
           rm -f /tmp/auth.json
           echo "Authentication tokens initialized successfully."
-      - name: Synchronize configured customer
-        run: |
-          set -euo pipefail
-          aws lambda invoke \
-            --function-name "cloudmart-${ENVIRONMENT}-order" \
-            --region "$AWS_REGION" \
-            --cli-binary-format raw-in-base64-out \
-            --payload '{"action":"sync_configured_customer"}' \
-            /tmp/customer.json
-          jq -e '.statusCode == 200' /tmp/customer.json >/dev/null
-          rm -f /tmp/customer.json
-          echo "Configured customer synchronized successfully."

@@ -390,8 +390,6 @@ Resources:
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           EVENT_BUS_NAME: !Ref CloudMartEventBus
-          CUSTOMER_EMAIL: !Ref CustomerEmail
-          CUSTOMER_ID: "1"
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
