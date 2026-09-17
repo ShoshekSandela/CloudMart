@@ -186,8 +186,25 @@ jobs:
         run: cp database/schema.sql lambdas/product/schema.sql
       - name: Validate application template
         run: sam validate --template-file cloudformation/application-stack.yaml
+      - name: Clean previous SAM build
+        run: rm -rf .aws-sam
+
       - name: Build application
-        run: sam build --template-file cloudformation/application-stack.yaml
+        run: |
+          set -euo pipefail
+          sam build --template-file cloudformation/application-stack.yaml
+
+          # The Application stack must import the Network export; it must never
+          # create its own CloudMart-${ENVIRONMENT}-EC2SecurityGroupId export.
+          if grep -n "Export:" cloudformation/application-stack.yaml; then
+            echo "ERROR: application-stack.yaml must not define CloudFormation exports."
+            exit 1
+          fi
+
+          if grep -n "CloudMart-${ENVIRONMENT}-EC2SecurityGroupId" .aws-sam/build/template.yaml | grep "Export:"; then
+            echo "ERROR: built SAM template contains an EC2 security-group export."
+            exit 1
+          fi
       - name: Deploy application
         env:
           ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}

@@ -204,6 +204,12 @@ Resources:
     Properties:
       GroupDescription: CloudMart operations EC2 security group
       VpcId: !Ref CloudMartVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access to the CloudMart Operations EC2 instance
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
