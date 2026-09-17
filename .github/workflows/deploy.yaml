@@ -208,6 +208,23 @@ jobs:
 
           STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
+          # CloudFormation cannot update a stack while it is being deleted.
+          # Wait only for an in-progress deletion to finish; never delete a
+          # healthy application stack automatically.
+          STACK_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text 2>/dev/null || true)
+
+          if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
+            echo "Application stack is currently being deleted: $STACK_NAME"
+            echo "Waiting for CloudFormation deletion to complete..."
+
+            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            echo "Application stack deletion completed."
+          fi
+
+          # If the stack was deleted, SAM will create it again.
+          # If it still exists, SAM will update it.
+          # No automatic deletion is performed for any other stack state.
 
           # SAM creates/uses its managed packaging bucket; CloudMart does not provision a separate artifact bucket.
           sam deploy \
