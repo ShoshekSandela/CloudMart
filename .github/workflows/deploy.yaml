@@ -137,6 +137,24 @@ jobs:
             echo "Unfinished Data stack removed."
           fi
 
+          # Remove the legacy auth token parameter if it exists outside CloudFormation.
+          # The Data stack will recreate and own this parameter.
+          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
+
+          if aws ssm get-parameter \
+            --name "$AUTH_PARAMETER" \
+            --region "$AWS_REGION" \
+            >/dev/null 2>&1; then
+
+            echo "Removing legacy SSM parameter: $AUTH_PARAMETER"
+
+            aws ssm delete-parameter \
+              --name "$AUTH_PARAMETER" \
+              --region "$AWS_REGION"
+
+            echo "Legacy auth token parameter removed."
+          fi
+
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
             --stack-name "$STACK_NAME" \
