@@ -201,10 +201,36 @@ jobs:
             --role-name "cloudmart-${ENVIRONMENT}-cloudformation-execution-role" \
             --query 'Role.Arn' --output text)
 
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
+
+          # A failed Application deployment can leave the stack in
+          # ROLLBACK_COMPLETE, which cannot be updated. Remove only that
+          # failed stack automatically so the next deployment can recreate it.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
+
+          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+            echo "Application stack is ROLLBACK_COMPLETE: $STACK_NAME"
+            echo "Deleting the failed stack before redeployment..."
+
+            aws cloudformation delete-stack \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            echo "Failed Application stack deleted successfully."
+          fi
+
           # SAM creates/uses its managed packaging bucket; CloudMart does not provision a separate artifact bucket.
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
-            --stack-name "cloudmart-application-${ENVIRONMENT}" \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --role-arn "$CFN_ROLE_ARN" \
             --resolve-s3 \
