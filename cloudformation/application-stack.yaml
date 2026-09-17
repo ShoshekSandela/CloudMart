@@ -145,6 +145,7 @@ Please replenish this product soon.
       Protocol: email
       Endpoint: !Ref CustomerEmail
 
+
   CloudMartCustomerOrderNotificationTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -189,7 +190,27 @@ Please replenish this product soon.
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER PENDING\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order is pending.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: '"CLOUDMART ORDER PENDING
+
+Order #<orderId>
+
+STATUS: <status>
+
+CUSTOMER
+Name: <customerName>
+
+ITEMS PURCHASED
+--------------------------------
+<itemsSummary>
+
+--------------------------------
+TOTAL AMOUNT: <total>
+
+Your order has been placed and is pending confirmation.
+
+Thank you for shopping with CloudMart.
+
+— CloudMart"'
 
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
@@ -214,7 +235,27 @@ Please replenish this product soon.
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: '"CLOUDMART ORDER CONFIRMED
+
+Order #<orderId>
+
+STATUS: <status>
+
+CUSTOMER
+Name: <customerName>
+
+ITEMS PURCHASED
+--------------------------------
+<itemsSummary>
+
+--------------------------------
+TOTAL AMOUNT: <total>
+
+Your order has been confirmed.
+
+Thank you for shopping with CloudMart.
+
+— CloudMart"'
 
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
@@ -239,7 +280,27 @@ Please replenish this product soon.
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: '"CLOUDMART ORDER CANCELED
+
+Order #<orderId>
+
+STATUS: <status>
+
+CUSTOMER
+Name: <customerName>
+
+ITEMS PURCHASED
+--------------------------------
+<itemsSummary>
+
+--------------------------------
+TOTAL AMOUNT: <total>
+
+Your order has been canceled.
+
+Thank you for shopping with CloudMart.
+
+— CloudMart"'
 
   OrderFailedEventRule:
     Type: AWS::Events::Rule
@@ -264,8 +325,173 @@ Please replenish this product soon.
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: '"CLOUDMART ORDER FAILED
 
+Order #<orderId>
+
+STATUS: <status>
+
+CUSTOMER
+Name: <customerName>
+
+ITEMS PURCHASED
+--------------------------------
+<itemsSummary>
+
+--------------------------------
+TOTAL AMOUNT: <total>
+
+Your order has failed to process.
+
+Thank you for shopping with CloudMart.
+
+— CloudMart"'
+
+
+  LambdaAuthorizer:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-authorizer"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/authorizer/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaAuthorizerRoleArn"
+      Timeout: 10
+      MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          TOKEN_PARAMETER_NAME: !Sub /cloudmart/${Environment}/auth/token
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  LambdaAuthorizerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref LambdaAuthorizer
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*"
+
+  ApiGatewayAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    DependsOn: LambdaAuthorizerPermission
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
+      RestApiId: !Ref CloudMartRestApi
+      Type: TOKEN
+      IdentitySource: method.request.header.Authorization
+      AuthorizerUri:
+        Fn::Sub:
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
+          - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
+      # Exact methodArn policies are request-specific, so disable authorizer caching.
+      # TOKEN authorizer caching is keyed by the token and can reuse a policy
+      # generated for a different API method/path.
+      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
+
+  # Handles product and inventory operations against RDS MySQL.
+  ProductFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-product"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/product/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-ProductLambdaRoleArn"
+      Timeout: 15
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+          EVENT_BUS_NAME: !Ref CloudMartEventBus
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  ProductLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ProductFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
+
+  # Handles customer order creation and order lifecycle events.
+  OrderFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-order"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/order/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-OrderLambdaRoleArn"
+      Timeout: 15
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+          EVENT_BUS_NAME: !Ref CloudMartEventBus
+          CUSTOMER_EMAIL: !Ref CustomerEmail
+          CUSTOMER_ID: "1"
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  OrderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-order"
+      RetentionInDays: 30
+
+  OrderLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref OrderFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
 
   # ============================================================
   # ASYNCHRONOUS ORDER STOCK PROCESSING
@@ -783,6 +1009,3 @@ Outputs:
 
   OrderFailedRuleArn:
     Value: !GetAtt OrderFailedEventRule.Arn
-
-  OrderCompletedRuleArn:
-    Value: !GetAtt OrderCompletedEventRule.Arn
