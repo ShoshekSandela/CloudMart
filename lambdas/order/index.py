@@ -270,53 +270,6 @@ def validate_request(payload, require_customer_id=False):
 
 
 
-def get_or_create_customer(connection, customer_email, customer_name=None):
-    """
-    Find a customer by email. If the email does not exist, create a new
-    customer and return its customer_id and stored customer details.
-    """
-    customer_email = customer_email.strip().lower()
-
-    with connection.cursor() as cursor:
-        cursor.execute(
-            """
-            SELECT customer_id, customer_name, customer_email
-            FROM customers
-            WHERE LOWER(customer_email) = %s
-            LIMIT 1
-            FOR UPDATE
-            """,
-            (customer_email,),
-        )
-        customer = cursor.fetchone()
-
-        if customer:
-            return customer
-
-        if not customer_name:
-            customer_name = customer_email.split("@", 1)[0]
-
-        cursor.execute(
-            """
-            INSERT INTO customers (customer_name, customer_email)
-            VALUES (%s, %s)
-            """,
-            (customer_name, customer_email),
-        )
-
-        customer_id = cursor.lastrowid
-
-        cursor.execute(
-            """
-            SELECT customer_id, customer_name, customer_email
-            FROM customers
-            WHERE customer_id = %s
-            """,
-            (customer_id,),
-        )
-        return cursor.fetchone()
-
-
 # ============================================================
 # RDS transaction + order/order_items + inventory
 # ============================================================
@@ -1354,29 +1307,36 @@ def lambda_handler(event, context):
 
             auth = get_authorization_context(event)
 
-            # Customer identity must come exclusively from the Authorization
-            # token. Do not accept customer email/name/id from the request body.
-            if auth["role"] == "CUSTOMER":
-                forbidden_identity_fields = [
-                    field
-                    for field in ("customer_id", "customer_email", "customer_name")
-                    if field in payload
-                ]
-                if forbidden_identity_fields:
-                    raise ValueError(
-                        "Customer identity must not be supplied in the request body; "
-                        "use the Authorization Bearer token"
-                    )
+            # Customer identity must come from the authenticated token.
+            # customer_email and customer_name are never accepted from the
+            # request body. CUSTOMER requests also cannot supply customer_id.
+            forbidden_email_name_fields = [
+                field
+                for field in ("customer_email", "customer_name")
+                if field in payload
+            ]
+            if forbidden_email_name_fields:
+                raise ValueError(
+                    "customer_email and customer_name must not be supplied "
+                    "in the request body"
+                )
 
             if auth["role"] == "CUSTOMER":
+                if "customer_id" in payload:
+                    raise ValueError(
+                        "customer_id must not be supplied by a CUSTOMER; "
+                        "use the Authorization Bearer token"
+                    )
                 _, items = validate_request(payload)
-            else:
-                # ADMIN may choose a customer by ID, but customer email is
-                # never accepted from the request body.
+            elif auth["role"] == "ADMIN":
+                # ADMIN may choose an existing customer by customer_id.
+                # Customer email is always read from RDS.
                 admin_customer_id, items = validate_request(
                     payload,
                     require_customer_id=True,
                 )
+            else:
+                raise PermissionError("Valid CUSTOMER or ADMIN role is required")
 
             connection = get_db_connection()
 
