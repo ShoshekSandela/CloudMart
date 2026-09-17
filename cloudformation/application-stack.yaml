@@ -1,10 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Transform: AWS::Serverless-2016-10-31
 
 Description: >
-  CloudMart Application Stack.
-  Creates API Gateway, Lambda functions, EventBridge rules, SNS notifications,
-  and the Operations EC2 environment. IAM roles are imported from the IAM stack.
+  CloudMart Network Stack.
+  Creates the VPC, public/private subnets, route tables, security groups,
+  and VPC endpoints used by CloudMart.
 
 Parameters:
   Environment:
@@ -12,917 +11,323 @@ Parameters:
     Default: dev
     AllowedValues: [dev, test, prod]
 
-  ProjectName:
+  VpcCidr:
     Type: String
-    Default: cloudmart
+    Default: 10.0.0.0/16
 
-  AuthorizerCacheTTL:
-    Type: Number
-    Default: 0
-    MinValue: 0
-    MaxValue: 3600
-
-  NotificationEmail:
+  PublicSubnetCidr:
     Type: String
-    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    Default: 10.0.1.0/24
 
-  CustomerEmail:
+  PrivateSubnet1Cidr:
     Type: String
-    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+    Default: 10.0.11.0/24
 
-  ApiDeploymentVersion:
+  PrivateSubnet2Cidr:
     Type: String
-    Default: "1"
-
-  EC2InstanceType:
-    Type: String
-    Default: t3.micro
+    Default: 10.0.12.0/24
 
 Resources:
-
-  # REST API entry point for CloudMart clients.
-  CloudMartRestApi:
-    Type: AWS::ApiGateway::RestApi
+  # Main CloudMart VPC for all application resources.
+  CloudMartVPC:
+    Type: AWS::EC2::VPC
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-api"
-      Description: !Sub "CloudMart ${Environment} REST API"
-      EndpointConfiguration:
-        Types: [REGIONAL]
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  # Central event bus for order and inventory lifecycle events.
-  CloudMartEventBus:
-    Type: AWS::Events::EventBus
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-event-bus"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  # Sends low-stock notifications to the configured admin email.
-  CloudMartLowStockTopic:
-    Type: AWS::SNS::Topic
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
-
-  CloudMartLowStockEmailSubscription:
-    Type: AWS::SNS::Subscription
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TopicArn: !Ref CloudMartLowStockTopic
-      Protocol: email
-      Endpoint: !Ref NotificationEmail
-
-  CloudMartLowStockTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      Topics: [!Ref CloudMartLowStockTopic]
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowEventBridgePublish
-            Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref CloudMartLowStockTopic
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
-
-  LowStockEventRule:
-    Type: AWS::Events::Rule
-    DependsOn: CloudMartLowStockTopicPolicy
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: Routes low-stock Inventory Changed events directly to the admin SNS topic.
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source: [cloudmart.product]
-        detail-type: ["Inventory Changed"]
-        detail:
-          low_stock: [true]
-      Targets:
-        - Id: LowStockSnsTarget
-          Arn: !Ref CloudMartLowStockTopic
-          InputTransformer:
-            InputPathsMap:
-              productId: "$.detail.product_id"
-              productName: "$.detail.product_name"
-              oldStock: "$.detail.old_stock"
-              newStock: "$.detail.new_stock"
-              threshold: "$.detail.low_stock_threshold"
-            InputTemplate: >-
-              "CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"
-  CloudMartCustomerOrderNotificationTopic:
-    Type: AWS::SNS::Topic
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-customer-order-notifications"
-
-  CloudMartCustomerOrderNotificationSubscription:
-    Type: AWS::SNS::Subscription
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TopicArn: !Ref CloudMartCustomerOrderNotificationTopic
-      Protocol: email
-      Endpoint: !Ref CustomerEmail
-
-  CloudMartCustomerOrderNotificationTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      Topics: [!Ref CloudMartCustomerOrderNotificationTopic]
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowEventBridgePublish
-            Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref CloudMartCustomerOrderNotificationTopic
-            Condition:
-              ArnEquals:
-                aws:SourceArn:
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-placed"
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-confirmed"
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-canceled"
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-failed"
-
-  OrderPlacedEventRule:
-    Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-placed"
-      Description: !Sub "Routes OrderPlaced events directly to SNS."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source: [cloudmart.order]
-        detail-type: [OrderPlaced]
-      Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  OrderConfirmedEventRule:
-    Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
-      Description: !Sub "Routes OrderConfirmed events directly to SNS."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source: [cloudmart.order]
-        detail-type: [OrderConfirmed]
-      Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  OrderCanceledEventRule:
-    Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-canceled"
-      Description: !Sub "Routes OrderCanceled events directly to SNS."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source: [cloudmart.order]
-        detail-type: [OrderCanceled]
-      Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  OrderFailedEventRule:
-    Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-failed"
-      Description: !Sub "Routes OrderFailed events directly to SNS."
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source: [cloudmart.order]
-        detail-type: [OrderFailed]
-      Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  # Validates the Authorization token used by protected API routes.
-  LambdaAuthorizer:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-authorizer"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      CodeUri: ../lambdas/authorizer/
-      Role:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaAuthorizerRoleArn"
-      Timeout: 10
-      MemorySize: 128
-      VpcConfig:
-        SecurityGroupIds:
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
-        SubnetIds:
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
-      Environment:
-        Variables:
-          TOKEN_PARAMETER_NAME: !Sub /cloudmart/${Environment}/auth/token
-          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
-          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
-          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
-          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
-          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-      Tags:
-        Project: CloudMart
-        Environment: !Ref Environment
-
-  LambdaAuthorizerPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref LambdaAuthorizer
-      Principal: apigateway.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*"
-
-  ApiGatewayAuthorizer:
-    Type: AWS::ApiGateway::Authorizer
-    DependsOn: LambdaAuthorizerPermission
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-token-authorizer"
-      RestApiId: !Ref CloudMartRestApi
-      Type: TOKEN
-      IdentitySource: method.request.header.Authorization
-      AuthorizerUri:
-        Fn::Sub:
-          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaAuthorizerArn}/invocations
-          - LambdaAuthorizerArn: !GetAtt LambdaAuthorizer.Arn
-      # Exact methodArn policies are request-specific, so disable authorizer caching.
-      # TOKEN authorizer caching is keyed by the token and can reuse a policy
-      # generated for a different API method/path.
-      AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
-
-  # Handles product and inventory operations against RDS MySQL.
-  ProductFunction:
-    Type: AWS::Serverless::Function
-    Metadata:
-      BuildMethod: python3.12
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-product"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      CodeUri: ../lambdas/product/
-      Role:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-ProductLambdaRoleArn"
-      Timeout: 15
-      MemorySize: 256
-      VpcConfig:
-        SecurityGroupIds:
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
-        SubnetIds:
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
-      Environment:
-        Variables:
-          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
-          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
-          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
-          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
-          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          EVENT_BUS_NAME: !Ref CloudMartEventBus
-      Tags:
-        Project: CloudMart
-        Environment: !Ref Environment
-
-  ProductLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref ProductFunction
-      Principal: apigateway.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
-
-  # Handles customer order creation and order lifecycle events.
-  OrderFunction:
-    Type: AWS::Serverless::Function
-    Metadata:
-      BuildMethod: python3.12
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-order"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      CodeUri: ../lambdas/order/
-      Role:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-OrderLambdaRoleArn"
-      Timeout: 15
-      MemorySize: 256
-      VpcConfig:
-        SecurityGroupIds:
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
-        SubnetIds:
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
-          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
-      Environment:
-        Variables:
-          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
-          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
-          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
-          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
-          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          EVENT_BUS_NAME: !Ref CloudMartEventBus
-      Tags:
-        Project: CloudMart
-        Environment: !Ref Environment
-
-  OrderLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-order"
-      RetentionInDays: 30
-
-  OrderLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref OrderFunction
-      Principal: apigateway.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
-
-  # ============================================================
-  # ASYNCHRONOUS ORDER STOCK PROCESSING
-  # OrderPlaced -> check RDS stock -> CONFIRMED or FAILED
-  # ============================================================
-
-  OrderPlacedProcessingEventRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-placed-processing"
-      Description: Processes newly placed PENDING orders asynchronously.
-      EventBusName: !Ref CloudMartEventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - cloudmart.order
-        detail-type:
-          - OrderPlaced
-      Targets:
-        - Id: OrderPlacedProcessingLambda
-          Arn: !GetAtt OrderFunction.Arn
-
-  OrderPlacedProcessingLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref OrderFunction
-      Principal: events.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
-      SourceArn: !GetAtt OrderPlacedProcessingEventRule.Arn
-
-  # Creates the managed EC2 operations environment automatically.
-  OperationsEC2Instance:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: !Ref EC2InstanceType
-      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
-      SubnetId:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-PublicSubnetId"
-      SecurityGroupIds:
-        - Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2SecurityGroupId"
-      IamInstanceProfile:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2InstanceProfileName"
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: !Sub cloudmart-${Environment}-operations-ec2
+          Value: !Sub cloudmart-${Environment}-vpc
         - Key: Project
           Value: CloudMart
         - Key: Environment
           Value: !Ref Environment
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -e
-          dnf install -y mariadb105 || dnf install -y mariadb
-          mkdir -p /opt/cloudmart
-          cat > /opt/cloudmart/README.txt <<'EOF'
-          CloudMart Operations Environment
-          MySQL client is installed for RDS access.
-          Use AWS Systems Manager Session Manager to connect to this instance.
-          EOF
 
-  OrdersResource:
-    Type: AWS::ApiGateway::Resource
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
     Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !GetAtt CloudMartRestApi.RootResourceId
-      PathPart: orders
-
-  PatchOrdersMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - OrderLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref OrdersResource
-      HttpMethod: PATCH
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
-            - OrderLambdaArn: !GetAtt OrderFunction.Arn
-
-  OrdersByIdResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !Ref OrdersResource
-      PathPart: "{id}"
-
-  OrderStatusResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !Ref OrdersByIdResource
-      PathPart: status
-
-  PatchOrderStatusMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - OrderLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref OrderStatusResource
-      HttpMethod: PATCH
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.path.id: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
-            - OrderLambdaArn: !GetAtt OrderFunction.Arn
-
-  PostOrdersMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - OrderLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref OrdersResource
-      HttpMethod: POST
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
-            - OrderLambdaArn: !GetAtt OrderFunction.Arn
-
-  # TASK 4: GET /orders?customerId=X
-  GetOrdersMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - OrderLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref OrdersResource
-      HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.querystring.customerId: false
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
-            - OrderLambdaArn: !GetAtt OrderFunction.Arn
-
-  # TASK 3: GET /orders/{id}
-  GetOrderByIdMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - OrderLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref OrdersByIdResource
-      HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.path.id: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
-            - OrderLambdaArn: !GetAtt OrderFunction.Arn
-
-  # TASK: PUT /orders/{id}
-  # Updates an existing order, including item quantities.
-  PutOrderByIdMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - OrderLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref OrdersByIdResource
-      HttpMethod: PUT
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.path.id: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderLambdaArn}/invocations
-            - OrderLambdaArn: !GetAtt OrderFunction.Arn
-
-  ProductsResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !GetAtt CloudMartRestApi.RootResourceId
-      PathPart: products
-
-  ProductByIdResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !Ref ProductsResource
-      PathPart: "{id}"
-
-  GetProductsMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref ProductsResource
-      HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  PostProductsMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref ProductsResource
-      HttpMethod: POST
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  GetProductMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - ApiGatewayAuthorizer
-      - ProductLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref ProductByIdResource
-      HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  PutProductMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref ProductByIdResource
-      HttpMethod: PUT
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  DeleteProductMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref ProductByIdResource
-      HttpMethod: DELETE
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  # ============================================================
-  # CUSTOMERS
-  #
-  # Customer CRUD uses the existing Product Lambda so no new
-  # Lambda/source file is introduced.
-  # ============================================================
-
-  CustomersResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !GetAtt CloudMartRestApi.RootResourceId
-      PathPart: customers
-
-  CustomerByIdResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ParentId: !Ref CustomersResource
-      PathPart: "{id}"
-
-  GetAllCustomersMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - ApiGatewayAuthorizer
-      - ProductLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref CustomersResource
-      HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  GetCustomerMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - ProductLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref CustomerByIdResource
-      HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.path.id: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  PostCustomerMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - ProductLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref CustomersResource
-      HttpMethod: POST
-      AuthorizationType: NONE
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  PutCustomerMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - ProductLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref CustomerByIdResource
-      HttpMethod: PUT
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.path.id: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  DeleteCustomerMethod:
-    Type: AWS::ApiGateway::Method
-    DependsOn:
-      - ProductLambdaPermission
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      ResourceId: !Ref CustomerByIdResource
-      HttpMethod: DELETE
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
-      RequestParameters:
-        method.request.path.id: true
-      Integration:
-        Type: AWS_PROXY
-        IntegrationHttpMethod: POST
-        Uri:
-          Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
-
-  ApiGatewayDeploymentV6:
-    Type: AWS::ApiGateway::Deployment
-    DependsOn:
-      - ApiGatewayAuthorizer
-      - GetProductsMethod
-      - PostProductsMethod
-      - GetProductMethod
-      - PutProductMethod
-      - DeleteProductMethod
-      - PostOrdersMethod
-      - GetOrdersMethod
-      - GetOrderByIdMethod
-      - PutOrderByIdMethod
-      - PatchOrderStatusMethod
-      - PatchOrdersMethod
-      - GetAllCustomersMethod
-      - GetCustomerMethod
-      - PostCustomerMethod
-      - PutCustomerMethod
-      - DeleteCustomerMethod
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"
-
-  ApiGatewayStage:
-    Type: AWS::ApiGateway::Stage
-    Properties:
-      RestApiId: !Ref CloudMartRestApi
-      DeploymentId: !Ref ApiGatewayDeploymentV6
-      StageName: !Ref Environment
-      Description: !Sub "CloudMart ${Environment} API Gateway stage"
       Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-igw
+        - Key: Project
+          Value: CloudMart
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public subnet used by the Operations EC2 instance.
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      CidrBlock: !Ref PublicSubnetCidr
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-public-subnet
+        - Key: Tier
+          Value: Public
+        - Key: Project
+          Value: CloudMart
+
+  # Private application subnet used by Lambda functions.
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      CidrBlock: !Ref PrivateSubnet1Cidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-private-subnet-1
+        - Key: Tier
+          Value: Private
+        - Key: Purpose
+          Value: Application-and-RDS
+        - Key: Project
+          Value: CloudMart
+
+  # Private database subnet used by RDS.
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      CidrBlock: !Ref PrivateSubnet2Cidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-private-subnet-2
+        - Key: Tier
+          Value: Private
+        - Key: Purpose
+          Value: RDS
+        - Key: Project
+          Value: CloudMart
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-public-rt
+        - Key: Project
+          Value: CloudMart
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-private-rt
+        - Key: Project
+          Value: CloudMart
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet1
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet2
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Allows Lambda outbound access to RDS and AWS VPC endpoints.
+  LambdaSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudMart Lambda security group
+      VpcId: !Ref CloudMartVPC
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-lambda-sg
         - Key: Project
           Value: CloudMart
         - Key: Environment
           Value: !Ref Environment
+
+  # Allows MySQL only from the Lambda and EC2 security groups.
+  RDSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudMart RDS MySQL security group
+      VpcId: !Ref CloudMartVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-rds-sg
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security group for the Operations EC2 environment.
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudMart operations EC2 security group
+      VpcId: !Ref CloudMartVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH access to the CloudMart Operations EC2 instance
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-ec2-sg
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  VPCEndpointSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CloudMart VPC interface endpoint security group
+      VpcId: !Ref CloudMartVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref LambdaSecurityGroup
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-vpc-endpoint-sg
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Private S3 access without a NAT Gateway.
+  S3VPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.s3
+      VpcEndpointType: Gateway
+      RouteTableIds: [!Ref PrivateRouteTable]
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-s3-endpoint
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Private Systems Manager Parameter Store access.
+  SSMVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
+
+  # Private EventBridge API access from the VPC.
+  EventBridgeVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.events
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
+
+  # Private SNS API access from the VPC.
+  SNSVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sns
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
 Outputs:
-
-  RestApiId:
-    Value: !Ref CloudMartRestApi
-
-  RestApiUrl:
-    Value: !Sub "https://${CloudMartRestApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}/${Environment}"
-
-  ProductLambdaArn:
-    Value: !GetAtt ProductFunction.Arn
-
-  ProductLambdaName:
-    Value: !Ref ProductFunction
-
-  OrderLambdaArn:
-    Value: !GetAtt OrderFunction.Arn
-
-  OrderLambdaName:
-    Value: !Ref OrderFunction
-
-  AuthorizerLambdaArn:
-    Value: !GetAtt LambdaAuthorizer.Arn
-
-  OperationsEC2InstanceId:
-    Value: !Ref OperationsEC2Instance
-
-  ApiGatewayAuthorizerId:
-    Value: !Ref ApiGatewayAuthorizer
-
-  AuthorizerCacheTTL:
-    Value: !Ref AuthorizerCacheTTL
-
-  EventBusName:
-    Value: !Ref CloudMartEventBus
-
-  EventBusArn:
-    Value: !GetAtt CloudMartEventBus.Arn
-
-  LowStockTopicArn:
-    Value: !Ref CloudMartLowStockTopic
-
-  LowStockRuleArn:
-    Value: !GetAtt LowStockEventRule.Arn
-
-
-
-  CustomerOrderNotificationTopicArn:
-    Value: !Ref CloudMartCustomerOrderNotificationTopic
-
-  CustomerOrderNotificationTopicName:
-    Value: !GetAtt CloudMartCustomerOrderNotificationTopic.TopicName
-
-  OrderPlacedRuleArn:
-    Value: !GetAtt OrderPlacedEventRule.Arn
-
-  OrderConfirmedRuleArn:
-    Value: !GetAtt OrderConfirmedEventRule.Arn
-
-  OrderCanceledRuleArn:
-    Value: !GetAtt OrderCanceledEventRule.Arn
-
-  OrderFailedRuleArn:
-    Value: !GetAtt OrderFailedEventRule.Arn
-
+  VpcId:
+    Value: !Ref CloudMartVPC
+    Export:
+      Name: !Sub CloudMart-${Environment}-VpcId
+  PublicSubnetId:
+    Value: !Ref PublicSubnet
+    Export:
+      Name: !Sub CloudMart-${Environment}-PublicSubnetId
+  PrivateSubnet1Id:
+    Value: !Ref PrivateSubnet1
+    Export:
+      Name: !Sub CloudMart-${Environment}-PrivateSubnet1Id
+  PrivateSubnet2Id:
+    Value: !Ref PrivateSubnet2
+    Export:
+      Name: !Sub CloudMart-${Environment}-PrivateSubnet2Id
+  LambdaSecurityGroupId:
+    Value: !Ref LambdaSecurityGroup
+    Export:
+      Name: !Sub CloudMart-${Environment}-LambdaSecurityGroupId
+  RDSSecurityGroupId:
+    Value: !Ref RDSSecurityGroup
+    Export:
+      Name: !Sub CloudMart-${Environment}-RDSSecurityGroupId
+  EC2SecurityGroupId:
+    Value: !Ref EC2SecurityGroup
+    Export:
+      Name: !Sub CloudMart-${Environment}-EC2SecurityGroupId
+  VPCEndpointSecurityGroupId:
+    Value: !Ref VPCEndpointSecurityGroup
+    Export:
+      Name: !Sub CloudMart-${Environment}-VPCEndpointSecurityGroupId
