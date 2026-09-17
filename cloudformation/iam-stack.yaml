@@ -45,6 +45,18 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonSNSFullAccess
         - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
         - arn:aws:iam::aws:policy/IAMFullAccess
+      Policies:
+        - PolicyName: CloudMartCloudFormationTransformAccess
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SAM uses the Serverless transform when creating the application change set.
+              - Sid: AllowServerlessTransformChangeSet
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
       Tags:
         - Key: Project
           Value: CloudMart
