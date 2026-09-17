@@ -118,21 +118,7 @@ Resources:
               oldStock: "$.detail.old_stock"
               newStock: "$.detail.new_stock"
               threshold: "$.detail.low_stock_threshold"
-            InputTemplate: '"CLOUDMART LOW STOCK ALERT
-
-Product: <productName>
-Product ID: <productId>
-
-STOCK STATUS
-Previous Stock: <oldStock>
-Current Stock: <newStock>
-Low Stock Limit: <threshold>
-
-ACTION REQUIRED
-Please replenish this product soon.
-
-— CloudMart"'
-
+            InputTemplate: '"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"'
   CloudMartCustomerOrderNotificationTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -144,7 +130,6 @@ Please replenish this product soon.
       TopicArn: !Ref CloudMartCustomerOrderNotificationTopic
       Protocol: email
       Endpoint: !Ref CustomerEmail
-
 
   CloudMartCustomerOrderNotificationTopicPolicy:
     Type: AWS::SNS::TopicPolicy
@@ -173,7 +158,7 @@ Please replenish this product soon.
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed"
-      Description: !Sub "Routes OrderPlaced events to the customer SNS topic."
+      Description: !Sub "Routes OrderPlaced events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -187,38 +172,18 @@ Please replenish this product soon.
               orderId: "$.detail.order_id"
               customerId: "$.detail.customer_id"
               customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER PENDING
-
-Order #<orderId>
-
-STATUS: <status>
-
-CUSTOMER
-Name: <customerName>
-
-ITEMS PURCHASED
---------------------------------
-<itemsSummary>
-
---------------------------------
-TOTAL AMOUNT: <total>
-
-Your order has been placed and is pending confirmation.
-
-Thank you for shopping with CloudMart.
-
-— CloudMart"'
-
+            InputTemplate: '"CLOUDMART ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
-      Description: !Sub "Routes OrderConfirmed events to the customer SNS topic."
+      Description: !Sub "Routes OrderConfirmed events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -232,38 +197,18 @@ Thank you for shopping with CloudMart.
               orderId: "$.detail.order_id"
               customerId: "$.detail.customer_id"
               customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER CONFIRMED
-
-Order #<orderId>
-
-STATUS: <status>
-
-CUSTOMER
-Name: <customerName>
-
-ITEMS PURCHASED
---------------------------------
-<itemsSummary>
-
---------------------------------
-TOTAL AMOUNT: <total>
-
-Your order has been confirmed.
-
-Thank you for shopping with CloudMart.
-
-— CloudMart"'
-
+            InputTemplate: '"CLOUDMART ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     DependsOn:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled"
-      Description: !Sub "Routes OrderCanceled events to the customer SNS topic."
+      Description: !Sub "Routes OrderCanceled events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -277,38 +222,18 @@ Thank you for shopping with CloudMart.
               orderId: "$.detail.order_id"
               customerId: "$.detail.customer_id"
               customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER CANCELED
-
-Order #<orderId>
-
-STATUS: <status>
-
-CUSTOMER
-Name: <customerName>
-
-ITEMS PURCHASED
---------------------------------
-<itemsSummary>
-
---------------------------------
-TOTAL AMOUNT: <total>
-
-Your order has been canceled.
-
-Thank you for shopping with CloudMart.
-
-— CloudMart"'
-
+            InputTemplate: '"CLOUDMART ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed"
-      Description: !Sub "Routes OrderFailed events to the customer SNS topic."
+      Description: !Sub "Routes OrderFailed events directly to SNS."
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -322,32 +247,12 @@ Thank you for shopping with CloudMart.
               orderId: "$.detail.order_id"
               customerId: "$.detail.customer_id"
               customerName: "$.detail.customer_name"
+              customerEmail: "$.detail.customer_email"
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER FAILED
-
-Order #<orderId>
-
-STATUS: <status>
-
-CUSTOMER
-Name: <customerName>
-
-ITEMS PURCHASED
---------------------------------
-<itemsSummary>
-
---------------------------------
-TOTAL AMOUNT: <total>
-
-Your order has failed to process.
-
-Thank you for shopping with CloudMart.
-
-— CloudMart"'
-
-
+            InputTemplate: '"CLOUDMART ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+  # Validates the Authorization token used by protected API routes.
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
     Properties:
@@ -1009,3 +914,4 @@ Outputs:
 
   OrderFailedRuleArn:
     Value: !GetAtt OrderFailedEventRule.Arn
+
