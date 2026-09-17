@@ -182,6 +182,32 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+
+      - name: Ensure SNS recovery permissions
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/cloudmart-sns-recovery-policy.json <<'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "CloudMartSNSRecoveryDiscovery",
+                "Effect": "Allow",
+                "Action": [
+                  "sns:ListTopics",
+                  "sns:ListSubscriptionsByTopic"
+                ],
+                "Resource": "*"
+              }
+            ]
+          }
+          EOF
+
+          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartSNSRecoveryDiscovery"             --policy-document file:///tmp/cloudmart-sns-recovery-policy.json
+
+          echo "SNS recovery permissions are available."
+
       - name: Prepare schema
         run: cp database/schema.sql lambdas/product/schema.sql
       - name: Validate application template
@@ -216,6 +242,24 @@ jobs:
             --region "$AWS_REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
+
+          # A previous failed CREATE can leave the stack in REVIEW_IN_PROGRESS.
+          # Remove that unfinished stack before starting SNS recovery.
+          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "Application stack is REVIEW_IN_PROGRESS: $STACK_NAME"
+            echo "Deleting the unfinished stack..."
+
+            aws cloudformation delete-stack \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            echo "Unfinished Application stack removed."
+            STACK_STATUS=""
+          fi
 
           if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
             echo "Application stack is currently being deleted: $STACK_NAME"
