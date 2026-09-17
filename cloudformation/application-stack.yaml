@@ -68,11 +68,15 @@ Resources:
   # Sends low-stock notifications to the configured admin email.
   CloudMartLowStockTopic:
     Type: AWS::SNS::Topic
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
   CloudMartLowStockEmailSubscription:
     Type: AWS::SNS::Subscription
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
       Protocol: email
@@ -118,14 +122,19 @@ Resources:
               oldStock: "$.detail.old_stock"
               newStock: "$.detail.new_stock"
               threshold: "$.detail.low_stock_threshold"
-            InputTemplate: '"CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"'
+            InputTemplate: >-
+              "CLOUDMART LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"
   CloudMartCustomerOrderNotificationTopic:
     Type: AWS::SNS::Topic
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-customer-order-notifications"
 
   CloudMartCustomerOrderNotificationSubscription:
     Type: AWS::SNS::Subscription
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref CloudMartCustomerOrderNotificationTopic
       Protocol: email
@@ -176,7 +185,8 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: >-
+              "CLOUDMART ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\nThank you for shopping with CloudMart.\n\n— CloudMart"
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -201,7 +211,8 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: >-
+              "CLOUDMART ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\nThank you for shopping with CloudMart.\n\n— CloudMart"
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -226,7 +237,8 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: >-
+              "CLOUDMART ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\nThank you for shopping with CloudMart.\n\n— CloudMart"
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
@@ -251,7 +263,8 @@ Resources:
               status: "$.detail.status"
               total: "$.detail.total_amount"
               itemsSummary: "$.detail.items_summary"
-            InputTemplate: '"CLOUDMART ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\nThank you for shopping with CloudMart.\n\n— CloudMart"'
+            InputTemplate: >-
+              "CLOUDMART ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\nThank you for shopping with CloudMart.\n\n— CloudMart"
   # Validates the Authorization token used by protected API routes.
   LambdaAuthorizer:
     Type: AWS::Serverless::Function

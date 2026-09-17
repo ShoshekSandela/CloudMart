@@ -203,29 +203,6 @@ jobs:
 
           STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
-          # A failed Application deployment can leave the stack in
-          # ROLLBACK_COMPLETE, which cannot be updated. Remove only that
-          # failed stack automatically so the next deployment can recreate it.
-          STACK_STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || true)
-
-          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-            echo "Application stack is ROLLBACK_COMPLETE: $STACK_NAME"
-            echo "Deleting the failed stack before redeployment..."
-
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Failed Application stack deleted successfully."
-          fi
 
           # SAM creates/uses its managed packaging bucket; CloudMart does not provision a separate artifact bucket.
           sam deploy \
@@ -266,8 +243,9 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload '{"action":"initialize_database"}' \
             /tmp/db.json
-          cat /tmp/db.json
           jq -e '.statusCode == 200' /tmp/db.json >/dev/null
+          rm -f /tmp/db.json
+          echo "Database initialization completed successfully."
       - name: Initialize authentication tokens
         run: |
           set -euo pipefail
@@ -277,8 +255,9 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload '{"action":"initialize_tokens"}' \
             /tmp/auth.json
-          cat /tmp/auth.json
           jq -e '.statusCode == 200' /tmp/auth.json >/dev/null
+          rm -f /tmp/auth.json
+          echo "Authentication tokens initialized successfully."
       - name: Synchronize configured customer
         run: |
           set -euo pipefail
@@ -288,5 +267,6 @@ jobs:
             --cli-binary-format raw-in-base64-out \
             --payload '{"action":"sync_configured_customer"}' \
             /tmp/customer.json
-          cat /tmp/customer.json
           jq -e '.statusCode == 200' /tmp/customer.json >/dev/null
+          rm -f /tmp/customer.json
+          echo "Configured customer synchronized successfully."
