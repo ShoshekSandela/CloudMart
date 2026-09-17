@@ -118,8 +118,21 @@ Resources:
               oldStock: "$.detail.old_stock"
               newStock: "$.detail.new_stock"
               threshold: "$.detail.low_stock_threshold"
-            InputTemplate: |
-"CLOUDMART LOW STOCK ALERT\\n\\nProduct: <productName>\\nProduct ID: <productId>\\n\\nSTOCK STATUS\\nPrevious Stock: <oldStock>\\nCurrent Stock: <newStock>\\nLow Stock Limit: <threshold>\\n\\nACTION REQUIRED\\nPlease replenish this product soon.\\n\\n— CloudMart"
+            InputTemplate: '"CLOUDMART LOW STOCK ALERT
+
+Product: <productName>
+Product ID: <productId>
+
+STOCK STATUS
+Previous Stock: <oldStock>
+Current Stock: <newStock>
+Low Stock Limit: <threshold>
+
+ACTION REQUIRED
+Please replenish this product soon.
+
+— CloudMart"'
+
   CloudMartCustomerOrderNotificationTopic:
     Type: AWS::SNS::Topic
     Properties:
