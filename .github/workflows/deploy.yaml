@@ -211,36 +211,209 @@ jobs:
           # CloudFormation cannot update a stack while it is being deleted.
           # Wait for an in-progress deletion instead of starting another
           # deployment against the same stack.
-          STACK_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text 2>/dev/null || true)
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
           if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
             echo "Application stack is currently being deleted: $STACK_NAME"
             echo "Waiting for CloudFormation deletion to complete..."
 
-            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
 
             echo "Application stack deletion completed."
             STACK_STATUS=""
           fi
 
-          # ROLLBACK_COMPLETE stacks cannot be updated. Delete only this
-          # failed application stack so SAM can recreate it. Do not delete
-          # healthy application stacks automatically.
+          # A ROLLBACK_COMPLETE stack cannot be updated.
+          # Delete only the failed application stack so it can be recreated.
+          # SNS topics/subscriptions use Retain, so they are preserved and
+          # automatically re-adopted below before the full SAM deployment.
           if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
             echo "Application stack is ROLLBACK_COMPLETE: $STACK_NAME"
-            echo "Deleting the failed stack so it can be recreated..."
+            echo "Deleting the failed stack..."
 
-            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+            aws cloudformation delete-stack \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
 
-            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
 
             echo "Failed Application stack removed."
+            STACK_STATUS=""
           fi
 
-          # SAM creates the stack when it no longer exists and updates it
-          # when a healthy stack already exists.
-          # SAM uses its managed packaging bucket; CloudMart does not provision
-          # a separate artifact bucket.
+          # Recover retained SNS resources through CloudFormation.
+          # This prevents ResourceExistenceCheck failures after a failed
+          # Application stack was deleted while SNS resources were retained.
+          LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
+          CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
+
+          LOW_STOCK_TOPIC_ARN=$(aws sns list-topics \
+            --region "$AWS_REGION" \
+            --query 'Topics[].TopicArn' \
+            --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
+
+          CUSTOMER_TOPIC_ARN=$(aws sns list-topics \
+            --region "$AWS_REGION" \
+            --query 'Topics[].TopicArn' \
+            --output text | tr '\t' '\n' | grep -E ":${CUSTOMER_TOPIC_NAME}$" | head -n 1 || true)
+
+          rm -f /tmp/cloudmart-sns-recovery.yaml /tmp/cloudmart-sns-import.json
+
+          if [ -n "$LOW_STOCK_TOPIC_ARN" ] || [ -n "$CUSTOMER_TOPIC_ARN" ]; then
+            echo "Retained CloudMart SNS topic(s) detected."
+            echo "Re-adopting retained SNS resources into CloudFormation."
+
+            cat > /tmp/cloudmart-sns-recovery.yaml <<'EOF'
+          AWSTemplateFormatVersion: "2010-09-09"
+          Resources:
+          EOF
+
+            if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartLowStockTopic:
+            Type: AWS::SNS::Topic
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicName: "$LOW_STOCK_TOPIC_NAME"
+          EOF
+            fi
+
+            if [ -n "$CUSTOMER_TOPIC_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartCustomerOrderNotificationTopic:
+            Type: AWS::SNS::Topic
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicName: "$CUSTOMER_TOPIC_NAME"
+          EOF
+            fi
+
+            LOW_STOCK_SUBSCRIPTION_ARN=""
+            CUSTOMER_SUBSCRIPTION_ARN=""
+
+            if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
+              LOW_STOCK_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic \
+                --topic-arn "$LOW_STOCK_TOPIC_ARN" \
+                --region "$AWS_REGION" \
+                --output json | jq -r --arg endpoint "$ADMIN_EMAIL" \
+                  '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn' \
+                  | head -n 1 || true)
+            fi
+
+            if [ -n "$CUSTOMER_TOPIC_ARN" ]; then
+              CUSTOMER_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic \
+                --topic-arn "$CUSTOMER_TOPIC_ARN" \
+                --region "$AWS_REGION" \
+                --output json | jq -r --arg endpoint "$CUSTOMER_EMAIL" \
+                  '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn' \
+                  | head -n 1 || true)
+            fi
+
+            if [ -n "$LOW_STOCK_SUBSCRIPTION_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartLowStockEmailSubscription:
+            Type: AWS::SNS::Subscription
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicArn: "$LOW_STOCK_TOPIC_ARN"
+              Protocol: email
+              Endpoint: "$ADMIN_EMAIL"
+          EOF
+            fi
+
+            if [ -n "$CUSTOMER_SUBSCRIPTION_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartCustomerOrderNotificationSubscription:
+            Type: AWS::SNS::Subscription
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicArn: "$CUSTOMER_TOPIC_ARN"
+              Protocol: email
+              Endpoint: "$CUSTOMER_EMAIL"
+          EOF
+            fi
+
+            jq -n \
+              --arg lowTopic "$LOW_STOCK_TOPIC_NAME" \
+              --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN" \
+              --arg customerTopic "$CUSTOMER_TOPIC_NAME" \
+              --arg customerSub "$CUSTOMER_SUBSCRIPTION_ARN" \
+              --arg lowTopicArn "$LOW_STOCK_TOPIC_ARN" \
+              --arg customerTopicArn "$CUSTOMER_TOPIC_ARN" \
+              '[
+                (if $lowTopicArn != "" then {
+                  ResourceType:"AWS::SNS::Topic",
+                  LogicalResourceId:"CloudMartLowStockTopic",
+                  ResourceIdentifier:{TopicName:$lowTopic}
+                } else empty end),
+                (if $lowSub != "" then {
+                  ResourceType:"AWS::SNS::Subscription",
+                  LogicalResourceId:"CloudMartLowStockEmailSubscription",
+                  ResourceIdentifier:{SubscriptionArn:$lowSub}
+                } else empty end),
+                (if $customerTopicArn != "" then {
+                  ResourceType:"AWS::SNS::Topic",
+                  LogicalResourceId:"CloudMartCustomerOrderNotificationTopic",
+                  ResourceIdentifier:{TopicName:$customerTopic}
+                } else empty end),
+                (if $customerSub != "" then {
+                  ResourceType:"AWS::SNS::Subscription",
+                  LogicalResourceId:"CloudMartCustomerOrderNotificationSubscription",
+                  ResourceIdentifier:{SubscriptionArn:$customerSub}
+                } else empty end)
+              ]' > /tmp/cloudmart-sns-import.json
+
+            IMPORT_COUNT=$(jq 'length' /tmp/cloudmart-sns-import.json)
+
+            if [ "$IMPORT_COUNT" -gt 0 ]; then
+              echo "Importing $IMPORT_COUNT retained SNS resource(s)."
+
+              RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
+
+              # IMPORT creates the new CloudFormation stack from the
+              # already-existing SNS resources. No SNS resource is recreated.
+              aws cloudformation create-change-set \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$RECOVERY_CHANGESET" \
+                --change-set-type IMPORT \
+                --template-body file:///tmp/cloudmart-sns-recovery.yaml \
+                --resources-to-import file:///tmp/cloudmart-sns-import.json \
+                --role-arn "$CFN_ROLE_ARN" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --region "$AWS_REGION"
+
+              aws cloudformation wait change-set-create-complete \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$RECOVERY_CHANGESET" \
+                --region "$AWS_REGION"
+
+              aws cloudformation execute-change-set \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$RECOVERY_CHANGESET" \
+                --region "$AWS_REGION"
+
+              aws cloudformation wait stack-import-complete \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+
+              echo "Retained SNS resources successfully re-adopted."
+            fi
+          fi
+
+          # SAM updates the recovered stack or creates a new stack when no
+          # previous CloudFormation stack exists.
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
