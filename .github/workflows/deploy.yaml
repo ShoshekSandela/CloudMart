@@ -209,8 +209,8 @@ jobs:
           STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
           # CloudFormation cannot update a stack while it is being deleted.
-          # Wait only for an in-progress deletion to finish; never delete a
-          # healthy application stack automatically.
+          # Wait for an in-progress deletion instead of starting another
+          # deployment against the same stack.
           STACK_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text 2>/dev/null || true)
 
           if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
@@ -220,13 +220,27 @@ jobs:
             aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
 
             echo "Application stack deletion completed."
+            STACK_STATUS=""
           fi
 
-          # If the stack was deleted, SAM will create it again.
-          # If it still exists, SAM will update it.
-          # No automatic deletion is performed for any other stack state.
+          # ROLLBACK_COMPLETE stacks cannot be updated. Delete only this
+          # failed application stack so SAM can recreate it. Do not delete
+          # healthy application stacks automatically.
+          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+            echo "Application stack is ROLLBACK_COMPLETE: $STACK_NAME"
+            echo "Deleting the failed stack so it can be recreated..."
 
-          # SAM creates/uses its managed packaging bucket; CloudMart does not provision a separate artifact bucket.
+            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            echo "Failed Application stack removed."
+          fi
+
+          # SAM creates the stack when it no longer exists and updates it
+          # when a healthy stack already exists.
+          # SAM uses its managed packaging bucket; CloudMart does not provision
+          # a separate artifact bucket.
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
