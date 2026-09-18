@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_REGION: us-east-1
   ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
 
 jobs:
@@ -32,26 +32,17 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy network stack
+      - name: Validate and deploy network
         run: |
           set -euo pipefail
-
-          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
-
-          echo "Deploying Network stack: $STACK_NAME"
-          echo "Region: $AWS_REGION"
-          echo "Template: cloudformation/network-stack.yaml"
-
+          aws cloudformation validate-template --template-body file://cloudformation/network-stack.yaml --region "$AWS_REGION"
           aws cloudformation deploy \
             --template-file cloudformation/network-stack.yaml \
-            --stack-name "$STACK_NAME" \
+            --stack-name "cloudmart-network-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
+            --parameter-overrides Environment="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
-
-          echo "Network stack deployment completed."
 
   deploy-iam:
     name: Deploy IAM Stack
@@ -64,26 +55,19 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy IAM stack
+      - name: Validate and deploy IAM
         run: |
           set -euo pipefail
-
-          STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
-
-          echo "Deploying IAM stack: $STACK_NAME"
-          echo "Region: $AWS_REGION"
-          echo "Template: cloudformation/iam-stack.yaml"
-
+          aws cloudformation validate-template --template-body file://cloudformation/iam-stack.yaml --region "$AWS_REGION"
           aws cloudformation deploy \
             --template-file cloudformation/iam-stack.yaml \
-            --stack-name "$STACK_NAME" \
+            --stack-name "cloudmart-iam-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
+            --parameter-overrides Environment="$ENVIRONMENT" GitHubRepository="ShoshekSandela/CloudMart" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
-
-          echo "IAM stack deployment completed."
+          aws cloudformation describe-stacks --stack-name "cloudmart-iam-${ENVIRONMENT}" --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='GitHubActionsRoleArn'].OutputValue | [0]" --output text
 
   deploy-data:
     name: Deploy Data Stack
@@ -96,7 +80,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy data stack
+      - name: Validate and deploy data
         env:
           DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
           DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
@@ -104,72 +88,20 @@ jobs:
           set -euo pipefail
           test -n "$DB_USERNAME" || { echo "CLOUDMART_DB_USERNAME is missing"; exit 1; }
           test -n "$DB_PASSWORD" || { echo "CLOUDMART_DB_PASSWORD is missing"; exit 1; }
-
-          STACK_NAME="cloudmart-data-${ENVIRONMENT}"
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-
-          CFN_ROLE_ARN=$(aws iam get-role \
-            --role-name "$ROLE_NAME" \
-            --query 'Role.Arn' --output text)
-
-          # A failed first deployment can leave an empty REVIEW_IN_PROGRESS
-          # CloudFormation stack. Remove only that unfinished stack automatically.
-          STACK_STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || true)
-
-          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "Removing unfinished Data stack: $STACK_NAME"
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Unfinished Data stack removed."
-          fi
-
-          # Remove the legacy auth token parameter if it exists outside CloudFormation.
-          # The Data stack will recreate and own this parameter.
-          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
-
-          if aws ssm get-parameter \
-            --name "$AUTH_PARAMETER" \
-            --region "$AWS_REGION" \
-            >/dev/null 2>&1; then
-
-            echo "Removing legacy SSM parameter: $AUTH_PARAMETER"
-
-            aws ssm delete-parameter \
-              --name "$AUTH_PARAMETER" \
-              --region "$AWS_REGION"
-
-            echo "Legacy auth token parameter removed."
-          fi
-
+          aws cloudformation validate-template --template-body file://cloudformation/data-stack.yaml --region "$AWS_REGION"
           aws cloudformation deploy \
             --template-file cloudformation/data-stack.yaml \
-            --stack-name "$STACK_NAME" \
+            --stack-name "cloudmart-data-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
-            --role-arn "$CFN_ROLE_ARN" \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              DBName=cloudmart \
-              DBInstanceClass=db.t3.micro \
-              AllocatedStorage=20 \
-              DBUsername="$DB_USERNAME" \
-              DBPassword="$DB_PASSWORD" \
+            --parameter-overrides Environment="$ENVIRONMENT" DBName=cloudmart DBInstanceClass=db.t3.micro AllocatedStorage=20 DBUsername="$DB_USERNAME" DBPassword="$DB_PASSWORD" ExistingReportBucketName="cloudmart-${ENVIRONMENT}-reports" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
   deploy-application:
     name: Deploy Application Stack
     runs-on: ubuntu-latest
-    needs: deploy-data
+    needs:
+      - deploy-data
     steps:
       - uses: actions/checkout@v5
       - uses: aws-actions/setup-sam@v2
@@ -178,43 +110,104 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-
-      - name: Ensure SNS recovery permissions
+      - name: Reset imported or failed Application Stack
+        shell: bash
         run: |
           set -euo pipefail
 
-          cat > /tmp/cloudmart-sns-recovery-policy.json <<'EOF'
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Sid": "CloudMartSNSRecoveryDiscovery",
-                "Effect": "Allow",
-                "Action": [
-                  "sns:ListTopics",
-                  "sns:ListSubscriptionsByTopic"
-                ],
-                "Resource": "*"
-              }
-            ]
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
+          LOW_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
+          CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
+
+          echo "Checking Application stack status..."
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].StackStatus" \
+            --output text 2>/dev/null || echo "NOT_FOUND")
+
+          echo "Application stack status: $STATUS"
+
+          case "$STATUS" in
+            IMPORT_COMPLETE|ROLLBACK_COMPLETE|UPDATE_ROLLBACK_COMPLETE|CREATE_FAILED|REVIEW_IN_PROGRESS)
+              echo "Removing stale Application stack: $STATUS"
+              aws cloudformation delete-stack \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+
+              aws cloudformation wait stack-delete-complete \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+              ;;
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Application stack is healthy. It will be updated normally."
+              ;;
+            NOT_FOUND|DELETE_COMPLETE)
+              echo "Application stack is absent. Continuing with a clean create."
+              ;;
+            DELETE_IN_PROGRESS)
+              echo "Application stack is already deleting. Waiting..."
+              aws cloudformation wait stack-delete-complete \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+              ;;
+            *)
+              echo "ERROR: Application stack is in an unexpected state: $STATUS"
+              exit 1
+              ;;
+          esac
+
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          AWS_PARTITION=$(aws sts get-caller-identity --query Arn --output text | cut -d: -f2)
+          export ACCOUNT_ID AWS_PARTITION AWS_REGION
+
+          delete_topic_and_subscriptions() {
+            local topic_name="$1"
+            local topic_arn
+
+            topic_arn=$(aws sns list-topics \
+              --region "$AWS_REGION" \
+              --query "Topics[?TopicArn == 'arn:${AWS_PARTITION}:sns:${AWS_REGION}:${ACCOUNT_ID}:${topic_name}'].TopicArn | [0]" \
+              --output text 2>/dev/null || echo "None")
+
+            if [ -z "$topic_arn" ] || [ "$topic_arn" = "None" ]; then
+              echo "No existing SNS topic found: $topic_name"
+              return 0
+            fi
+
+            echo "Cleaning existing SNS topic: $topic_name"
+
+            mapfile -t subscriptions < <(aws sns list-subscriptions-by-topic \
+              --topic-arn "$topic_arn" \
+              --region "$AWS_REGION" \
+              --query "Subscriptions[].SubscriptionArn" \
+              --output text | tr '\t' '\n' | sed '/^$/d')
+
+            for subscription_arn in "${subscriptions[@]}"; do
+              if [ -n "$subscription_arn" ] && [ "$subscription_arn" != "None" ]; then
+                aws sns unsubscribe \
+                  --subscription-arn "$subscription_arn" \
+                  --region "$AWS_REGION" || true
+              fi
+            done
+
+            aws sns delete-topic \
+              --topic-arn "$topic_arn" \
+              --region "$AWS_REGION"
           }
-          EOF
 
-          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartSNSRecoveryDiscovery"             --policy-document file:///tmp/cloudmart-sns-recovery-policy.json
+          delete_topic_and_subscriptions "$LOW_TOPIC_NAME"
+          delete_topic_and_subscriptions "$CUSTOMER_TOPIC_NAME"
 
-          echo "SNS recovery permissions are available."
+          echo "Application stack reset completed. Next SAM deployment can create the stack normally."
 
       - name: Prepare schema
         run: cp database/schema.sql lambdas/product/schema.sql
-      - name: Validate application template
+      - name: Validate application
         run: sam validate --template-file cloudformation/application-stack.yaml
-      - name: Clean previous SAM build
-        run: rm -rf .aws-sam
-
       - name: Build application
-        run: |
-          set -euo pipefail
-          sam build --template-file cloudformation/application-stack.yaml
+        run: sam build --template-file cloudformation/application-stack.yaml
       - name: Deploy application
         env:
           ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
@@ -223,131 +216,14 @@ jobs:
           set -euo pipefail
           test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
           test -n "$CUSTOMER_EMAIL" || { echo "CLOUDMART_CUSTOMER_EMAIL is missing"; exit 1; }
-
-          CFN_ROLE_ARN=$(aws iam get-role \
-            --role-name "cloudmart-${ENVIRONMENT}-cloudformation-execution-role" \
-            --query 'Role.Arn' --output text)
-
-          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
-
-          # CloudFormation cannot update a stack while it is being deleted.
-          # Wait for an in-progress deletion instead of starting another
-          # deployment against the same stack.
-          STACK_STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || true)
-
-          # A previous failed CREATE can leave the stack in REVIEW_IN_PROGRESS.
-          # Remove that unfinished stack before starting SNS recovery.
-          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "Application stack is REVIEW_IN_PROGRESS: $STACK_NAME"
-            echo "Deleting the unfinished stack..."
-
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Unfinished Application stack removed."
-            STACK_STATUS=""
-          fi
-
-          if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
-            echo "Application stack is currently being deleted: $STACK_NAME"
-            echo "Waiting for CloudFormation deletion to complete..."
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Application stack deletion completed."
-            STACK_STATUS=""
-          fi
-
-          # A ROLLBACK_COMPLETE stack cannot be updated.
-          # Delete only the failed application stack so it can be recreated.
-          # SNS topics/subscriptions use Retain, so they are preserved and
-          # automatically re-adopted below before the full SAM deployment.
-          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-            echo "Application stack is ROLLBACK_COMPLETE: $STACK_NAME"
-            echo "Deleting the failed stack..."
-
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Failed Application stack removed."
-            STACK_STATUS=""
-          fi
-
-          # Recover retained SNS resources only when the Application stack no longer exists.
-          # If the stack still exists, its SNS resources are already managed by that stack.
-          LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
-          CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
-
-          LOW_STOCK_TOPIC_ARN=$(aws sns list-topics --region "$AWS_REGION" --query 'Topics[].TopicArn' --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
-          CUSTOMER_TOPIC_ARN=$(aws sns list-topics --region "$AWS_REGION" --query 'Topics[].TopicArn' --output text | tr '\t' '\n' | grep -E ":${CUSTOMER_TOPIC_NAME}$" | head -n 1 || true)
-
-          STACK_STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --region "$AWS_REGION" --query 'Stacks[0].StackStatus' --output text 2>/dev/null || true)
-
-          if [ -n "$LOW_STOCK_TOPIC_ARN" ] || [ -n "$CUSTOMER_TOPIC_ARN" ]; then
-            echo "Retained CloudMart SNS topic(s) detected."
-
-            if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
-              echo "Application stack does not exist. Importing retained SNS resources into a new stack."
-
-              LOW_STOCK_SUBSCRIPTION_ARN=""
-              CUSTOMER_SUBSCRIPTION_ARN=""
-
-              if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
-                LOW_STOCK_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic --topic-arn "$LOW_STOCK_TOPIC_ARN" --region "$AWS_REGION" --output json | jq -r --arg endpoint "$ADMIN_EMAIL" '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn' | head -n 1 || true)
-              fi
-
-              if [ -n "$CUSTOMER_TOPIC_ARN" ]; then
-                CUSTOMER_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic --topic-arn "$CUSTOMER_TOPIC_ARN" --region "$AWS_REGION" --output json | jq -r --arg endpoint "$CUSTOMER_EMAIL" '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn' | head -n 1 || true)
-              fi
-
-              jq -n --arg lowTopic "$LOW_STOCK_TOPIC_NAME" --arg lowTopicArn "$LOW_STOCK_TOPIC_ARN" --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN" --arg adminEmail "$ADMIN_EMAIL" --arg customerTopic "$CUSTOMER_TOPIC_NAME" --arg customerTopicArn "$CUSTOMER_TOPIC_ARN" --arg customerSub "$CUSTOMER_SUBSCRIPTION_ARN" --arg customerEmail "$CUSTOMER_EMAIL" '{AWSTemplateFormatVersion:"2010-09-09",Resources:((if $lowTopicArn!="" then {CloudMartLowStockTopic:{Type:"AWS::SNS::Topic",DeletionPolicy:"Retain",UpdateReplacePolicy:"Retain",Properties:{TopicName:$lowTopic}}} else {} end)+(if $lowSub!="" then {CloudMartLowStockEmailSubscription:{Type:"AWS::SNS::Subscription",DeletionPolicy:"Retain",UpdateReplacePolicy:"Retain",Properties:{TopicArn:$lowTopicArn,Protocol:"email",Endpoint:$adminEmail}}} else {} end)+(if $customerTopicArn!="" then {CloudMartCustomerOrderNotificationTopic:{Type:"AWS::SNS::Topic",DeletionPolicy:"Retain",UpdateReplacePolicy:"Retain",Properties:{TopicName:$customerTopic}}} else {} end)+(if $customerSub!="" then {CloudMartCustomerOrderNotificationSubscription:{Type:"AWS::SNS::Subscription",DeletionPolicy:"Retain",UpdateReplacePolicy:"Retain",Properties:{TopicArn:$customerTopicArn,Protocol:"email",Endpoint:$customerEmail}}} else {} end))}' > /tmp/cloudmart-sns-recovery.json
-
-              jq -n --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN" --arg customerSub "$CUSTOMER_SUBSCRIPTION_ARN" --arg lowTopicArn "$LOW_STOCK_TOPIC_ARN" --arg customerTopicArn "$CUSTOMER_TOPIC_ARN" '[ (if $lowTopicArn!="" then {ResourceType:"AWS::SNS::Topic",LogicalResourceId:"CloudMartLowStockTopic",ResourceIdentifier:{TopicArn:$lowTopicArn}} else empty end), (if $lowSub!="" then {ResourceType:"AWS::SNS::Subscription",LogicalResourceId:"CloudMartLowStockEmailSubscription",ResourceIdentifier:{Arn:$lowSub}} else empty end), (if $customerTopicArn!="" then {ResourceType:"AWS::SNS::Topic",LogicalResourceId:"CloudMartCustomerOrderNotificationTopic",ResourceIdentifier:{TopicArn:$customerTopicArn}} else empty end), (if $customerSub!="" then {ResourceType:"AWS::SNS::Subscription",LogicalResourceId:"CloudMartCustomerOrderNotificationSubscription",ResourceIdentifier:{Arn:$customerSub}} else empty end) ]' > /tmp/cloudmart-sns-import.json
-
-              jq -e '.Resources | type == "object" and length > 0' /tmp/cloudmart-sns-recovery.json >/dev/null
-              jq -e 'type == "array" and length > 0' /tmp/cloudmart-sns-import.json >/dev/null
-
-              RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
-              aws cloudformation create-change-set --stack-name "$STACK_NAME" --change-set-name "$RECOVERY_CHANGESET" --change-set-type IMPORT --template-body file:///tmp/cloudmart-sns-recovery.json --resources-to-import file:///tmp/cloudmart-sns-import.json --role-arn "$CFN_ROLE_ARN" --capabilities CAPABILITY_NAMED_IAM --region "$AWS_REGION"
-              aws cloudformation wait change-set-create-complete --stack-name "$STACK_NAME" --change-set-name "$RECOVERY_CHANGESET" --region "$AWS_REGION"
-              aws cloudformation execute-change-set --stack-name "$STACK_NAME" --change-set-name "$RECOVERY_CHANGESET" --region "$AWS_REGION"
-              aws cloudformation wait stack-import-complete --stack-name "$STACK_NAME" --region "$AWS_REGION"
-              echo "Retained SNS resources successfully re-adopted."
-            else
-              echo "Application stack still exists with status: $STACK_STATUS"
-              echo "Skipping SNS import because those logical resources already belong to this stack."
-            fi
-          else
-            echo "No retained CloudMart SNS topics detected."
-          fi
-
-          # SAM updates the recovered stack or creates a new stack when no
-          # previous CloudFormation stack exists.
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
-            --stack-name "$STACK_NAME" \
+            --stack-name "cloudmart-application-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
-            --role-arn "$CFN_ROLE_ARN" \
-            --resolve-s3 \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
+            --resolve-s3 \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
               ProjectName=cloudmart \
@@ -371,24 +247,18 @@ jobs:
       - name: Initialize database
         run: |
           set -euo pipefail
-          aws lambda invoke \
-            --function-name "cloudmart-${ENVIRONMENT}-product" \
-            --region "$AWS_REGION" \
-            --cli-binary-format raw-in-base64-out \
-            --payload '{"action":"initialize_database"}' \
-            /tmp/db.json
+          aws lambda invoke --function-name "cloudmart-${ENVIRONMENT}-product" --region "$AWS_REGION" --cli-binary-format raw-in-base64-out --payload '{"action":"initialize_database"}' /tmp/db.json
+          cat /tmp/db.json
           jq -e '.statusCode == 200' /tmp/db.json >/dev/null
-          rm -f /tmp/db.json
-          echo "Database initialization completed successfully."
       - name: Initialize authentication tokens
         run: |
           set -euo pipefail
-          aws lambda invoke \
-            --function-name "cloudmart-${ENVIRONMENT}-authorizer" \
-            --region "$AWS_REGION" \
-            --cli-binary-format raw-in-base64-out \
-            --payload '{"action":"initialize_tokens"}' \
-            /tmp/auth.json
+          aws lambda invoke --function-name "cloudmart-${ENVIRONMENT}-authorizer" --region "$AWS_REGION" --cli-binary-format raw-in-base64-out --payload '{"action":"initialize_tokens"}' /tmp/auth.json
+          cat /tmp/auth.json
           jq -e '.statusCode == 200' /tmp/auth.json >/dev/null
-          rm -f /tmp/auth.json
-          echo "Authentication tokens initialized successfully."
+      - name: Synchronize configured customer
+        run: |
+          set -euo pipefail
+          aws lambda invoke --function-name "cloudmart-${ENVIRONMENT}-order" --region "$AWS_REGION" --cli-binary-format raw-in-base64-out --payload '{"action":"sync_configured_customer"}' /tmp/customer.json
+          cat /tmp/customer.json
+          jq -e '.statusCode == 200' /tmp/customer.json >/dev/null
