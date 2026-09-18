@@ -193,6 +193,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Ensure GitHub Actions bootstrap permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 
           cat > /tmp/cloudmart-bootstrap-policy.json <<'EOF'
@@ -237,6 +242,7 @@ jobs:
           aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartBootstrapRuntimePermissions"             --policy-document file:///tmp/cloudmart-bootstrap-policy.json
 
           echo "GitHub Actions bootstrap permissions are available."
+
       - name: Prepare schema
         run: cp database/schema.sql lambdas/product/schema.sql
       - name: Validate application template
