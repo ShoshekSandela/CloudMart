@@ -35,8 +35,23 @@ jobs:
       - name: Deploy network stack
         run: |
           set -euo pipefail
+
           STACK_NAME="cloudmart-network-${ENVIRONMENT}"
-          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
+
+          echo "Deploying Network stack: $STACK_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Template: cloudformation/network-stack.yaml"
+
+          aws cloudformation deploy \
+            --template-file cloudformation/network-stack.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+          echo "Network stack deployment completed."
 
   deploy-iam:
     name: Deploy IAM Stack
@@ -52,8 +67,23 @@ jobs:
       - name: Deploy IAM stack
         run: |
           set -euo pipefail
+
           STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
-          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
+
+          echo "Deploying IAM stack: $STACK_NAME"
+          echo "Region: $AWS_REGION"
+          echo "Template: cloudformation/iam-stack.yaml"
+
+          aws cloudformation deploy \
+            --template-file cloudformation/iam-stack.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+          echo "IAM stack deployment completed."
 
   deploy-data:
     name: Deploy Data Stack
