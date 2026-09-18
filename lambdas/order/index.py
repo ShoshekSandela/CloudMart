@@ -572,12 +572,12 @@ def publish_order_placed_event(order):
         "total_amount": float(
             order["total_amount"]
         ),
-        "items_summary": "\n\n".join(
+        "items_summary": "\\n\\n".join(
             [
-                f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\n"
-                f"Product ID: {item['product_id']}\n"
-                f"Quantity: {item['quantity']}\n"
-                f"Unit Price: {float(item['unit_price']):.2f}\n"
+                f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\\n"
+                f"Product ID: {item['product_id']}\\n"
+                f"Quantity: {item['quantity']}\\n"
+                f"Unit Price: {float(item['unit_price']):.2f}\\n"
                 f"Subtotal: {float(item['subtotal']):.2f}"
                 for item in order["items"]
             ]
@@ -629,12 +629,12 @@ def publish_order_event(detail_type, order, failure_reason=None):
         "status": order.get("status"),
         "failure_reason": failure_reason if detail_type == "OrderFailed" else None,
         "total_amount": float(order["total_amount"]),
-        "items_summary": "\n\n".join(
+        "items_summary": "\\n\\n".join(
             [
-                f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\n"
-                f"Product ID: {item['product_id']}\n"
-                f"Quantity: {item['quantity']}\n"
-                f"Unit Price: {float(item['unit_price']):.2f}\n"
+                f"Product: {item.get('product_name', 'Product ' + str(item['product_id']))}\\n"
+                f"Product ID: {item['product_id']}\\n"
+                f"Quantity: {item['quantity']}\\n"
+                f"Unit Price: {float(item['unit_price']):.2f}\\n"
                 f"Subtotal: {float(item['subtotal']):.2f}"
                 for item in (order.get("items") or [])
             ]
