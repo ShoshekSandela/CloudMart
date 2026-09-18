@@ -392,7 +392,7 @@ jobs:
                 )
               }' > /tmp/cloudmart-sns-recovery.json
 
-            # Import identifiers must use TopicName for topics and Arn for
+            # Import identifiers must use TopicArn for topics and Arn for
             # subscriptions. SubscriptionArn is not the CloudFormation
             # resource-import identifier.
             jq -n \
@@ -406,7 +406,7 @@ jobs:
                 (if $lowTopicArn != "" then {
                   ResourceType:"AWS::SNS::Topic",
                   LogicalResourceId:"CloudMartLowStockTopic",
-                  ResourceIdentifier:{TopicName:$lowTopic}
+                  ResourceIdentifier:{TopicArn:$lowTopicArn}
                 } else empty end),
                 (if $lowSub != "" then {
                   ResourceType:"AWS::SNS::Subscription",
@@ -416,7 +416,7 @@ jobs:
                 (if $customerTopicArn != "" then {
                   ResourceType:"AWS::SNS::Topic",
                   LogicalResourceId:"CloudMartCustomerOrderNotificationTopic",
-                  ResourceIdentifier:{TopicName:$customerTopic}
+                  ResourceIdentifier:{TopicArn:$customerTopicArn}
                 } else empty end),
                 (if $customerSub != "" then {
                   ResourceType:"AWS::SNS::Subscription",
