@@ -41,55 +41,6 @@ Resources:
   # This attaches the required read-only SNS permissions to the
   # existing CloudMart-GitHubActions-Role.
 
-  GitHubActionsSnsVerificationPolicy:
-    Type: AWS::IAM::Policy
-
-    Properties:
-      PolicyName: CloudMartGitHubActionsSnsVerificationPolicy
-
-      Roles:
-        - !Ref GitHubActionsRoleName
-
-      PolicyDocument:
-        Version: "2012-10-17"
-
-        Statement:
-
-          - Sid: ListLowStockTopicSubscriptions
-            Effect: Allow
-            Action:
-              - sns:ListSubscriptionsByTopic
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock
-
-          - Sid: GetLowStockSubscriptionAttributes
-            Effect: Allow
-            Action:
-              - sns:GetSubscriptionAttributes
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock:*
-
-          - Sid: ListOrderNotificationTopicSubscriptions
-            Effect: Allow
-            Action:
-              - sns:ListSubscriptionsByTopic
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
-
-          - Sid: SubscribeToOrderNotificationTopic
-            Effect: Allow
-            Action:
-              - sns:Subscribe
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
-
-          - Sid: GetOrderNotificationSubscriptionAttributes
-            Effect: Allow
-            Action:
-              - sns:GetSubscriptionAttributes
-            Resource:
-              - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
-
 
   # =========================================================
   # GITHUB ACTIONS LAMBDA INITIALIZATION PERMISSION
@@ -99,40 +50,6 @@ Resources:
   # application stack is deployed. This permission belongs to the
   # GitHub Actions role, not to the Lambda Authorizer execution role.
   #
-
-  GitHubActionsAuthorizerInitializationPolicy:
-    Type: AWS::IAM::Policy
-
-    Properties:
-      PolicyName: CloudMartGitHubActionsAuthorizerInitializationPolicy
-
-      Roles:
-        - !Ref GitHubActionsRoleName
-
-      PolicyDocument:
-        Version: "2012-10-17"
-
-        Statement:
-
-          - Sid: InitializeCloudMartAuthorizer
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-authorizer
-
-          - Sid: InvokeCloudMartOrderLambda
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-order
-          - Sid: InitializeCloudMartDatabase
-            Effect: Allow
-            Action:
-              - lambda:InvokeFunction
-            Resource:
-              - !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-product
 
 
   # =========================================================
