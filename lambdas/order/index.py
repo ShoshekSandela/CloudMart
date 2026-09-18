@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import re
+import time
 from decimal import Decimal
 from datetime import date, datetime
 
@@ -493,25 +494,73 @@ def process_order_placed_event(connection, order_id):
     return True, new_status, failure_reason
 
 
+def put_event_with_retry(entry, event_name, max_attempts=3):
+    """
+    Publish one EventBridge event with bounded retries.
+
+    EventBridge put_events can return a successful HTTP response while an
+    individual entry fails. Retry failed entries before giving up so an
+    order notification is not lost because of a transient EventBridge error.
+    """
+    last_result = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            result = events.put_events(Entries=[entry])
+            last_result = result
+
+            if result.get("FailedEntryCount", 0) == 0:
+                logger.info(
+                    "%s EventBridge event published successfully on attempt %s",
+                    event_name,
+                    attempt,
+                )
+                return True
+
+            logger.error(
+                "%s EventBridge publish failed on attempt %s: %s",
+                event_name,
+                attempt,
+                json.dumps(result, default=json_serializer),
+            )
+        except Exception:
+            logger.exception(
+                "%s EventBridge publish raised an exception on attempt %s",
+                event_name,
+                attempt,
+            )
+
+        if attempt < max_attempts:
+            time.sleep(attempt)
+
+    logger.error(
+        "%s EventBridge event could not be published after %s attempts: %s",
+        event_name,
+        max_attempts,
+        json.dumps(last_result, default=json_serializer),
+    )
+    return False
+
+
 def publish_inventory_event_from_order(product_id, product_name, old_stock, new_stock, threshold):
     """Publish the existing Product Lambda inventory event shape from Order Lambda."""
     detail = {"product_id": int(product_id), "product_name": product_name,
               "old_stock": int(old_stock), "new_stock": int(new_stock),
               "low_stock_threshold": int(threshold),
               "low_stock": int(new_stock) <= int(threshold)}
-    try:
-        result = events.put_events(Entries=[{
-            "Source": "cloudmart.product", "DetailType": "Inventory Changed",
-            "EventBusName": os.environ["EVENT_BUS_NAME"], "Detail": json.dumps(detail)
-        }])
-        if result.get("FailedEntryCount", 0) > 0:
-            logger.error("Inventory Changed event failed: %s", json.dumps(result, default=json_serializer))
-            return False
+    entry = {
+        "Source": "cloudmart.product",
+        "DetailType": "Inventory Changed",
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Detail": json.dumps(detail),
+    }
+
+    published = put_event_with_retry(entry, "Inventory Changed")
+    if published:
         logger.info("Inventory Changed event published: %s", json.dumps(detail))
-        return True
-    except Exception:
-        logger.exception("Unable to publish Inventory Changed event")
-        return False
+    else:
+        logger.error("Unable to publish Inventory Changed event: %s", json.dumps(detail))
+    return published
 
 def publish_order_placed_event(order):
     detail = {
@@ -549,44 +598,22 @@ def publish_order_placed_event(order):
         ],
     }
 
-    try:
-        result = events.put_events(
-            Entries=[
-                {
-                    "Source": "cloudmart.order",
-                    "DetailType": "OrderPlaced",
-                    "EventBusName": os.environ[
-                        "EVENT_BUS_NAME"
-                    ],
-                    "Detail": json.dumps(
-                        detail
-                    ),
-                }
-            ]
+    entry = {
+        "Source": "cloudmart.order",
+        "DetailType": "OrderPlaced",
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Detail": json.dumps(detail),
+    }
+
+    published = put_event_with_retry(entry, "OrderPlaced")
+    if published:
+        logger.info("OrderPlaced event published: %s", json.dumps(detail))
+    else:
+        logger.error(
+            "Order %s was created but OrderPlaced could not be published",
+            order["order_id"],
         )
-
-        if result.get("FailedEntryCount", 0) > 0:
-            logger.error(
-                "OrderPlaced event failed: %s",
-                json.dumps(
-                    result,
-                    default=json_serializer,
-                ),
-            )
-            return False
-
-        logger.info(
-            "OrderPlaced event published: %s",
-            json.dumps(detail),
-        )
-
-        return True
-
-    except Exception:
-        logger.exception(
-            "Unable to publish OrderPlaced event"
-        )
-        return False
+    return published
 
 
 # ============================================================
@@ -624,36 +651,27 @@ def publish_order_event(detail_type, order, failure_reason=None):
         ],
     }
 
-    try:
-        result = events.put_events(
-            Entries=[
-                {
-                    "Source": "cloudmart.order",
-                    "DetailType": detail_type,
-                    "EventBusName": os.environ["EVENT_BUS_NAME"],
-                    "Detail": json.dumps(detail),
-                }
-            ]
-        )
+    entry = {
+        "Source": "cloudmart.order",
+        "DetailType": detail_type,
+        "EventBusName": os.environ["EVENT_BUS_NAME"],
+        "Detail": json.dumps(detail),
+    }
 
-        if result.get("FailedEntryCount", 0) != 0:
-            logger.error(
-                "%s event failed: %s",
-                detail_type,
-                json.dumps(result, default=json_serializer),
-            )
-            return False
-
+    published = put_event_with_retry(entry, detail_type)
+    if published:
         logger.info(
             "%s event published: %s",
             detail_type,
             json.dumps(detail, default=json_serializer),
         )
-        return True
-
-    except Exception:
-        logger.exception("Unable to publish %s event", detail_type)
-        return False
+    else:
+        logger.error(
+            "%s event could not be published for order %s",
+            detail_type,
+            order["order_id"],
+        )
+    return published
 
 
 def update_order_status(connection, order_id, new_status):

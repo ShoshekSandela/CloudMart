@@ -164,6 +164,8 @@ Resources:
   OrderPlacedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartCustomerOrderNotificationSubscription
+      - CloudMartCustomerOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed"
@@ -190,6 +192,8 @@ Resources:
   OrderConfirmedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartCustomerOrderNotificationSubscription
+      - CloudMartCustomerOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
@@ -216,6 +220,8 @@ Resources:
   OrderCanceledEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartCustomerOrderNotificationSubscription
+      - CloudMartCustomerOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled"
@@ -242,6 +248,8 @@ Resources:
   OrderFailedEventRule:
     Type: AWS::Events::Rule
     DependsOn:
+      - CloudMartCustomerOrderNotificationSubscription
+      - CloudMartCustomerOrderNotificationTopicPolicy
       - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed"
