@@ -90,44 +90,6 @@ Resources:
             Resource:
               - !Sub arn:aws:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
 
-  # =========================================================
-  # GITHUB ACTIONS EC2 AMI SSM PERMISSION
-  # =========================================================
-  #
-  # The Application stack uses the AWS-managed latest Amazon Linux
-  # AMI through this dynamic SSM parameter:
-  #
-  # /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-  #
-  # CloudFormation/SAM change-set creation requires the deployment
-  # role to read this public SSM parameter.
-  #
-  # This policy attaches permissions to the EXISTING
-  # CloudMart-GitHubActions-Role. It does not create another role.
-  #
-
-  GitHubActionsAmiParameterPolicy:
-    Type: AWS::IAM::Policy
-
-    Properties:
-      PolicyName: CloudMartGitHubActionsAmiParameterPolicy
-
-      Roles:
-        - !Ref GitHubActionsRoleName
-
-      PolicyDocument:
-        Version: "2012-10-17"
-
-        Statement:
-
-          - Sid: ReadAmazonLinuxAmiParameter
-            Effect: Allow
-            Action:
-              - ssm:GetParameter
-              - ssm:GetParameters
-            Resource:
-              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*
-
 
   # =========================================================
   # GITHUB ACTIONS LAMBDA INITIALIZATION PERMISSION

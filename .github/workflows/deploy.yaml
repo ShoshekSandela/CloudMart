@@ -110,6 +110,32 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
+      - name: Ensure AMI SSM read permission
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > /tmp/cloudmart-ami-ssm-policy.json <<'EOF'
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "CloudMartReadAmazonLinuxAmiParameter",
+                "Effect": "Allow",
+                "Action": [
+                  "ssm:GetParameter",
+                  "ssm:GetParameters"
+                ],
+                "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/ami-amazon-linux-latest/*"
+              }
+            ]
+          }
+          EOF
+
+          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartGitHubActionsAmiParameterPolicy"             --policy-document file:///tmp/cloudmart-ami-ssm-policy.json
+
+          echo "GitHub Actions AMI SSM read permission is ready."
+
       - name: Reset imported or failed Application Stack
         shell: bash
         run: |
