@@ -294,53 +294,26 @@ jobs:
           fi
 
           # Recover retained SNS resources through CloudFormation.
-          # This prevents ResourceExistenceCheck failures after a failed
-          # Application stack was deleted while SNS resources were retained.
           LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
           CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
 
           LOW_STOCK_TOPIC_ARN=$(aws sns list-topics \
             --region "$AWS_REGION" \
             --query 'Topics[].TopicArn' \
-            --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
+            --output text | tr '\t' '\n' \
+            | grep -E ":${LOW_STOCK_TOPIC_NAME}$" \
+            | head -n 1 || true)
 
           CUSTOMER_TOPIC_ARN=$(aws sns list-topics \
             --region "$AWS_REGION" \
             --query 'Topics[].TopicArn' \
-            --output text | tr '\t' '\n' | grep -E ":${CUSTOMER_TOPIC_NAME}$" | head -n 1 || true)
-
-          rm -f /tmp/cloudmart-sns-recovery.yaml /tmp/cloudmart-sns-import.json
+            --output text | tr '\t' '\n' \
+            | grep -E ":${CUSTOMER_TOPIC_NAME}$" \
+            | head -n 1 || true)
 
           if [ -n "$LOW_STOCK_TOPIC_ARN" ] || [ -n "$CUSTOMER_TOPIC_ARN" ]; then
             echo "Retained CloudMart SNS topic(s) detected."
-            echo "Re-adopting retained SNS resources into CloudFormation."
-
-            cat > /tmp/cloudmart-sns-recovery.yaml <<'EOF'
-          AWSTemplateFormatVersion: "2010-09-09"
-          Resources:
-          EOF
-
-            if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
-              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
-          CloudMartLowStockTopic:
-            Type: AWS::SNS::Topic
-            DeletionPolicy: Retain
-            UpdateReplacePolicy: Retain
-            Properties:
-              TopicName: "$LOW_STOCK_TOPIC_NAME"
-          EOF
-            fi
-
-            if [ -n "$CUSTOMER_TOPIC_ARN" ]; then
-              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
-          CloudMartCustomerOrderNotificationTopic:
-            Type: AWS::SNS::Topic
-            DeletionPolicy: Retain
-            UpdateReplacePolicy: Retain
-            Properties:
-              TopicName: "$CUSTOMER_TOPIC_NAME"
-          EOF
-            fi
+            echo "Checking existing confirmed email subscriptions..."
 
             LOW_STOCK_SUBSCRIPTION_ARN=""
             CUSTOMER_SUBSCRIPTION_ARN=""
@@ -349,111 +322,174 @@ jobs:
               LOW_STOCK_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic \
                 --topic-arn "$LOW_STOCK_TOPIC_ARN" \
                 --region "$AWS_REGION" \
-                --output json | jq -r --arg endpoint "$ADMIN_EMAIL" \
-                  '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn' \
-                  | head -n 1 || true)
+                --output json \
+                | jq -r --arg endpoint "$ADMIN_EMAIL" \
+                  '.Subscriptions[]?
+                   | select(.Protocol=="email"
+                            and .Endpoint==$endpoint
+                            and .SubscriptionArn!="PendingConfirmation")
+                   | .SubscriptionArn' \
+                | head -n 1 || true)
             fi
 
             if [ -n "$CUSTOMER_TOPIC_ARN" ]; then
               CUSTOMER_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic \
                 --topic-arn "$CUSTOMER_TOPIC_ARN" \
                 --region "$AWS_REGION" \
-                --output json | jq -r --arg endpoint "$CUSTOMER_EMAIL" \
-                  '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn' \
-                  | head -n 1 || true)
+                --output json \
+                | jq -r --arg endpoint "$CUSTOMER_EMAIL" \
+                  '.Subscriptions[]?
+                   | select(.Protocol=="email"
+                            and .Endpoint==$endpoint
+                            and .SubscriptionArn!="PendingConfirmation")
+                   | .SubscriptionArn' \
+                | head -n 1 || true)
             fi
 
-            if [ -n "$LOW_STOCK_SUBSCRIPTION_ARN" ]; then
-              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
-          CloudMartLowStockEmailSubscription:
-            Type: AWS::SNS::Subscription
-            DeletionPolicy: Retain
-            UpdateReplacePolicy: Retain
-            Properties:
-              TopicArn: "$LOW_STOCK_TOPIC_ARN"
-              Protocol: email
-              Endpoint: "$ADMIN_EMAIL"
-          EOF
-            fi
-
-            if [ -n "$CUSTOMER_SUBSCRIPTION_ARN" ]; then
-              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
-          CloudMartCustomerOrderNotificationSubscription:
-            Type: AWS::SNS::Subscription
-            DeletionPolicy: Retain
-            UpdateReplacePolicy: Retain
-            Properties:
-              TopicArn: "$CUSTOMER_TOPIC_ARN"
-              Protocol: email
-              Endpoint: "$CUSTOMER_EMAIL"
-          EOF
-            fi
-
+            # Build a valid JSON CloudFormation import template.
+            # IMPORT change sets may contain only resources being imported.
             jq -n \
-              --arg lowTopic "$LOW_STOCK_TOPIC_NAME" \
-              --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN" \
-              --arg customerTopic "$CUSTOMER_TOPIC_NAME" \
-              --arg customerSub "$CUSTOMER_SUBSCRIPTION_ARN" \
+              --arg lowTopicName "$LOW_STOCK_TOPIC_NAME" \
               --arg lowTopicArn "$LOW_STOCK_TOPIC_ARN" \
+              --arg lowSubArn "$LOW_STOCK_SUBSCRIPTION_ARN" \
+              --arg adminEmail "$ADMIN_EMAIL" \
+              --arg customerTopicName "$CUSTOMER_TOPIC_NAME" \
               --arg customerTopicArn "$CUSTOMER_TOPIC_ARN" \
-              '[
-                (if $lowTopicArn != "" then {
-                  ResourceType:"AWS::SNS::Topic",
-                  LogicalResourceId:"CloudMartLowStockTopic",
-                  ResourceIdentifier:{TopicName:$lowTopic}
-                } else empty end),
-                (if $lowSub != "" then {
-                  ResourceType:"AWS::SNS::Subscription",
-                  LogicalResourceId:"CloudMartLowStockEmailSubscription",
-                  ResourceIdentifier:{SubscriptionArn:$lowSub}
-                } else empty end),
-                (if $customerTopicArn != "" then {
-                  ResourceType:"AWS::SNS::Topic",
-                  LogicalResourceId:"CloudMartCustomerOrderNotificationTopic",
-                  ResourceIdentifier:{TopicName:$customerTopic}
-                } else empty end),
-                (if $customerSub != "" then {
-                  ResourceType:"AWS::SNS::Subscription",
-                  LogicalResourceId:"CloudMartCustomerOrderNotificationSubscription",
-                  ResourceIdentifier:{SubscriptionArn:$customerSub}
-                } else empty end)
-              ]' > /tmp/cloudmart-sns-import.json
+              --arg customerSubArn "$CUSTOMER_SUBSCRIPTION_ARN" \
+              --arg customerEmail "$CUSTOMER_EMAIL" \
+              '
+              {
+                AWSTemplateFormatVersion: "2010-09-09",
+                Resources: {}
+              }
+              |
+              if $lowTopicArn != "" then
+                .Resources.CloudMartLowStockTopic = {
+                  Type: "AWS::SNS::Topic",
+                  DeletionPolicy: "Retain",
+                  UpdateReplacePolicy: "Retain",
+                  Properties: { TopicName: $lowTopicName }
+                }
+              else . end
+              |
+              if $lowSubArn != "" then
+                .Resources.CloudMartLowStockEmailSubscription = {
+                  Type: "AWS::SNS::Subscription",
+                  DeletionPolicy: "Retain",
+                  UpdateReplacePolicy: "Retain",
+                  Properties: {
+                    TopicArn: $lowTopicArn,
+                    Protocol: "email",
+                    Endpoint: $adminEmail
+                  }
+                }
+              else . end
+              |
+              if $customerTopicArn != "" then
+                .Resources.CloudMartCustomerOrderNotificationTopic = {
+                  Type: "AWS::SNS::Topic",
+                  DeletionPolicy: "Retain",
+                  UpdateReplacePolicy: "Retain",
+                  Properties: { TopicName: $customerTopicName }
+                }
+              else . end
+              |
+              if $customerSubArn != "" then
+                .Resources.CloudMartCustomerOrderNotificationSubscription = {
+                  Type: "AWS::SNS::Subscription",
+                  DeletionPolicy: "Retain",
+                  UpdateReplacePolicy: "Retain",
+                  Properties: {
+                    TopicArn: $customerTopicArn,
+                    Protocol: "email",
+                    Endpoint: $customerEmail
+                  }
+                }
+              else . end
+              ' > /tmp/cloudmart-sns-recovery.json
+
+            # Build the exact resource identifier list for CloudFormation IMPORT.
+            jq -n \
+              --arg lowTopicName "$LOW_STOCK_TOPIC_NAME" \
+              --arg lowTopicArn "$LOW_STOCK_TOPIC_ARN" \
+              --arg lowSubArn "$LOW_STOCK_SUBSCRIPTION_ARN" \
+              --arg customerTopicName "$CUSTOMER_TOPIC_NAME" \
+              --arg customerTopicArn "$CUSTOMER_TOPIC_ARN" \
+              --arg customerSubArn "$CUSTOMER_SUBSCRIPTION_ARN" \
+              '
+              [
+                (if $lowTopicArn != "" then
+                  {
+                    ResourceType: "AWS::SNS::Topic",
+                    LogicalResourceId: "CloudMartLowStockTopic",
+                    ResourceIdentifier: { TopicName: $lowTopicName }
+                  }
+                else empty end),
+                (if $lowSubArn != "" then
+                  {
+                    ResourceType: "AWS::SNS::Subscription",
+                    LogicalResourceId: "CloudMartLowStockEmailSubscription",
+                    ResourceIdentifier: { Arn: $lowSubArn }
+                  }
+                else empty end),
+                (if $customerTopicArn != "" then
+                  {
+                    ResourceType: "AWS::SNS::Topic",
+                    LogicalResourceId: "CloudMartCustomerOrderNotificationTopic",
+                    ResourceIdentifier: { TopicName: $customerTopicName }
+                  }
+                else empty end),
+                (if $customerSubArn != "" then
+                  {
+                    ResourceType: "AWS::SNS::Subscription",
+                    LogicalResourceId: "CloudMartCustomerOrderNotificationSubscription",
+                    ResourceIdentifier: { Arn: $customerSubArn }
+                  }
+                else empty end)
+              ]
+              ' > /tmp/cloudmart-sns-import.json
+
+            # Never hide recovery-template errors.
+            jq -e '.Resources | type == "object" and length > 0' \
+              /tmp/cloudmart-sns-recovery.json >/dev/null
+            jq -e 'type == "array" and length > 0' \
+              /tmp/cloudmart-sns-import.json >/dev/null
+
+            echo "SNS recovery template:"
+            jq . /tmp/cloudmart-sns-recovery.json
+            echo "SNS resources to import:"
+            jq . /tmp/cloudmart-sns-import.json
 
             IMPORT_COUNT=$(jq 'length' /tmp/cloudmart-sns-import.json)
+            echo "Importing $IMPORT_COUNT retained SNS resource(s)."
 
-            if [ "$IMPORT_COUNT" -gt 0 ]; then
-              echo "Importing $IMPORT_COUNT retained SNS resource(s)."
+            RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
 
-              RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
+            aws cloudformation create-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$RECOVERY_CHANGESET" \
+              --change-set-type IMPORT \
+              --template-body file:///tmp/cloudmart-sns-recovery.json \
+              --resources-to-import file:///tmp/cloudmart-sns-import.json \
+              --role-arn "$CFN_ROLE_ARN" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --region "$AWS_REGION"
 
-              # IMPORT creates the new CloudFormation stack from the
-              # already-existing SNS resources. No SNS resource is recreated.
-              aws cloudformation create-change-set \
-                --stack-name "$STACK_NAME" \
-                --change-set-name "$RECOVERY_CHANGESET" \
-                --change-set-type IMPORT \
-                --template-body file:///tmp/cloudmart-sns-recovery.yaml \
-                --resources-to-import file:///tmp/cloudmart-sns-import.json \
-                --role-arn "$CFN_ROLE_ARN" \
-                --capabilities CAPABILITY_NAMED_IAM \
-                --region "$AWS_REGION"
+            aws cloudformation wait change-set-create-complete \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$RECOVERY_CHANGESET" \
+              --region "$AWS_REGION"
 
-              aws cloudformation wait change-set-create-complete \
-                --stack-name "$STACK_NAME" \
-                --change-set-name "$RECOVERY_CHANGESET" \
-                --region "$AWS_REGION"
+            aws cloudformation execute-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$RECOVERY_CHANGESET" \
+              --region "$AWS_REGION"
 
-              aws cloudformation execute-change-set \
-                --stack-name "$STACK_NAME" \
-                --change-set-name "$RECOVERY_CHANGESET" \
-                --region "$AWS_REGION"
+            aws cloudformation wait stack-import-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
 
-              aws cloudformation wait stack-import-complete \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION"
-
-              echo "Retained SNS resources successfully re-adopted."
-            fi
+            echo "Retained SNS resources successfully re-adopted."
           fi
 
           # SAM updates the recovered stack or creates a new stack when no
