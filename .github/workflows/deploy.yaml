@@ -493,6 +493,7 @@ jobs:
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
               EC2InstanceType=t3.micro
 
+
   initialize:
     name: Initialize CloudMart
     runs-on: ubuntu-latest
