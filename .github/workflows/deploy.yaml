@@ -1,290 +1,501 @@
-name: Deploy CloudMart Infrastructure
+AWSTemplateFormatVersion: "2010-09-09"
 
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-      - feature/order-flow
-      - fix/database-ssm
-    paths:
-      - "cloudformation/**"
-      - "lambdas/**"
-      - "database/schema.sql"
-      - ".github/workflows/deploy.yaml"
+Description: >
+  CloudMart IAM Configuration Stack.
+  Creates IAM roles required by CloudMart Lambda functions and EC2.
+  The API authentication token is managed separately by GitHub Actions
+  in AWS Systems Manager Parameter Store as a SecureString.
 
-permissions:
-  id-token: write
-  contents: read
+Parameters:
 
-env:
-  AWS_REGION: us-east-1
-  ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+    Description: Deployment environment
 
-jobs:
-  deploy-network:
-    name: Deploy Network Stack
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Validate and deploy network
-        run: |
-          set -euo pipefail
-          aws cloudformation validate-template --template-body file://cloudformation/network-stack.yaml --region "$AWS_REGION"
-          aws cloudformation deploy \
-            --template-file cloudformation/network-stack.yaml \
-            --stack-name "cloudmart-network-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --parameter-overrides Environment="$ENVIRONMENT" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+  GitHubActionsRoleName:
+    Type: String
+    Default: CloudMart-GitHubActions-Role
+    Description: Existing IAM role used by GitHub Actions
 
-  deploy-iam:
-    name: Deploy IAM Stack
-    runs-on: ubuntu-latest
-    needs: deploy-network
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Validate and deploy IAM
-        run: |
-          set -euo pipefail
-          aws cloudformation validate-template --template-body file://cloudformation/iam-stack.yaml --region "$AWS_REGION"
-          aws cloudformation deploy \
-            --template-file cloudformation/iam-stack.yaml \
-            --stack-name "cloudmart-iam-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --parameter-overrides Environment="$ENVIRONMENT" GitHubRepository="ShoshekSandela/CloudMart" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
-          aws cloudformation describe-stacks --stack-name "cloudmart-iam-${ENVIRONMENT}" --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='GitHubActionsRoleArn'].OutputValue | [0]" --output text
 
-  deploy-data:
-    name: Deploy Data Stack
-    runs-on: ubuntu-latest
-    needs: deploy-iam
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Validate and deploy data
-        env:
-          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-        run: |
-          set -euo pipefail
-          test -n "$DB_USERNAME" || { echo "CLOUDMART_DB_USERNAME is missing"; exit 1; }
-          test -n "$DB_PASSWORD" || { echo "CLOUDMART_DB_PASSWORD is missing"; exit 1; }
-          aws cloudformation validate-template --template-body file://cloudformation/data-stack.yaml --region "$AWS_REGION"
-          aws cloudformation deploy \
-            --template-file cloudformation/data-stack.yaml \
-            --stack-name "cloudmart-data-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --parameter-overrides Environment="$ENVIRONMENT" DBName=cloudmart DBInstanceClass=db.t3.micro AllocatedStorage=20 DBUsername="$DB_USERNAME" DBPassword="$DB_PASSWORD" ExistingReportBucketName="cloudmart-${ENVIRONMENT}-reports" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+# =========================================================
+# RESOURCES
+# =========================================================
 
-  deploy-application:
-    name: Deploy Application Stack
-    runs-on: ubuntu-latest
-    needs:
-      - deploy-data
-    steps:
-      - uses: actions/checkout@v5
-      - uses: aws-actions/setup-sam@v2
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Ensure AMI SSM read permission
-        shell: bash
-        run: |
-          set -euo pipefail
+Resources:
 
-          cat > /tmp/cloudmart-ami-ssm-policy.json <<'EOF'
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Sid": "CloudMartReadAmazonLinuxAmiParameter",
-                "Effect": "Allow",
-                "Action": [
-                  "ssm:GetParameter",
-                  "ssm:GetParameters"
-                ],
-                "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/ami-amazon-linux-latest/*"
-              }
-            ]
-          }
-          EOF
+  # =========================================================
+  # GITHUB ACTIONS SNS VERIFICATION PERMISSION
+  # =========================================================
+  #
+  # The deployment workflow verifies the low-stock SNS email
+  # subscription after deploying the application stack.
+  # GetSubscriptionAttributes requires permission on the
+  # subscription ARN (not only the topic ARN).
+  #
+  # This attaches the required read-only SNS permissions to the
+  # existing CloudMart-GitHubActions-Role.
 
-          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartGitHubActionsAmiParameterPolicy"             --policy-document file:///tmp/cloudmart-ami-ssm-policy.json
 
-          echo "GitHub Actions AMI SSM read permission is ready."
+  # =========================================================
+  # GITHUB ACTIONS LAMBDA INITIALIZATION PERMISSION
+  # =========================================================
+  #
+  # deploy.yaml invokes the Authorizer Lambda directly after the
+  # application stack is deployed. This permission belongs to the
+  # GitHub Actions role, not to the Lambda Authorizer execution role.
+  #
 
-      - name: Reset imported or failed Application Stack
-        shell: bash
-        run: |
-          set -euo pipefail
 
-          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
-          LOW_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
-          CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
+  # =========================================================
+  # PRODUCT LAMBDA ROLE
+  # =========================================================
 
-          echo "Checking Application stack status..."
+  ProductLambdaRole:
+    Type: AWS::IAM::Role
 
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text 2>/dev/null || echo "NOT_FOUND")
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-product-role
 
-          echo "Application stack status: $STATUS"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
 
-          case "$STATUS" in
-            IMPORT_COMPLETE|ROLLBACK_COMPLETE|UPDATE_ROLLBACK_COMPLETE|CREATE_FAILED|REVIEW_IN_PROGRESS)
-              echo "Removing stale Application stack: $STATUS"
-              aws cloudformation delete-stack \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION"
+        Statement:
+          - Effect: Allow
 
-              aws cloudformation wait stack-delete-complete \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION"
-              ;;
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "Application stack is healthy. It will be updated normally."
-              ;;
-            NOT_FOUND|DELETE_COMPLETE)
-              echo "Application stack is absent. Continuing with a clean create."
-              ;;
-            DELETE_IN_PROGRESS)
-              echo "Application stack is already deleting. Waiting..."
-              aws cloudformation wait stack-delete-complete \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION"
-              ;;
-            *)
-              echo "ERROR: Application stack is in an unexpected state: $STATUS"
-              exit 1
-              ;;
-          esac
+            Principal:
+              Service:
+                - lambda.amazonaws.com
 
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          AWS_PARTITION=$(aws sts get-caller-identity --query Arn --output text | cut -d: -f2)
-          export ACCOUNT_ID AWS_PARTITION AWS_REGION
+            Action:
+              - sts:AssumeRole
 
-          delete_topic_and_subscriptions() {
-            local topic_name="$1"
-            local topic_arn
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
 
-            topic_arn=$(aws sns list-topics \
-              --region "$AWS_REGION" \
-              --query "Topics[?TopicArn == 'arn:${AWS_PARTITION}:sns:${AWS_REGION}:${ACCOUNT_ID}:${topic_name}'].TopicArn | [0]" \
-              --output text 2>/dev/null || echo "None")
+      Policies:
 
-            if [ -z "$topic_arn" ] || [ "$topic_arn" = "None" ]; then
-              echo "No existing SNS topic found: $topic_name"
-              return 0
-            fi
+        - PolicyName: CloudMartProductLambdaPolicy
 
-            echo "Cleaning existing SNS topic: $topic_name"
+          PolicyDocument:
+            Version: "2012-10-17"
 
-            mapfile -t subscriptions < <(aws sns list-subscriptions-by-topic \
-              --topic-arn "$topic_arn" \
-              --region "$AWS_REGION" \
-              --query "Subscriptions[].SubscriptionArn" \
-              --output text | tr '\t' '\n' | sed '/^$/d')
+            Statement:
 
-            for subscription_arn in "${subscriptions[@]}"; do
-              if [ -n "$subscription_arn" ] && [ "$subscription_arn" != "None" ]; then
-                aws sns unsubscribe \
-                  --subscription-arn "$subscription_arn" \
-                  --region "$AWS_REGION" || true
-              fi
-            done
+              # CloudWatch Logs
+              - Effect: Allow
 
-            aws sns delete-topic \
-              --topic-arn "$topic_arn" \
-              --region "$AWS_REGION"
-          }
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
 
-          delete_topic_and_subscriptions "$LOW_TOPIC_NAME"
-          delete_topic_and_subscriptions "$CUSTOMER_TOPIC_NAME"
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
 
-          echo "Application stack reset completed. Next SAM deployment can create the stack normally."
 
-      - name: Prepare schema
-        run: cp database/schema.sql lambdas/product/schema.sql
-      - name: Validate application
-        run: sam validate --template-file cloudformation/application-stack.yaml
-      - name: Build application
-        run: sam build --template-file cloudformation/application-stack.yaml
-      - name: Deploy application
-        env:
-          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
-          CUSTOMER_EMAIL: ${{ vars.CLOUDMART_CUSTOMER_EMAIL }}
-        run: |
-          set -euo pipefail
-          test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
-          test -n "$CUSTOMER_EMAIL" || { echo "CLOUDMART_CUSTOMER_EMAIL is missing"; exit 1; }
-          sam deploy \
-            --template-file .aws-sam/build/template.yaml \
-            --stack-name "cloudmart-application-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --resolve-s3 \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              ProjectName=cloudmart \
-              AuthorizerCacheTTL=0 \
-              NotificationEmail="$ADMIN_EMAIL" \
-              CustomerEmail="$CUSTOMER_EMAIL" \
-              ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
-              EC2InstanceType=t3.micro
+              # SSM Parameter Store
+              - Effect: Allow
 
-  initialize:
-    name: Initialize CloudMart
-    runs-on: ubuntu-latest
-    needs: deploy-application
-    steps:
-      - uses: actions/checkout@v5
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - name: Initialize database
-        run: |
-          set -euo pipefail
-          aws lambda invoke --function-name "cloudmart-${ENVIRONMENT}-product" --region "$AWS_REGION" --cli-binary-format raw-in-base64-out --payload '{"action":"initialize_database"}' /tmp/db.json
-          cat /tmp/db.json
-          jq -e '.statusCode == 200' /tmp/db.json >/dev/null
-      - name: Initialize authentication tokens
-        run: |
-          set -euo pipefail
-          aws lambda invoke --function-name "cloudmart-${ENVIRONMENT}-authorizer" --region "$AWS_REGION" --cli-binary-format raw-in-base64-out --payload '{"action":"initialize_tokens"}' /tmp/auth.json
-          cat /tmp/auth.json
-          jq -e '.statusCode == 200' /tmp/auth.json >/dev/null
-      - name: Synchronize configured customer
-        run: |
-          set -euo pipefail
-          aws lambda invoke --function-name "cloudmart-${ENVIRONMENT}-order" --region "$AWS_REGION" --cli-binary-format raw-in-base64-out --payload '{"action":"sync_configured_customer"}' /tmp/customer.json
-          cat /tmp/customer.json
-          jq -e '.statusCode == 200' /tmp/customer.json >/dev/null
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+              
+
+              # Publish inventory change events to the CloudMart EventBridge bus
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
+
+
+      Tags:
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # =========================================================
+  # INVENTORY EVENT LAMBDA ROLE
+  # =========================================================
+
+
+  OrderLambdaRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-order-role
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: CloudMartOrderLambdaPolicy
+
+          PolicyDocument:
+            Version: "2012-10-17"
+
+            Statement:
+
+              # CloudWatch Logs
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
+
+
+              # SSM Parameter Store
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+
+              # Publish order lifecycle events to the CloudMart EventBridge bus
+              - Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:aws:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
+
+
+      Tags:
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+
+  # =========================================================
+  # LAMBDA AUTHORIZER ROLE
+  # =========================================================
+
+  LambdaAuthorizerRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+
+      Policies:
+
+        - PolicyName: CloudMartAuthorizerPolicy
+
+          PolicyDocument:
+            Version: "2012-10-17"
+
+            Statement:
+
+              # CloudWatch Logs
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
+
+
+              # Read and initialize the ADMIN token in SSM
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+                  - ssm:PutParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+
+              # Read the existing database connection parameters.
+              # Customer token hashes are stored and verified in RDS.
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+
+
+      Tags:
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # =========================================================
+  # EC2 ROLE
+  # =========================================================
+
+  EC2Role:
+    Type: AWS::IAM::Role
+
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-ec2-role
+
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+
+        Statement:
+          - Effect: Allow
+
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      Policies:
+
+        - PolicyName: CloudMartEC2Policy
+
+          PolicyDocument:
+            Version: "2012-10-17"
+
+            Statement:
+
+              # CloudWatch Logs
+              - Effect: Allow
+
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/cloudmart-${Environment}-*:log-stream:*"
+
+
+              # Read application configuration from SSM
+              - Effect: Allow
+
+                Action:
+                  - ssm:GetParameter
+
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+
+      Tags:
+
+        - Key: Project
+          Value: CloudMart
+
+        - Key: Environment
+          Value: !Ref Environment
+
+
+  # =========================================================
+  # EC2 INSTANCE PROFILE
+  # =========================================================
+
+  EC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+
+    Properties:
+      InstanceProfileName: !Sub cloudmart-${Environment}-ec2-instance-profile
+
+      Roles:
+        - !Ref EC2Role
+
+
+# =========================================================
+# OUTPUTS
+# =========================================================
+
+Outputs:
+
+  # =========================================================
+  # GITHUB ACTIONS EVENTBRIDGE SMOKE TEST PERMISSION
+  # Allows the GitHub Actions role to publish the automated
+  # smoke-test event to the CloudMart custom EventBridge bus.
+  # =========================================================
+  ProductLambdaRoleArn:
+    Description: Product Lambda IAM Role ARN
+
+    Value: !GetAtt ProductLambdaRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleArn
+
+
+  ProductLambdaRoleName:
+    Description: Product Lambda IAM Role Name
+
+    Value: !Ref ProductLambdaRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-ProductLambdaRoleName
+
+
+  # =========================================================
+  # INVENTORY EVENT LAMBDA
+  # =========================================================
+
+
+
+  OrderLambdaRoleArn:
+    Description: Order Lambda IAM Role ARN
+
+    Value: !GetAtt OrderLambdaRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleArn
+
+
+  OrderLambdaRoleName:
+    Description: Order Lambda IAM Role Name
+
+    Value: !Ref OrderLambdaRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-OrderLambdaRoleName
+
+
+
+  # =========================================================
+  # AUTHORIZE LAMBDA
+  # =========================================================
+
+  # THIS IS THE IMPORTANT FIX.
+  #
+  # deploy.yaml expects:
+  #
+  # LambdaAuthorizerRoleArn
+  #
+  # Previously the template had:
+  #
+  # AuthorizerLambdaRoleArn
+  #
+  # which caused:
+  #
+  # Authorizer Role: None
+
+  LambdaAuthorizerRoleArn:
+    Description: Lambda Authorizer IAM Role ARN
+
+    Value: !GetAtt LambdaAuthorizerRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleArn
+
+
+  # Keep the old output for compatibility
+  AuthorizerLambdaRoleArn:
+    Description: Lambda Authorizer IAM Role ARN - Legacy Output
+
+    Value: !GetAtt LambdaAuthorizerRole.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-AuthorizerLambdaRoleArn
+
+
+  LambdaAuthorizerRoleName:
+    Description: Lambda Authorizer IAM Role Name
+
+    Value: !Ref LambdaAuthorizerRole
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleName
+
+
+  # =========================================================
+  # EC2
+  # =========================================================
+
+  EC2RoleArn:
+    Description: EC2 IAM Role ARN
+
+    Value: !GetAtt EC2Role.Arn
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-EC2RoleArn
+
+
+  EC2InstanceProfileName:
+    Description: EC2 Instance Profile Name
+
+    Value: !Ref EC2InstanceProfile
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-EC2InstanceProfileName
+
+
+  # =========================================================
+  # SSM AUTH TOKEN
+  # =========================================================
+
+  AuthTokenParameterName:
+    Description: SSM SecureString parameter name managed by GitHub Actions
+
+    Value: !Sub /cloudmart/${Environment}/auth/token
+
+    Export:
+      Name: !Sub CloudMart-${Environment}-AuthTokenParameterName
