@@ -17,49 +17,6 @@ Parameters:
 Resources:
 
 
-  # CloudFormation uses this role to create the infrastructure on behalf of GitHub Actions.
-  CloudFormationExecutionRole:
-    Type: AWS::IAM::Role
-    DeletionPolicy: Retain
-    Properties:
-      RoleName: !Sub cloudmart-${Environment}-cloudformation-execution-role
-      Description: CloudMart CloudFormation service role used by GitHub Actions.
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: cloudformation.amazonaws.com
-            Action: sts:AssumeRole
-      # AWS-managed provisioning policies keep CloudFormation permissions centralized in the IAM stack.
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AmazonVPCFullAccess
-        - arn:aws:iam::aws:policy/AmazonEC2FullAccess
-        - arn:aws:iam::aws:policy/AmazonRDSFullAccess
-        - arn:aws:iam::aws:policy/AmazonS3FullAccess
-        - arn:aws:iam::aws:policy/AmazonSSMFullAccess
-        - arn:aws:iam::aws:policy/AWSLambda_FullAccess
-        - arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator
-        - arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess
-        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
-        - arn:aws:iam::aws:policy/CloudWatchLogsFullAccess
-        - arn:aws:iam::aws:policy/IAMFullAccess
-      Policies:
-        - PolicyName: CloudMartCloudFormationTransformAccess
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Sid: AllowServerlessTransformChangeSet
-                Effect: Allow
-                Action:
-                  - cloudformation:CreateChangeSet
-                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws/transform/Serverless-2016-10-31
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
     Type: AWS::IAM::Role
@@ -238,13 +195,6 @@ Resources:
         - !Ref EC2Role
 
 Outputs:
-
-  # ARN used by CloudFormation to create and update CloudMart resources.
-  CloudFormationExecutionRoleArn:
-    Description: CloudFormation execution role ARN.
-    Value: !GetAtt CloudFormationExecutionRole.Arn
-    Export:
-      Name: !Sub CloudMart-${Environment}-CloudFormationExecutionRoleArn
 
   # ARN used by the Product Lambda function.
   ProductLambdaRoleArn:
