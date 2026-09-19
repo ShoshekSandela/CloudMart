@@ -443,7 +443,7 @@ jobs:
             fi
 
             aws cloudformation deploy \
-              --template-file /tmp/cloudmart-data-retain.json \
+              --template-file "$RETAIN_TEMPLATE" \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
               --parameter-overrides \
