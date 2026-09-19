@@ -105,12 +105,36 @@ jobs:
 
           echo "CloudFormation execution role is available."
 
+      - name: Recover failed IAM stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
+
+          STACK_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text 2>/dev/null || true)
+
+          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
+            echo "IAM stack is ROLLBACK_COMPLETE. Deleting failed stack before redeploy."
+            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            echo "Failed IAM stack removed."
+          elif [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "IAM stack is REVIEW_IN_PROGRESS. Deleting unfinished stack."
+            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+          fi
+
       - name: Deploy IAM stack
         run: |
           set -euo pipefail
           STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
           ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-          CFN_ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || true)
+
+          CFN_ROLE_ARN=$(aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.Arn'             --output text 2>/dev/null || true)
 
           DEPLOY_ARGS=(
             --template-file cloudformation/iam-stack.yaml
@@ -121,7 +145,8 @@ jobs:
             --no-fail-on-empty-changeset
           )
 
-          # The first run uses the bootstrap GitHub role; later runs use the code-managed execution role.
+          # Use the execution role only when it already exists.
+          # Otherwise the existing GitHub bootstrap role performs this first IAM deployment.
           if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
             DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
           fi
