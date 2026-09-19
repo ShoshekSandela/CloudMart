@@ -326,8 +326,14 @@ jobs:
           echo "Authentication token is managed exclusively by Token Manager; preserving it."
 
           # One-time migration: if the Data stack still owns the legacy
-          # AuthTokenParameter resource, first apply Retain so removing that
-          # resource from the stack does not delete the live SSM parameter.
+          # AuthTokenParameter resource, first apply Retain to the EXISTING
+          # CloudFormation resource without changing any of its properties.
+          #
+          # This is important because the live parameter is SecureString,
+          # while AWS::SSM::Parameter in CloudFormation supports only String
+          # and StringList. The migration must therefore not try to update
+          # the parameter itself; it only changes the CloudFormation
+          # DeletionPolicy to Retain.
           LEGACY_AUTH_RESOURCE=$(aws cloudformation describe-stack-resources \
             --stack-name "$STACK_NAME" \
             --logical-resource-id AuthTokenParameter \
@@ -337,45 +343,40 @@ jobs:
 
           if [ "$LEGACY_AUTH_RESOURCE" = "AuthTokenParameter" ]; then
             echo "Legacy AuthTokenParameter is still owned by the Data stack."
-            echo "Applying Retain before removing it from CloudFormation management."
+            echo "Applying Retain to the existing resource without changing its properties."
 
-            CURRENT_AUTH_VALUE=$(aws ssm get-parameter \
-              --name "/cloudmart/${ENVIRONMENT}/auth/token" \
+            aws cloudformation get-template \
+              --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
-              --with-decryption \
-              --query 'Parameter.Value' \
-              --output text 2>/dev/null || echo '{}')
+              --template-stage Original \
+              --output json > /tmp/cloudmart-data-current.json
 
-            CURRENT_AUTH_VALUE="$CURRENT_AUTH_VALUE" python - <<'PY'
+            python - <<'PY'
+          import json
           from pathlib import Path
-          import os
-          
-          source = Path("cloudformation/data-stack.yaml").read_text()
-          token = os.environ["CURRENT_AUTH_VALUE"].replace("\\", "\\\\").replace('"', '\\"').replace("\n", "")
-          marker = "  # Stores generated CloudMart reports"
-          resource = """  # Temporary migration resource. Retain the existing token before
-            # removing this resource from CloudFormation management.
-            AuthTokenParameter:
-              Type: AWS::SSM::Parameter
-              DeletionPolicy: Retain
-              UpdateReplacePolicy: Retain
-              Properties:
-                Name: !Sub /cloudmart/${Environment}/auth/token
-                Type: String
-                Value: "__TOKEN__"
-                Description: CloudMart authentication token migration.
-                Tags:
-                  - Key: ManagedBy
-                    Value: CloudMart-TokenManager
-          
-          """.replace("__TOKEN__", token)
-          if marker not in source:
-              raise SystemExit("Could not locate data-stack insertion point")
-          Path("/tmp/cloudmart-data-retain.yaml").write_text(source.replace(marker, resource + marker, 1))
+
+          path = Path("/tmp/cloudmart-data-current.json")
+          payload = json.loads(path.read_text())
+
+          template = payload["TemplateBody"]
+          resources = template.setdefault("Resources", {})
+
+          resource = resources.get("AuthTokenParameter")
+          if not resource:
+              raise SystemExit("AuthTokenParameter was not found in the current Data stack template")
+
+          # Change ONLY the deletion behavior. Do not alter Name, Type,
+          # Value, Description, or Tags.
+          resource["DeletionPolicy"] = "Retain"
+          resource["UpdateReplacePolicy"] = "Retain"
+
+          Path("/tmp/cloudmart-data-retain.json").write_text(
+              json.dumps(template, separators=(",", ":"))
+          )
           PY
 
             aws cloudformation deploy \
-              --template-file /tmp/cloudmart-data-retain.yaml \
+              --template-file /tmp/cloudmart-data-retain.json \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
               --parameter-overrides \
@@ -388,7 +389,7 @@ jobs:
               --capabilities CAPABILITY_NAMED_IAM \
               --no-fail-on-empty-changeset
 
-            echo "Legacy AuthTokenParameter is now retained and can be removed safely."
+            echo "Retain policy applied. The next Data stack update will remove AuthTokenParameter from CloudFormation while preserving the SSM parameter."
           fi
 
           aws cloudformation deploy \
