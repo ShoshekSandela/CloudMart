@@ -1,6 +1,6 @@
 import hashlib
-import json
 import logging
+import json
 import os
 import secrets
 
@@ -19,14 +19,6 @@ DB_PORT_PARAMETER_NAME = os.environ["DB_PORT_PARAMETER_NAME"]
 DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
 DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
 DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
-
-CUSTOMER_TOKEN_COUNT = 5
-
-
-def generate_token():
-    return secrets.token_urlsafe(32)
-
-
 def get_ssm_parameter(name, decrypt=False):
     result = ssm.get_parameter(Name=name, WithDecryption=decrypt)
     return result["Parameter"]["Value"].strip()
@@ -57,165 +49,8 @@ def hash_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def initialize_admin_token():
-    try:
-        raw_value = get_ssm_parameter(TOKEN_PARAMETER_NAME, decrypt=True)
-    except ssm.exceptions.ParameterNotFound:
-        raw_value = ""
-
-    try:
-        config = json.loads(raw_value) if raw_value else {}
-    except json.JSONDecodeError:
-        config = {}
-
-    if not isinstance(config, dict):
-        config = {}
-
-    if not config.get("admin_token"):
-        config["admin_token"] = generate_token()
-        ssm.put_parameter(
-            Name=TOKEN_PARAMETER_NAME,
-            Value=json.dumps({"admin_token": config["admin_token"]}),
-            Type="SecureString",
-            Overwrite=True,
-        )
-        return config["admin_token"], True
-
-    # Normalize the parameter so it contains only the Admin token.
-    normalized = {"admin_token": str(config["admin_token"])}
-    if config != normalized:
-        ssm.put_parameter(
-            Name=TOKEN_PARAMETER_NAME,
-            Value=json.dumps(normalized),
-            Type="SecureString",
-            Overwrite=True,
-        )
-
-    return str(config["admin_token"]), False
-
-
-def initialize_customer_tokens(connection, force_rotate=False):
-    generated_tokens = []
-
-    with connection.cursor() as cursor:
-        for customer_id in range(1, CUSTOMER_TOKEN_COUNT + 1):
-            cursor.execute(
-                """
-                SELECT token_id, status
-                FROM customer_tokens
-                WHERE customer_id = %s
-                LIMIT 1
-                """,
-                (customer_id,),
-            )
-            existing = cursor.fetchone()
-
-            if existing and str(existing["status"]).upper() == "ACTIVE" and not force_rotate:
-                continue
-
-            token = generate_token()
-            token_hash = hash_token(token)
-
-            if existing:
-                cursor.execute(
-                    """
-                    UPDATE customer_tokens
-                    SET token_hash = %s,
-                        status = 'ACTIVE'
-                    WHERE token_id = %s
-                    """,
-                    (token_hash, existing["token_id"]),
-                )
-            else:
-                cursor.execute(
-                    """
-                    INSERT INTO customer_tokens
-                        (customer_id, token_hash, status)
-                    VALUES
-                        (%s, %s, 'ACTIVE')
-                    """,
-                    (customer_id, token_hash),
-                )
-
-            generated_tokens.append({
-                "customer_id": customer_id,
-                "token": token,
-            })
-
-    connection.commit()
-    return generated_tokens
-
-
-def rotate_customer_tokens():
-    """
-    Generate a fresh token for each of the five configured customers.
-
-    The raw tokens are returned only in this Lambda response. RDS stores
-    only SHA-256 hashes. The Admin token in SSM is not changed.
-    """
-    connection = None
-    try:
-        connection = get_db_connection()
-        customer_tokens = initialize_customer_tokens(
-            connection,
-            force_rotate=True,
-        )
-
-        if len(customer_tokens) != CUSTOMER_TOKEN_COUNT:
-            raise RuntimeError(
-                f"Expected {CUSTOMER_TOKEN_COUNT} customer tokens to be rotated, "
-                f"but generated {len(customer_tokens)}."
-            )
-
-        return {
-            "statusCode": 200,
-            "message": "Five customer authentication tokens rotated successfully",
-            "customer_token_count": CUSTOMER_TOKEN_COUNT,
-            "customer_tokens": customer_tokens,
-        }
-    except Exception:
-        if connection:
-            connection.rollback()
-        logger.exception("Customer token rotation failed")
-        raise
-    finally:
-        if connection:
-            connection.close()
-
-
-def initialize_tokens():
-    """
-    Initialize one persistent Admin token in SSM and five persistent
-    customer tokens in RDS. Raw customer tokens are returned only when
-    they are newly generated; RDS stores only SHA-256 hashes.
-    """
-    connection = None
-    try:
-        admin_token, admin_generated = initialize_admin_token()
-        connection = get_db_connection()
-        customer_tokens = initialize_customer_tokens(connection)
-
-        return {
-            "statusCode": 200,
-            "message": "CloudMart authentication tokens initialized",
-            "admin_token_generated": admin_generated,
-            "customer_token_count": CUSTOMER_TOKEN_COUNT,
-            "new_customer_tokens": customer_tokens,
-            "admin_token": admin_token if admin_generated else None,
-        }
-    except Exception:
-        if connection:
-            connection.rollback()
-        logger.exception("Authentication token initialization failed")
-        raise
-    finally:
-        if connection:
-            connection.close()
-
-
 def get_authentication_config():
     value = get_ssm_parameter(TOKEN_PARAMETER_NAME, decrypt=True)
-
     try:
         config = json.loads(value)
     except json.JSONDecodeError as exc:
@@ -225,6 +60,8 @@ def get_authentication_config():
         raise ValueError("ADMIN token is not initialized")
 
     return config
+
+
 
 
 def find_customer_identity(connection, token):
@@ -318,6 +155,7 @@ def build_policy(principal_id, identity, method_arn):
             or (is_order_path() and method in {"GET", "POST", "PUT", "PATCH"})
             or (is_customer_by_id_path() and method in {"GET", "PUT", "DELETE"})
             or (path == "/customers" and method in {"GET", "POST"})
+            or (len(path.split("/")) == 4 and path.startswith("/customers/") and path.endswith("/unsubscribe") and method == "POST")
         )
     else:
         allowed = (
@@ -325,6 +163,7 @@ def build_policy(principal_id, identity, method_arn):
             or (path == "/orders" and method in {"POST", "GET", "PATCH"})
             or (len(path.split("/")) == 3 and path.startswith("/orders/") and method in {"GET", "PUT"})
             or (is_customer_by_id_path() and method == "GET")
+            or (len(path.split("/")) == 4 and path.startswith("/customers/") and path.endswith("/unsubscribe") and method == "POST")
         )
 
     if not allowed:
@@ -347,14 +186,6 @@ def build_policy(principal_id, identity, method_arn):
 
 
 def lambda_handler(event, context):
-    action = event.get("action")
-
-    if action == "initialize_tokens":
-        return initialize_tokens()
-
-    if action == "rotate_customer_tokens":
-        return rotate_customer_tokens()
-
     method_arn = event.get("methodArn")
     authorization_header = event.get("authorizationToken")
 

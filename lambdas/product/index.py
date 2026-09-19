@@ -2,8 +2,6 @@ import json
 import os
 import re
 import logging
-import hashlib
-import secrets
 from decimal import Decimal
 from pathlib import Path
 from datetime import date, datetime
@@ -677,133 +675,9 @@ def require_admin(event):
 
 
 # ============================================================
-# CUSTOMER API
-#
-# Customer endpoints are handled by this existing Product Lambda
-# so the repository keeps its existing Lambda files unchanged.
-# API Gateway routes /customers to this Lambda.
-# ============================================================
-
-def get_customer(cursor, customer_id):
-    cursor.execute("""
-        SELECT customer_id, customer_name, customer_email, created_at
-        FROM customers
-        WHERE customer_id = %s
-    """, (customer_id,))
-    return cursor.fetchone()
+# Customer operations are implemented by the dedicated Customer Lambda.
 
 
-def get_customers(cursor):
-    """Return all customer records for ADMIN users."""
-    cursor.execute("""
-        SELECT customer_id, customer_name, customer_email, created_at
-        FROM customers
-        ORDER BY customer_id
-    """)
-    return cursor.fetchall()
-
-
-def create_customer(cursor, payload):
-    customer_name = payload.get("customer_name", payload.get("name"))
-    customer_email = payload.get("customer_email", payload.get("email"))
-
-    if not customer_name:
-        raise ValueError("customer_name is required")
-    if not customer_email:
-        raise ValueError("customer_email is required")
-
-    cursor.execute("""
-        INSERT INTO customers (customer_name, customer_email)
-        VALUES (%s, %s)
-    """, (customer_name, customer_email))
-
-    customer_id = cursor.lastrowid
-
-    # Generate a token for the newly created customer.
-    # Only the SHA-256 hash is stored in RDS.
-    token = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-    cursor.execute("""
-        INSERT INTO customer_tokens (customer_id, token_hash, status)
-        VALUES (%s, %s, 'ACTIVE')
-    """, (customer_id, token_hash))
-
-    return customer_id, token
-
-
-def update_customer(cursor, customer_id, payload):
-    current = get_customer(cursor, customer_id)
-    if not current:
-        return None
-
-    fields = []
-    values = []
-
-    customer_name = payload.get("customer_name", payload.get("name"))
-    customer_email = payload.get("customer_email", payload.get("email"))
-
-    if customer_name is not None:
-        if not str(customer_name).strip():
-            raise ValueError("customer_name cannot be empty")
-        fields.append("customer_name = %s")
-        values.append(customer_name)
-
-    if customer_email is not None:
-        if not str(customer_email).strip():
-            raise ValueError("customer_email cannot be empty")
-        fields.append("customer_email = %s")
-        values.append(customer_email)
-
-    if not fields:
-        raise ValueError("No fields supplied for update")
-
-    values.append(customer_id)
-    cursor.execute(
-        f"UPDATE customers SET {', '.join(fields)} WHERE customer_id = %s",
-        values
-    )
-
-    if customer_email is not None:
-        cursor.execute("""
-            UPDATE orders
-            SET customer_email = %s
-            WHERE customer_id = %s
-        """, (customer_email, customer_id))
-
-    return get_customer(cursor, customer_id)
-
-
-def delete_customer(cursor, customer_id):
-    current = get_customer(cursor, customer_id)
-    if not current:
-        return None
-
-    cursor.execute("""
-        SELECT COUNT(*) AS order_count
-        FROM orders
-        WHERE customer_id = %s
-    """, (customer_id,))
-    order_count = int(cursor.fetchone()["order_count"])
-
-    if order_count > 0:
-        raise ValueError(
-            f"Customer {customer_id} cannot be deleted because orders exist"
-        )
-
-    cursor.execute(
-        "DELETE FROM customer_tokens WHERE customer_id = %s",
-        (customer_id,)
-    )
-    cursor.execute(
-        "DELETE FROM customers WHERE customer_id = %s",
-        (customer_id,)
-    )
-
-    return current
-
-
-# ============================================================
 # MAIN LAMBDA
 # ============================================================
 
@@ -897,81 +771,6 @@ def lambda_handler(event, context):
         ensure_database_schema(connection)
 
         with connection.cursor() as cursor:
-
-            # =================================================
-            # CUSTOMER APIs
-            # =================================================
-            request_path = str(event.get("path") or "")
-
-            if request_path.startswith("/customers"):
-                auth = get_authorization_context(event)
-                customer_id = (
-                    path_parameters.get("id")
-                    or path_parameters.get("customer_id")
-                )
-
-                if customer_id is None:
-                    if method == "GET":
-                        require_admin(event)
-                        customers = get_customers(cursor)
-                        return response(200, {
-                            "count": len(customers),
-                            "customers": customers,
-                        })
-
-                    if method == "POST":
-                        created_id, customer_token = create_customer(cursor, payload)
-                        connection.commit()
-
-                        customer = get_customer(cursor, created_id)
-                        customer["token"] = customer_token
-
-                        return response(201, customer)
-
-                    return response(405, {"message": "Method not allowed"})
-
-                try:
-                    customer_id = int(customer_id)
-                except (TypeError, ValueError):
-                    raise ValueError("customer id must be an integer")
-
-                if method == "GET":
-                    if auth["role"] == "CUSTOMER":
-                        token_customer_id = auth.get("customer_id")
-                        if token_customer_id is None or int(token_customer_id) != customer_id:
-                            raise PermissionError(
-                                "Customers can access only their own customer record"
-                            )
-                    elif auth["role"] != "ADMIN":
-                        raise PermissionError("Valid CUSTOMER or ADMIN role is required")
-
-                    customer = get_customer(cursor, customer_id)
-                    if not customer:
-                        return response(404, {"message": "Customer not found"})
-                    return response(200, customer)
-
-                if method == "PUT":
-                    require_admin(event)
-                    customer = update_customer(cursor, customer_id, payload)
-                    if customer is None:
-                        connection.rollback()
-                        return response(404, {"message": "Customer not found"})
-                    connection.commit()
-                    return response(200, customer)
-
-                if method == "DELETE":
-                    require_admin(event)
-                    deleted = delete_customer(cursor, customer_id)
-                    if deleted is None:
-                        connection.rollback()
-                        return response(404, {"message": "Customer not found"})
-                    connection.commit()
-                    return response(200, {
-                        "message": "Customer deleted successfully",
-                        "customer_id": customer_id
-                    })
-
-                return response(405, {"message": "Method not allowed"})
 
             # =================================================
             # GET /products

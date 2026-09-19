@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import time
 from decimal import Decimal
 from datetime import date, datetime
 
@@ -162,6 +161,20 @@ def get_db_connection():
 # REQUEST PARSING / VALIDATION
 # ============================================================
 
+def require_json_integer(value, field_name):
+    """
+    Require a real JSON integer.
+
+    Clients must send product_id/quantity/customer_id as JSON numbers,
+    not quoted strings.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{field_name} must be an integer JSON value; do not send it as a string"
+        )
+    return value
+
+
 def parse_body(event):
     body = event.get("body")
 
@@ -202,12 +215,10 @@ def validate_request(payload, require_customer_id=False):
                 "customer_id is required"
             )
 
-        try:
-            customer_id = int(customer_id)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "customer_id must be an integer"
-            ) from exc
+        customer_id = require_json_integer(
+            customer_id,
+            "customer_id",
+        )
 
         if customer_id <= 0:
             raise ValueError(
@@ -242,13 +253,14 @@ def validate_request(payload, require_customer_id=False):
                 "quantity is required"
             )
 
-        try:
-            product_id = int(product_id)
-            quantity = int(quantity)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "product_id and quantity must be integers"
-            ) from exc
+        product_id = require_json_integer(
+            product_id,
+            "product_id",
+        )
+        quantity = require_json_integer(
+            quantity,
+            "quantity",
+        )
 
         if product_id <= 0:
             raise ValueError(
@@ -269,6 +281,53 @@ def validate_request(payload, require_customer_id=False):
 
     return customer_id, validated
 
+
+
+def get_or_create_customer(connection, customer_email, customer_name=None):
+    """
+    Find a customer by email. If the email does not exist, create a new
+    customer and return its customer_id and stored customer details.
+    """
+    customer_email = customer_email.strip().lower()
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT customer_id, customer_name, customer_email
+            FROM customers
+            WHERE LOWER(customer_email) = %s
+            LIMIT 1
+            FOR UPDATE
+            """,
+            (customer_email,),
+        )
+        customer = cursor.fetchone()
+
+        if customer:
+            return customer
+
+        if not customer_name:
+            customer_name = customer_email.split("@", 1)[0]
+
+        cursor.execute(
+            """
+            INSERT INTO customers (customer_name, customer_email)
+            VALUES (%s, %s)
+            """,
+            (customer_name, customer_email),
+        )
+
+        customer_id = cursor.lastrowid
+
+        cursor.execute(
+            """
+            SELECT customer_id, customer_name, customer_email
+            FROM customers
+            WHERE customer_id = %s
+            """,
+            (customer_id,),
+        )
+        return cursor.fetchone()
 
 
 # ============================================================
@@ -389,7 +448,7 @@ def process_order_placed_event(connection, order_id):
         # EventBridge can retry delivery. Do not process an order twice.
         if str(order["status"]).upper() != "PENDING":
             logger.info("Order %s already has status %s; skipping processing", order_id, order["status"])
-            return False, str(order["status"]).upper()
+            return False, str(order["status"]).upper(), None
 
         cursor.execute("""
             SELECT
@@ -494,73 +553,25 @@ def process_order_placed_event(connection, order_id):
     return True, new_status, failure_reason
 
 
-def put_event_with_retry(entry, event_name, max_attempts=3):
-    """
-    Publish one EventBridge event with bounded retries.
-
-    EventBridge put_events can return a successful HTTP response while an
-    individual entry fails. Retry failed entries before giving up so an
-    order notification is not lost because of a transient EventBridge error.
-    """
-    last_result = None
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            result = events.put_events(Entries=[entry])
-            last_result = result
-
-            if result.get("FailedEntryCount", 0) == 0:
-                logger.info(
-                    "%s EventBridge event published successfully on attempt %s",
-                    event_name,
-                    attempt,
-                )
-                return True
-
-            logger.error(
-                "%s EventBridge publish failed on attempt %s: %s",
-                event_name,
-                attempt,
-                json.dumps(result, default=json_serializer),
-            )
-        except Exception:
-            logger.exception(
-                "%s EventBridge publish raised an exception on attempt %s",
-                event_name,
-                attempt,
-            )
-
-        if attempt < max_attempts:
-            time.sleep(attempt)
-
-    logger.error(
-        "%s EventBridge event could not be published after %s attempts: %s",
-        event_name,
-        max_attempts,
-        json.dumps(last_result, default=json_serializer),
-    )
-    return False
-
-
 def publish_inventory_event_from_order(product_id, product_name, old_stock, new_stock, threshold):
     """Publish the existing Product Lambda inventory event shape from Order Lambda."""
     detail = {"product_id": int(product_id), "product_name": product_name,
               "old_stock": int(old_stock), "new_stock": int(new_stock),
               "low_stock_threshold": int(threshold),
               "low_stock": int(new_stock) <= int(threshold)}
-    entry = {
-        "Source": "cloudmart.product",
-        "DetailType": "Inventory Changed",
-        "EventBusName": os.environ["EVENT_BUS_NAME"],
-        "Detail": json.dumps(detail),
-    }
-
-    published = put_event_with_retry(entry, "Inventory Changed")
-    if published:
+    try:
+        result = events.put_events(Entries=[{
+            "Source": "cloudmart.product", "DetailType": "Inventory Changed",
+            "EventBusName": os.environ["EVENT_BUS_NAME"], "Detail": json.dumps(detail)
+        }])
+        if result.get("FailedEntryCount", 0) > 0:
+            logger.error("Inventory Changed event failed: %s", json.dumps(result, default=json_serializer))
+            return False
         logger.info("Inventory Changed event published: %s", json.dumps(detail))
-    else:
-        logger.error("Unable to publish Inventory Changed event: %s", json.dumps(detail))
-    return published
+        return True
+    except Exception:
+        logger.exception("Unable to publish Inventory Changed event")
+        return False
 
 def publish_order_placed_event(order):
     detail = {
@@ -598,22 +609,44 @@ def publish_order_placed_event(order):
         ],
     }
 
-    entry = {
-        "Source": "cloudmart.order",
-        "DetailType": "OrderPlaced",
-        "EventBusName": os.environ["EVENT_BUS_NAME"],
-        "Detail": json.dumps(detail),
-    }
-
-    published = put_event_with_retry(entry, "OrderPlaced")
-    if published:
-        logger.info("OrderPlaced event published: %s", json.dumps(detail))
-    else:
-        logger.error(
-            "Order %s was created but OrderPlaced could not be published",
-            order["order_id"],
+    try:
+        result = events.put_events(
+            Entries=[
+                {
+                    "Source": "cloudmart.order",
+                    "DetailType": "OrderPlaced",
+                    "EventBusName": os.environ[
+                        "EVENT_BUS_NAME"
+                    ],
+                    "Detail": json.dumps(
+                        detail
+                    ),
+                }
+            ]
         )
-    return published
+
+        if result.get("FailedEntryCount", 0) > 0:
+            logger.error(
+                "OrderPlaced event failed: %s",
+                json.dumps(
+                    result,
+                    default=json_serializer,
+                ),
+            )
+            return False
+
+        logger.info(
+            "OrderPlaced event published: %s",
+            json.dumps(detail),
+        )
+
+        return True
+
+    except Exception:
+        logger.exception(
+            "Unable to publish OrderPlaced event"
+        )
+        return False
 
 
 # ============================================================
@@ -651,27 +684,36 @@ def publish_order_event(detail_type, order, failure_reason=None):
         ],
     }
 
-    entry = {
-        "Source": "cloudmart.order",
-        "DetailType": detail_type,
-        "EventBusName": os.environ["EVENT_BUS_NAME"],
-        "Detail": json.dumps(detail),
-    }
+    try:
+        result = events.put_events(
+            Entries=[
+                {
+                    "Source": "cloudmart.order",
+                    "DetailType": detail_type,
+                    "EventBusName": os.environ["EVENT_BUS_NAME"],
+                    "Detail": json.dumps(detail),
+                }
+            ]
+        )
 
-    published = put_event_with_retry(entry, detail_type)
-    if published:
+        if result.get("FailedEntryCount", 0) != 0:
+            logger.error(
+                "%s event failed: %s",
+                detail_type,
+                json.dumps(result, default=json_serializer),
+            )
+            return False
+
         logger.info(
             "%s event published: %s",
             detail_type,
             json.dumps(detail, default=json_serializer),
         )
-    else:
-        logger.error(
-            "%s event could not be published for order %s",
-            detail_type,
-            order["order_id"],
-        )
-    return published
+        return True
+
+    except Exception:
+        logger.exception("Unable to publish %s event", detail_type)
+        return False
 
 
 def update_order_status(connection, order_id, new_status):
@@ -1147,11 +1189,14 @@ def response(status_code, body):
 
 
 def error_response(status_code, code, message):
+    """Return one consistent JSON body for every API error."""
     return response(
         status_code,
         {
-            "code": code,
-            "message": message,
+            "error": {
+                "code": code,
+                "message": message,
+            }
         },
     )
 
@@ -1325,36 +1370,30 @@ def lambda_handler(event, context):
 
             auth = get_authorization_context(event)
 
-            # Customer identity must come from the authenticated token.
-            # customer_email and customer_name are never accepted from the
-            # request body. CUSTOMER requests also cannot supply customer_id.
-            forbidden_email_name_fields = [
-                field
-                for field in ("customer_email", "customer_name")
-                if field in payload
-            ]
-            if forbidden_email_name_fields:
-                raise ValueError(
-                    "customer_email and customer_name must not be supplied "
-                    "in the request body"
-                )
+            # Customer identity must come exclusively from the Authorization
+            # token. Do not accept customer email/name/id from the request body.
+            if auth["role"] == "CUSTOMER":
+                forbidden_identity_fields = [
+                    field
+                    for field in ("customer_id", "customer_email", "customer_name")
+                    if field in payload
+                ]
+                if forbidden_identity_fields:
+                    raise ValueError(
+                        "Customer identity fields are not allowed in the request body: "
+                        + ", ".join(forbidden_identity_fields)
+                        + ". Customer identity is taken from the Authorization Bearer token."
+                    )
 
             if auth["role"] == "CUSTOMER":
-                if "customer_id" in payload:
-                    raise ValueError(
-                        "customer_id must not be supplied by a CUSTOMER; "
-                        "use the Authorization Bearer token"
-                    )
                 _, items = validate_request(payload)
-            elif auth["role"] == "ADMIN":
-                # ADMIN may choose an existing customer by customer_id.
-                # Customer email is always read from RDS.
+            else:
+                # ADMIN may choose a customer by ID, but customer email is
+                # never accepted from the request body.
                 admin_customer_id, items = validate_request(
                     payload,
                     require_customer_id=True,
                 )
-            else:
-                raise PermissionError("Valid CUSTOMER or ADMIN role is required")
 
             connection = get_db_connection()
 
@@ -1416,16 +1455,13 @@ def lambda_handler(event, context):
                 )
 
             if final_status == "FAILED":
-                return response(
+                return error_response(
                     409,
-                    {
-                        "code": "INSUFFICIENT_STOCK",
-                        "message": (
-                            failure_reason
-                            or "Order could not be confirmed because stock is unavailable"
-                        ),
-                     
-                    },
+                    "INSUFFICIENT_STOCK",
+                    (
+                        failure_reason
+                        or "Order could not be confirmed because stock is unavailable"
+                    ),
                 )
 
             if final_status == "CONFIRMED":
@@ -1451,14 +1487,18 @@ def lambda_handler(event, context):
             payload = parse_body(event)
             auth = get_authorization_context(event)
 
-            order_id = get_path_order_id(event) or payload.get("order_id")
-            if order_id is None:
-                raise ValueError("order_id is required")
+            path_order_id = get_path_order_id(event)
+            body_order_id = payload.get("order_id")
 
-            try:
-                order_id = int(order_id)
-            except (TypeError, ValueError):
-                raise ValueError("order_id must be an integer")
+            if path_order_id is not None:
+                order_id = path_order_id
+            elif body_order_id is not None:
+                order_id = require_json_integer(
+                    body_order_id,
+                    "order_id",
+                )
+            else:
+                raise ValueError("order_id is required")
 
             new_status = str(payload.get("status") or "").upper().strip()
             if not new_status:

@@ -1,0 +1,371 @@
+import hashlib
+import json
+import logging
+import os
+import secrets
+
+import pymysql
+import boto3
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+ssm = boto3.client("ssm")
+
+DB_HOST_PARAMETER_NAME = os.environ["DB_HOST_PARAMETER_NAME"]
+DB_PORT_PARAMETER_NAME = os.environ["DB_PORT_PARAMETER_NAME"]
+DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
+DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
+DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
+
+
+def json_serializer(value):
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value)
+
+
+def response(status_code, body):
+    return {
+        "statusCode": status_code,
+        "headers": {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Content-Type,Authorization",
+            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+        },
+        "body": json.dumps(body, default=json_serializer),
+    }
+
+
+def get_parameter(name, decrypt=False):
+    return ssm.get_parameter(Name=name, WithDecryption=decrypt)["Parameter"]["Value"].strip()
+
+
+def get_db_connection():
+    return pymysql.connect(
+        host=get_parameter(DB_HOST_PARAMETER_NAME),
+        port=int(get_parameter(DB_PORT_PARAMETER_NAME)),
+        database=get_parameter(DB_NAME_PARAMETER_NAME),
+        user=get_parameter(DB_USERNAME_PARAMETER_NAME, decrypt=True),
+        password=get_parameter(DB_PASSWORD_PARAMETER_NAME, decrypt=True),
+        connect_timeout=5,
+        read_timeout=5,
+        write_timeout=5,
+        cursorclass=pymysql.cursors.DictCursor,
+        autocommit=False,
+    )
+
+
+def ensure_subscription_table(connection):
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS email_subscriptions (
+                subscription_id BIGINT NOT NULL AUTO_INCREMENT,
+                customer_id BIGINT NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    ON UPDATE CURRENT_TIMESTAMP,
+                unsubscribed_at DATETIME NULL,
+                PRIMARY KEY (subscription_id),
+                UNIQUE KEY uk_email_subscriptions_customer_id (customer_id),
+                INDEX idx_email_subscriptions_status (status),
+                CONSTRAINT fk_email_subscriptions_customer
+                    FOREIGN KEY (customer_id)
+                    REFERENCES customers(customer_id)
+                    ON DELETE CASCADE
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """)
+    connection.commit()
+
+
+def get_authorization_context(event):
+    authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
+    role = str(authorizer.get("role") or authorizer.get("Role") or "").upper()
+    customer_id = authorizer.get("customer_id")
+    if customer_id not in (None, ""):
+        try:
+            customer_id = int(customer_id)
+        except (TypeError, ValueError):
+            customer_id = None
+    return {"role": role, "customer_id": customer_id, "email": authorizer.get("email")}
+
+
+def require_admin(auth):
+    if auth["role"] != "ADMIN":
+        raise PermissionError("ADMIN role is required for this operation")
+
+
+def get_customer(cursor, customer_id):
+    cursor.execute("""
+        SELECT customer_id, customer_name, customer_email, created_at
+        FROM customers
+        WHERE customer_id = %s
+    """, (customer_id,))
+    return cursor.fetchone()
+
+
+def get_customers(cursor):
+    cursor.execute("""
+        SELECT customer_id, customer_name, customer_email, created_at
+        FROM customers
+        ORDER BY customer_id
+    """)
+    return cursor.fetchall()
+
+
+def create_customer(cursor, payload):
+    customer_name = str(payload.get("customer_name", payload.get("name")) or "").strip()
+    customer_email = str(payload.get("customer_email", payload.get("email")) or "").strip().lower()
+
+    if not customer_name:
+        raise ValueError("customer_name is required")
+    if not customer_email or "@" not in customer_email:
+        raise ValueError("customer_email is required and must be valid")
+
+    cursor.execute(
+        "INSERT INTO customers (customer_name, customer_email) VALUES (%s, %s)",
+        (customer_name, customer_email),
+    )
+    customer_id = int(cursor.lastrowid)
+
+    token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    cursor.execute("""
+        INSERT INTO customer_tokens (customer_id, token_hash, status)
+        VALUES (%s, %s, 'ACTIVE')
+    """, (customer_id, token_hash))
+
+    cursor.execute("""
+        INSERT INTO email_subscriptions (customer_id, email, status)
+        VALUES (%s, %s, 'ACTIVE')
+    """, (customer_id, customer_email))
+
+    return customer_id, token
+
+
+def update_customer(cursor, customer_id, payload):
+    current = get_customer(cursor, customer_id)
+    if not current:
+        return None
+
+    fields = []
+    values = []
+    customer_name = payload.get("customer_name", payload.get("name"))
+    customer_email = payload.get("customer_email", payload.get("email"))
+
+    if customer_name is not None:
+        customer_name = str(customer_name).strip()
+        if not customer_name:
+            raise ValueError("customer_name cannot be empty")
+        fields.append("customer_name = %s")
+        values.append(customer_name)
+
+    if customer_email is not None:
+        customer_email = str(customer_email).strip().lower()
+        if not customer_email or "@" not in customer_email:
+            raise ValueError("customer_email cannot be empty")
+        fields.append("customer_email = %s")
+        values.append(customer_email)
+
+    if not fields:
+        raise ValueError("No fields supplied for update")
+
+    values.append(customer_id)
+    cursor.execute(
+        f"UPDATE customers SET {', '.join(fields)} WHERE customer_id = %s",
+        values,
+    )
+
+    if customer_email is not None:
+        cursor.execute("""
+            UPDATE orders SET customer_email = %s WHERE customer_id = %s
+        """, (customer_email, customer_id))
+        # Changing an address is not an unsubscribe action. Keep the
+        # existing subscription state and only synchronize its endpoint.
+        cursor.execute("""
+            UPDATE email_subscriptions
+            SET email = %s
+            WHERE customer_id = %s
+        """, (customer_email, customer_id))
+        logger.info("Customer email synchronized without changing subscription status")
+
+    return get_customer(cursor, customer_id)
+
+
+def delete_customer(cursor, customer_id):
+    current = get_customer(cursor, customer_id)
+    if not current:
+        return None
+
+    cursor.execute(
+        "SELECT COUNT(*) AS order_count FROM orders WHERE customer_id = %s",
+        (customer_id,),
+    )
+    if int(cursor.fetchone()["order_count"]) > 0:
+        raise ValueError(f"Customer {customer_id} cannot be deleted because orders exist")
+
+    # Customer deletion is a customer lifecycle operation, not a notification
+    # failure. The FK cascade removes its subscription and token records.
+    cursor.execute("DELETE FROM customers WHERE customer_id = %s", (customer_id,))
+    return current
+
+
+def unsubscribe_customer(connection, customer_id, actor):
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT subscription_id, status
+            FROM email_subscriptions
+            WHERE customer_id = %s
+            FOR UPDATE
+        """, (customer_id,))
+        subscription = cursor.fetchone()
+
+        if not subscription:
+            cursor.execute("""
+                SELECT customer_email FROM customers WHERE customer_id = %s
+            """, (customer_id,))
+            customer = cursor.fetchone()
+            if not customer:
+                return False, "CUSTOMER_NOT_FOUND"
+            cursor.execute("""
+                INSERT INTO email_subscriptions (customer_id, email, status, unsubscribed_at)
+                VALUES (%s, %s, 'UNSUBSCRIBED', CURRENT_TIMESTAMP)
+            """, (customer_id, customer["customer_email"]))
+        elif str(subscription["status"]).upper() != "UNSUBSCRIBED":
+            cursor.execute("""
+                UPDATE email_subscriptions
+                SET status = 'UNSUBSCRIBED',
+                    unsubscribed_at = CURRENT_TIMESTAMP
+                WHERE customer_id = %s
+            """, (customer_id,))
+
+    connection.commit()
+    logger.info(
+        "Email subscription changed: reason=USER_UNSUBSCRIBE customer_id=%s actor=%s",
+        customer_id,
+        actor,
+    )
+    return True, "UNSUBSCRIBED"
+
+
+def lambda_handler(event, context):
+    connection = None
+    try:
+        method = str(
+            event.get("httpMethod")
+            or ((event.get("requestContext") or {}).get("http", {}) or {}).get("method")
+            or ""
+        ).upper()
+        if method == "OPTIONS":
+            return response(200, {"message": "OK"})
+
+        auth = get_authorization_context(event)
+        path_parameters = event.get("pathParameters") or {}
+        path = str(event.get("path") or "")
+        customer_id = path_parameters.get("id") or path_parameters.get("customer_id")
+        if customer_id is not None:
+            try:
+                customer_id = int(customer_id)
+            except (TypeError, ValueError):
+                raise ValueError("customer id must be an integer")
+
+        raw_body = event.get("body")
+        payload = json.loads(raw_body) if isinstance(raw_body, str) and raw_body else (
+            raw_body if isinstance(raw_body, dict) else {}
+        )
+
+        connection = get_db_connection()
+        ensure_subscription_table(connection)
+
+        with connection.cursor() as cursor:
+            if path.endswith("/unsubscribe"):
+                if customer_id is None:
+                    raise ValueError("customer id is required")
+                if auth["role"] == "CUSTOMER" and auth["customer_id"] != customer_id:
+                    raise PermissionError("Customers can unsubscribe only their own email")
+                if auth["role"] != "ADMIN" and auth["role"] != "CUSTOMER":
+                    raise PermissionError("Valid CUSTOMER or ADMIN role is required")
+                _, status = unsubscribe_customer(
+                    connection,
+                    customer_id,
+                    "customer" if auth["role"] == "CUSTOMER" else "admin",
+                )
+                return response(200, {
+                    "message": "Email notifications unsubscribed",
+                    "customer_id": customer_id,
+                    "subscription_status": status,
+                })
+
+            if customer_id is None:
+                if method == "GET":
+                    require_admin(auth)
+                    customers = get_customers(cursor)
+                    return response(200, {"count": len(customers), "customers": customers})
+                if method == "POST":
+                    require_admin(auth)
+                    created_id, token = create_customer(cursor, payload)
+                    connection.commit()
+                    customer = get_customer(cursor, created_id)
+                    customer["token"] = token
+                    return response(201, customer)
+                return response(405, {"message": "Method not allowed"})
+
+            if method == "GET":
+                if auth["role"] == "CUSTOMER" and auth["customer_id"] != customer_id:
+                    raise PermissionError("Customers can access only their own customer record")
+                if auth["role"] != "ADMIN" and auth["role"] != "CUSTOMER":
+                    raise PermissionError("Valid CUSTOMER or ADMIN role is required")
+                customer = get_customer(cursor, customer_id)
+                if not customer:
+                    return response(404, {"message": "Customer not found"})
+                return response(200, customer)
+
+            if method == "PUT":
+                require_admin(auth)
+                customer = update_customer(cursor, customer_id, payload)
+                if not customer:
+                    connection.rollback()
+                    return response(404, {"message": "Customer not found"})
+                connection.commit()
+                return response(200, customer)
+
+            if method == "DELETE":
+                require_admin(auth)
+                customer = delete_customer(cursor, customer_id)
+                if not customer:
+                    connection.rollback()
+                    return response(404, {"message": "Customer not found"})
+                connection.commit()
+                return response(200, {"message": "Customer deleted successfully", "customer_id": customer_id})
+
+            return response(405, {"message": "Method not allowed"})
+
+    except json.JSONDecodeError:
+        if connection:
+            connection.rollback()
+        return response(400, {"message": "Invalid JSON body"})
+    except PermissionError as exc:
+        if connection:
+            connection.rollback()
+        logger.warning("Customer authorization denied: %s", exc)
+        return response(403, {"message": str(exc)})
+    except ValueError as exc:
+        if connection:
+            connection.rollback()
+        return response(400, {"message": str(exc)})
+    except pymysql.MySQLError as exc:
+        if connection:
+            connection.rollback()
+        logger.exception("Customer database operation failed")
+        return response(500, {"message": "Database operation failed"})
+    except Exception:
+        if connection:
+            connection.rollback()
+        logger.exception("Customer Lambda failed")
+        return response(500, {"message": "Internal server error"})
+    finally:
+        if connection:
+            connection.close()

@@ -26,10 +26,6 @@ Parameters:
     Type: String
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
 
-  CustomerEmail:
-    Type: String
-    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-
   ApiDeploymentVersion:
     Type: String
     Default: "1"
@@ -68,11 +64,15 @@ Resources:
   # Sends low-stock notifications to the configured admin email.
   CloudMartLowStockTopic:
     Type: AWS::SNS::Topic
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
   CloudMartLowStockEmailSubscription:
     Type: AWS::SNS::Subscription
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
       Protocol: email
@@ -120,143 +120,117 @@ Resources:
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: >-
               "CLOUDMART ADMIN LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"
-  CloudMartCustomerOrderNotificationTopic:
-    Type: AWS::SNS::Topic
+  # Handles customer order notifications. The Lambda looks up the
+  # authenticated customer's current notification subscription and sends
+  # a formatted HTML/text email through SES.
+  NotificationFunction:
+    Type: AWS::Serverless::Function
     Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-customer-order-notifications"
+      FunctionName: !Sub "${ProjectName}-${Environment}-notification"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/notification/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-NotificationLambdaRoleArn"
+      Timeout: 15
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+          NOTIFICATION_FROM_EMAIL: !Ref NotificationEmail
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
 
-  CloudMartCustomerOrderNotificationSubscription:
-    Type: AWS::SNS::Subscription
+  NotificationLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      TopicArn: !Ref CloudMartCustomerOrderNotificationTopic
-      Protocol: email
-      Endpoint: !Ref CustomerEmail
+      LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-notification"
+      RetentionInDays: 30
 
-  CloudMartCustomerOrderNotificationTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
+  NotificationInvokePermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      Topics: [!Ref CloudMartCustomerOrderNotificationTopic]
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowEventBridgePublish
-            Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref CloudMartCustomerOrderNotificationTopic
-            Condition:
-              ArnEquals:
-                aws:SourceArn:
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-placed"
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-confirmed"
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-canceled"
-                  - !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-failed"
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref NotificationFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
 
-  OrderPlacedEventRule:
+  OrderPlacedNotificationRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-placed"
-      Description: !Sub "Routes OrderPlaced events directly to SNS."
+      Name: !Sub "${ProjectName}-${Environment}-order-placed-notification"
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
         source: [cloudmart.order]
         detail-type: [OrderPlaced]
       Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART CUSTOMER ORDER PLACED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\n\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been placed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  OrderConfirmedEventRule:
+        - Id: CustomerOrderNotification
+          Arn: !GetAtt NotificationFunction.Arn
+
+  OrderConfirmedNotificationRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-confirmed"
-      Description: !Sub "Routes OrderConfirmed events directly to SNS."
+      Name: !Sub "${ProjectName}-${Environment}-order-confirmed-notification"
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
         source: [cloudmart.order]
         detail-type: [OrderConfirmed]
       Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART CUSTOMER ORDER CONFIRMED\n\nOrder #<orderId>\n\nSTATUS: <status>\n\nCUSTOMER\n\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been confirmed.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  OrderCanceledEventRule:
+        - Id: CustomerOrderNotification
+          Arn: !GetAtt NotificationFunction.Arn
+
+  OrderCanceledNotificationRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-canceled"
-      Description: !Sub "Routes OrderCanceled events directly to SNS."
+      Name: !Sub "${ProjectName}-${Environment}-order-canceled-notification"
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
         source: [cloudmart.order]
         detail-type: [OrderCanceled]
       Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART CUSTOMER ORDER CANCELED\n\nOrder #<orderId>\n\nSTATUS: CANCELED\n\nCUSTOMER\n\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has been canceled.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"
-  OrderFailedEventRule:
+        - Id: CustomerOrderNotification
+          Arn: !GetAtt NotificationFunction.Arn
+
+  OrderFailedNotificationRule:
     Type: AWS::Events::Rule
-    DependsOn:
-      - CloudMartCustomerOrderNotificationTopicPolicy
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-failed"
-      Description: !Sub "Routes OrderFailed events directly to SNS."
+      Name: !Sub "${ProjectName}-${Environment}-order-failed-notification"
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
         source: [cloudmart.order]
         detail-type: [OrderFailed]
       Targets:
-        - Id: CustomerSnsTarget
-          Arn: !Ref CloudMartCustomerOrderNotificationTopic
-          InputTransformer:
-            InputPathsMap:
-              orderId: "$.detail.order_id"
-              customerId: "$.detail.customer_id"
-              customerName: "$.detail.customer_name"
-              customerEmail: "$.detail.customer_email"
-              status: "$.detail.status"
-              total: "$.detail.total_amount"
-              itemsSummary: "$.detail.items_summary"
-            InputTemplate: >-
-              "CLOUDMART CUSTOMER ORDER FAILED\n\nOrder #<orderId>\n\nSTATUS: FAILED\n\nCUSTOMER\n\nName: <customerName>\nEmail: <customerEmail>\n\nITEMS PURCHASED\n--------------------------------\n<itemsSummary>\n--------------------------------\nTOTAL AMOUNT: <total>\n\nYour order has failed to process.\n\nThank you for shopping with CloudMart.\n\n— CloudMart"
+        - Id: CustomerOrderNotification
+          Arn: !GetAtt NotificationFunction.Arn
+
+  OrderCompletedNotificationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-completed-notification"
+      EventBusName: !Ref CloudMartEventBus
+      State: ENABLED
+      EventPattern:
+        source: [cloudmart.order]
+        detail-type: [OrderCompleted]
+      Targets:
+        - Id: CustomerOrderNotification
+          Arn: !GetAtt NotificationFunction.Arn
+
   # Validates the Authorization token used by protected API routes.
   LambdaAuthorizer:
     Type: AWS::Serverless::Function
@@ -313,6 +287,36 @@ Resources:
       # generated for a different API method/path.
       AuthorizerResultTtlInSeconds: !Ref AuthorizerCacheTTL
 
+  # Token lifecycle is isolated from request authorization.
+  TokenManagerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-token-manager"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/token-manager/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-TokenManagerLambdaRoleArn"
+      Timeout: 15
+      MemorySize: 128
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          TOKEN_PARAMETER_NAME: !Sub /cloudmart/${Environment}/auth/token
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
   # Handles product and inventory operations against RDS MySQL.
   ProductFunction:
     Type: AWS::Serverless::Function
@@ -350,6 +354,44 @@ Resources:
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref ProductFunction
+      Principal: apigateway.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
+
+  # Dedicated customer lifecycle and notification-subscription API.
+  CustomerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-customer"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/customer/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-CustomerLambdaRoleArn"
+      Timeout: 15
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  CustomerLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref CustomerFunction
       Principal: apigateway.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !Sub "arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${CloudMartRestApi}/*/*"
@@ -703,8 +745,8 @@ Resources:
   # ============================================================
   # CUSTOMERS
   #
-  # Customer CRUD uses the existing Product Lambda so no new
-  # Lambda/source file is introduced.
+  # Customer CRUD and explicit unsubscribe are handled by the
+  # dedicated Customer Lambda.
   # ============================================================
 
   CustomersResource:
@@ -721,11 +763,18 @@ Resources:
       ParentId: !Ref CustomersResource
       PathPart: "{id}"
 
+  CustomerUnsubscribeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ParentId: !Ref CustomerByIdResource
+      PathPart: unsubscribe
+
   GetAllCustomersMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
       - ApiGatewayAuthorizer
-      - ProductLambdaPermission
+      - CustomerLambdaPermission
     Properties:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomersResource
@@ -737,13 +786,13 @@ Resources:
         IntegrationHttpMethod: POST
         Uri:
           Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
+            - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
   GetCustomerMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
-      - ProductLambdaPermission
+      - CustomerLambdaPermission
     Properties:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomerByIdResource
@@ -757,30 +806,31 @@ Resources:
         IntegrationHttpMethod: POST
         Uri:
           Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
+            - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
   PostCustomerMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
-      - ProductLambdaPermission
+      - CustomerLambdaPermission
     Properties:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomersResource
       HttpMethod: POST
-      AuthorizationType: NONE
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
         Uri:
           Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
+            - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
   PutCustomerMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
-      - ProductLambdaPermission
+      - CustomerLambdaPermission
     Properties:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomerByIdResource
@@ -794,13 +844,13 @@ Resources:
         IntegrationHttpMethod: POST
         Uri:
           Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
+            - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
   DeleteCustomerMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
-      - ProductLambdaPermission
+      - CustomerLambdaPermission
     Properties:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomerByIdResource
@@ -814,8 +864,28 @@ Resources:
         IntegrationHttpMethod: POST
         Uri:
           Fn::Sub:
-            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${ProductLambdaArn}/invocations
-            - ProductLambdaArn: !GetAtt ProductFunction.Arn
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
+            - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
+
+  PostCustomerUnsubscribeMethod:
+    Type: AWS::ApiGateway::Method
+    DependsOn:
+      - CustomerLambdaPermission
+    Properties:
+      RestApiId: !Ref CloudMartRestApi
+      ResourceId: !Ref CustomerUnsubscribeResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref ApiGatewayAuthorizer
+      RequestParameters:
+        method.request.path.id: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri:
+          Fn::Sub:
+            - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
+            - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
   ApiGatewayDeploymentV6:
     Type: AWS::ApiGateway::Deployment
@@ -868,6 +938,15 @@ Outputs:
   ProductLambdaName:
     Value: !Ref ProductFunction
 
+  CustomerLambdaArn:
+    Value: !GetAtt CustomerFunction.Arn
+
+  TokenManagerLambdaArn:
+    Value: !GetAtt TokenManagerFunction.Arn
+
+  NotificationLambdaArn:
+    Value: !GetAtt NotificationFunction.Arn
+
   OrderLambdaArn:
     Value: !GetAtt OrderFunction.Arn
 
@@ -899,22 +978,4 @@ Outputs:
     Value: !GetAtt LowStockEventRule.Arn
 
 
-
-  CustomerOrderNotificationTopicArn:
-    Value: !Ref CloudMartCustomerOrderNotificationTopic
-
-  CustomerOrderNotificationTopicName:
-    Value: !GetAtt CloudMartCustomerOrderNotificationTopic.TopicName
-
-  OrderPlacedRuleArn:
-    Value: !GetAtt OrderPlacedEventRule.Arn
-
-  OrderConfirmedRuleArn:
-    Value: !GetAtt OrderConfirmedEventRule.Arn
-
-  OrderCanceledRuleArn:
-    Value: !GetAtt OrderCanceledEventRule.Arn
-
-  OrderFailedRuleArn:
-    Value: !GetAtt OrderFailedEventRule.Arn
 

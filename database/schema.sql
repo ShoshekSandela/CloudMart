@@ -26,6 +26,36 @@ CREATE TABLE IF NOT EXISTS customers (
 
 
 -- ============================================================
+-- 2. EMAIL NOTIFICATION SUBSCRIPTIONS
+-- ============================================================
+-- Notification failures never modify this state. Only the explicit
+-- unsubscribe API changes ACTIVE to UNSUBSCRIBED.
+
+CREATE TABLE IF NOT EXISTS email_subscriptions (
+    subscription_id BIGINT NOT NULL AUTO_INCREMENT,
+    customer_id BIGINT NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    unsubscribed_at DATETIME NULL,
+
+    PRIMARY KEY (subscription_id),
+    UNIQUE KEY uk_email_subscriptions_customer_id (customer_id),
+    INDEX idx_email_subscriptions_status (status),
+
+    CONSTRAINT fk_email_subscriptions_customer
+        FOREIGN KEY (customer_id)
+        REFERENCES customers(customer_id)
+        ON DELETE CASCADE
+
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================
 -- 2. CUSTOMER TOKENS
 -- ============================================================
 -- Stores only SHA-256 hashes of customer authentication tokens.
