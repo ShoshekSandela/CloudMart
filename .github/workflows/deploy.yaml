@@ -574,6 +574,82 @@ jobs:
                ;;
            esac
 
+      - name: Verify deployed Authorizer with current SSM admin token
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
+
+          API_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`RestApiId`].OutputValue' \
+            --output text)
+
+          ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query 'Account' \
+            --output text)
+
+          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
+
+          RAW_AUTH_CONFIG=$(aws ssm get-parameter \
+            --name "$AUTH_PARAMETER" \
+            --with-decryption \
+            --region "$AWS_REGION" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          ADMIN_TOKEN=$(printf '%s' "$RAW_AUTH_CONFIG" | jq -er '.admin_token // .token')
+
+          test -n "$ADMIN_TOKEN" || {
+            echo "ERROR: Admin token is empty in $AUTH_PARAMETER"
+            exit 1
+          }
+
+          METHOD_ARN="arn:aws:execute-api:${AWS_REGION}:${ACCOUNT_ID}:${API_ID}/${ENVIRONMENT}/GET/products"
+
+          export ADMIN_TOKEN
+
+          python - "$METHOD_ARN" <<'PY' > /tmp/authorizer-test.json
+          import json
+          import os
+          import sys
+
+          method_arn = sys.argv[1]
+          token = os.environ["ADMIN_TOKEN"]
+
+          print(json.dumps({
+              "type": "TOKEN",
+              "authorizationToken": "Bearer " + token,
+              "methodArn": method_arn,
+          }))
+          PY
+
+          aws lambda invoke \
+            --function-name "cloudmart-${ENVIRONMENT}-authorizer" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload fileb:///tmp/authorizer-test.json \
+            /tmp/authorizer-response.json \
+            >/tmp/authorizer-invoke-meta.json
+
+          jq -e '
+            .policyDocument.Statement[0].Effect == "Allow"
+            and .principalId == "cloudmart-admin"
+          ' /tmp/authorizer-response.json >/dev/null || {
+            echo "ERROR: Deployed Authorizer rejected the current SSM admin token."
+            echo "Authorizer response:"
+            jq 'del(.context)' /tmp/authorizer-response.json
+            exit 1
+          }
+
+          echo "Direct Authorizer validation passed."
+
+          rm -f \
+            /tmp/authorizer-test.json \
+            /tmp/authorizer-response.json \
+            /tmp/authorizer-invoke-meta.json
+
   initialize:
     name: Initialize CloudMart
     runs-on: ubuntu-latest
@@ -609,3 +685,44 @@ jobs:
           jq -e '.statusCode == 200' /tmp/auth.json >/dev/null
           rm -f /tmp/auth.json
           echo "Authentication tokens initialized successfully."
+
+      - name: Verify GET /products through API Gateway
+        run: |
+          set -euo pipefail
+
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
+
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`RestApiUrl`].OutputValue' \
+            --output text)
+
+          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
+
+          RAW_AUTH_CONFIG=$(aws ssm get-parameter \
+            --name "$AUTH_PARAMETER" \
+            --with-decryption \
+            --region "$AWS_REGION" \
+            --query 'Parameter.Value' \
+            --output text)
+
+          ADMIN_TOKEN=$(printf '%s' "$RAW_AUTH_CONFIG" | jq -er '.admin_token // .token')
+
+          HTTP_STATUS=$(curl -sS \
+            -o /tmp/products-response.json \
+            -w '%{http_code}' \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "${API_URL}/products")
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "ERROR: End-to-end GET /products returned HTTP ${HTTP_STATUS}."
+            echo "Response:"
+            cat /tmp/products-response.json
+            exit 1
+          fi
+
+          echo "End-to-end GET /products authorization check passed with HTTP 200."
+          rm -f /tmp/products-response.json
+

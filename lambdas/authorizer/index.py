@@ -237,10 +237,11 @@ def lambda_handler(event, context):
         raise Exception("Unauthorized")
 
     logger.info(
-        "Authorization request received: deployment_version=%s token_length=%d token_fingerprint=%s",
+        "Authorization request received: deployment_version=%s token_length=%d token_fingerprint=%s method_arn=%s",
         DEPLOYMENT_VERSION,
         len(token),
         token_fingerprint(token),
+        method_arn,
     )
 
     connection = None
@@ -254,6 +255,13 @@ def lambda_handler(event, context):
             raise
 
         configured_admin_token = normalize_token(config["admin_token"])
+
+        logger.info(
+            "Loaded authentication configuration: parameter=%s configured_token_length=%d configured_token_fingerprint=%s",
+            TOKEN_PARAMETER_NAME,
+            len(configured_admin_token),
+            token_fingerprint(configured_admin_token),
+        )
 
         if secrets.compare_digest(token, configured_admin_token):
             identity = {
