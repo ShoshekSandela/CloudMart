@@ -32,24 +32,54 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy network stack
+      - name: Repair CloudFormation execution role
+        shell: bash
         run: |
           set -euo pipefail
 
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+          ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ROLE_NAME}"
+
+          # The pre-existing GitHub Actions role is the bootstrap role.
+          # It is already permitted to manage the CloudMart execution role.
+          TRUST_POLICY='{
+            "Version":"2012-10-17",
+            "Statement":[
+              {
+                "Effect":"Allow",
+                "Principal":{"Service":"cloudformation.amazonaws.com"},
+                "Action":"sts:AssumeRole"
+              }
+            ]
+          }'
+
+          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
+            echo "CloudFormation execution role exists. Repairing its trust policy."
+            aws iam update-assume-role-policy               --role-name "$ROLE_NAME"               --policy-document "$TRUST_POLICY"
+          else
+            echo "CloudFormation execution role is missing. Creating the code-defined role."
+            aws iam create-role               --role-name "$ROLE_NAME"               --assume-role-policy-document "$TRUST_POLICY"               --description "CloudMart CloudFormation service role used by GitHub Actions."
+
+            for POLICY_ARN in               arn:aws:iam::aws:policy/AmazonVPCFullAccess               arn:aws:iam::aws:policy/AmazonEC2FullAccess               arn:aws:iam::aws:policy/AmazonRDSFullAccess               arn:aws:iam::aws:policy/AmazonS3FullAccess               arn:aws:iam::aws:policy/AmazonSSMFullAccess               arn:aws:iam::aws:policy/AWSLambda_FullAccess               arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator               arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess               arn:aws:iam::aws:policy/AmazonSNSFullAccess               arn:aws:iam::aws:policy/CloudWatchLogsFullAccess               arn:aws:iam::aws:policy/IAMFullAccess
+            do
+              aws iam attach-role-policy                 --role-name "$ROLE_NAME"                 --policy-arn "$POLICY_ARN"
+            done
+          fi
+
+          echo "Waiting for IAM role propagation..."
+          sleep 10
+
+          aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.{Arn:Arn,RoleName:RoleName}'             --output table
+
+      - name: Deploy network stack
+        run: |
+          set -euo pipefail
           STACK_NAME="cloudmart-network-${ENVIRONMENT}"
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+          CFN_ROLE_ARN=$(aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.Arn'             --output text)
 
-          echo "Deploying Network stack: $STACK_NAME"
-          echo "Region: $AWS_REGION"
-          echo "Template: cloudformation/network-stack.yaml"
-
-          aws cloudformation deploy \
-            --template-file cloudformation/network-stack.yaml \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+          aws cloudformation deploy             --template-file cloudformation/network-stack.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --role-arn "$CFN_ROLE_ARN"             --parameter-overrides Environment="$ENVIRONMENT"             --capabilities CAPABILITY_NAMED_IAM             --no-fail-on-empty-changeset
 
           echo "Network stack deployment completed."
 
@@ -64,40 +94,39 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Deploy IAM stack
+      - name: Verify CloudFormation execution role
+        shell: bash
         run: |
           set -euo pipefail
 
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+
+          aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.AssumeRolePolicyDocument'             --output json >/dev/null
+
+          echo "CloudFormation execution role is available."
+
+      - name: Deploy IAM stack
+        run: |
+          set -euo pipefail
           STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
+          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
+          CFN_ROLE_ARN=$(aws iam get-role --role-name "$ROLE_NAME" --query 'Role.Arn' --output text 2>/dev/null || true)
 
-          echo "Deploying IAM stack: $STACK_NAME"
-          echo "Region: $AWS_REGION"
-          echo "Template: cloudformation/iam-stack.yaml"
-
-          aws cloudformation deploy \
-            --template-file cloudformation/iam-stack.yaml \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-            --capabilities CAPABILITY_NAMED_IAM \
+          DEPLOY_ARGS=(
+            --template-file cloudformation/iam-stack.yaml
+            --stack-name "$STACK_NAME"
+            --region "$AWS_REGION"
+            --parameter-overrides Environment="$ENVIRONMENT"
+            --capabilities CAPABILITY_NAMED_IAM
             --no-fail-on-empty-changeset
+          )
 
-          echo "IAM stack deployment completed."
+          # The first run uses the bootstrap GitHub role; later runs use the code-managed execution role.
+          if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
+            DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
+          fi
 
-          STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query "Stacks[0].StackStatus"             --output text)
-
-          echo "IAM Stack Status: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "IAM stack is ready."
-              ;;
-            *)
-              echo "ERROR: IAM stack is not ready: $STATUS"
-              exit 1
-              ;;
-          esac
+          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
 
   deploy-data:
     name: Deploy Data Stack
@@ -193,14 +222,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure GitHub Actions bootstrap permissions
-        shell: bash
+      - name: Ensure SNS recovery permissions
         run: |
           set -euo pipefail
 
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-
-          cat > /tmp/cloudmart-bootstrap-policy.json <<'EOF'
+          cat > /tmp/cloudmart-sns-recovery-policy.json <<'EOF'
           {
             "Version": "2012-10-17",
             "Statement": [
@@ -212,36 +238,14 @@ jobs:
                   "sns:ListSubscriptionsByTopic"
                 ],
                 "Resource": "*"
-              },
-              {
-                "Sid": "CloudMartReadAmazonLinuxAmiParameter",
-                "Effect": "Allow",
-                "Action": [
-                  "ssm:GetParameter",
-                  "ssm:GetParameters"
-                ],
-                "Resource": "arn:aws:ssm:${AWS_REGION}::parameter/aws/service/ami-amazon-linux-latest/*"
-              },
-              {
-                "Sid": "CloudMartInitializeLambdas",
-                "Effect": "Allow",
-                "Action": [
-                  "lambda:InvokeFunction"
-                ],
-                "Resource": [
-                  "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:cloudmart-${ENVIRONMENT}-authorizer",
-                  "arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:cloudmart-${ENVIRONMENT}-product"
-                ]
               }
             ]
           }
           EOF
 
-          sed -i "s/\${AWS_REGION}/$AWS_REGION/g; s/\${AWS_ACCOUNT_ID}/$AWS_ACCOUNT_ID/g; s/\${ENVIRONMENT}/$ENVIRONMENT/g"             /tmp/cloudmart-bootstrap-policy.json
+          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartSNSRecoveryDiscovery"             --policy-document file:///tmp/cloudmart-sns-recovery-policy.json
 
-          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartBootstrapRuntimePermissions"             --policy-document file:///tmp/cloudmart-bootstrap-policy.json
-
-          echo "GitHub Actions bootstrap permissions are available."
+          echo "SNS recovery permissions are available."
 
       - name: Prepare schema
         run: cp database/schema.sql lambdas/product/schema.sql
@@ -329,8 +333,8 @@ jobs:
           fi
 
           # Recover retained SNS resources through CloudFormation.
-          # This re-adopts retained topics/subscriptions instead of trying to
-          # recreate them after a failed Application stack was deleted.
+          # This prevents ResourceExistenceCheck failures after a failed
+          # Application stack was deleted while SNS resources were retained.
           LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
           CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
 
@@ -344,11 +348,38 @@ jobs:
             --query 'Topics[].TopicArn' \
             --output text | tr '\t' '\n' | grep -E ":${CUSTOMER_TOPIC_NAME}$" | head -n 1 || true)
 
-          rm -f /tmp/cloudmart-sns-recovery.json /tmp/cloudmart-sns-import.json
+          rm -f /tmp/cloudmart-sns-recovery.yaml /tmp/cloudmart-sns-import.json
 
           if [ -n "$LOW_STOCK_TOPIC_ARN" ] || [ -n "$CUSTOMER_TOPIC_ARN" ]; then
             echo "Retained CloudMart SNS topic(s) detected."
             echo "Re-adopting retained SNS resources into CloudFormation."
+
+            cat > /tmp/cloudmart-sns-recovery.yaml <<'EOF'
+          AWSTemplateFormatVersion: "2010-09-09"
+          Resources:
+          EOF
+
+            if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartLowStockTopic:
+            Type: AWS::SNS::Topic
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicName: "$LOW_STOCK_TOPIC_NAME"
+          EOF
+            fi
+
+            if [ -n "$CUSTOMER_TOPIC_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartCustomerOrderNotificationTopic:
+            Type: AWS::SNS::Topic
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicName: "$CUSTOMER_TOPIC_NAME"
+          EOF
+            fi
 
             LOW_STOCK_SUBSCRIPTION_ARN=""
             CUSTOMER_SUBSCRIPTION_ARN=""
@@ -371,69 +402,32 @@ jobs:
                   | head -n 1 || true)
             fi
 
-            # Build a valid CloudFormation template with every resource nested
-            # under Resources. The previous workflow generated a template
-            # where Resources became null, which caused:
-            # [/Resources] 'null' values are not allowed in templates.
-            jq -n \
-              --arg lowTopic "$LOW_STOCK_TOPIC_NAME" \
-              --arg lowTopicArn "$LOW_STOCK_TOPIC_ARN" \
-              --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN" \
-              --arg adminEmail "$ADMIN_EMAIL" \
-              --arg customerTopic "$CUSTOMER_TOPIC_NAME" \
-              --arg customerTopicArn "$CUSTOMER_TOPIC_ARN" \
-              --arg customerSub "$CUSTOMER_SUBSCRIPTION_ARN" \
-              --arg customerEmail "$CUSTOMER_EMAIL" \
-              '{
-                AWSTemplateFormatVersion:"2010-09-09",
-                Resources: (
-                  {}
-                  + (if $lowTopicArn != "" then {
-                      CloudMartLowStockTopic:{
-                        Type:"AWS::SNS::Topic",
-                        DeletionPolicy:"Retain",
-                        UpdateReplacePolicy:"Retain",
-                        Properties:{TopicName:$lowTopic}
-                      }
-                    } else {} end)
-                  + (if $lowSub != "" then {
-                      CloudMartLowStockEmailSubscription:{
-                        Type:"AWS::SNS::Subscription",
-                        DeletionPolicy:"Retain",
-                        UpdateReplacePolicy:"Retain",
-                        Properties:{
-                          TopicArn:$lowTopicArn,
-                          Protocol:"email",
-                          Endpoint:$adminEmail
-                        }
-                      }
-                    } else {} end)
-                  + (if $customerTopicArn != "" then {
-                      CloudMartCustomerOrderNotificationTopic:{
-                        Type:"AWS::SNS::Topic",
-                        DeletionPolicy:"Retain",
-                        UpdateReplacePolicy:"Retain",
-                        Properties:{TopicName:$customerTopic}
-                      }
-                    } else {} end)
-                  + (if $customerSub != "" then {
-                      CloudMartCustomerOrderNotificationSubscription:{
-                        Type:"AWS::SNS::Subscription",
-                        DeletionPolicy:"Retain",
-                        UpdateReplacePolicy:"Retain",
-                        Properties:{
-                          TopicArn:$customerTopicArn,
-                          Protocol:"email",
-                          Endpoint:$customerEmail
-                        }
-                      }
-                    } else {} end)
-                )
-              }' > /tmp/cloudmart-sns-recovery.json
+            if [ -n "$LOW_STOCK_SUBSCRIPTION_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartLowStockEmailSubscription:
+            Type: AWS::SNS::Subscription
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicArn: "$LOW_STOCK_TOPIC_ARN"
+              Protocol: email
+              Endpoint: "$ADMIN_EMAIL"
+          EOF
+            fi
 
-            # Import identifiers must use TopicArn for topics and Arn for
-            # subscriptions. SubscriptionArn is not the CloudFormation
-            # resource-import identifier.
+            if [ -n "$CUSTOMER_SUBSCRIPTION_ARN" ]; then
+              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
+          CloudMartCustomerOrderNotificationSubscription:
+            Type: AWS::SNS::Subscription
+            DeletionPolicy: Retain
+            UpdateReplacePolicy: Retain
+            Properties:
+              TopicArn: "$CUSTOMER_TOPIC_ARN"
+              Protocol: email
+              Endpoint: "$CUSTOMER_EMAIL"
+          EOF
+            fi
+
             jq -n \
               --arg lowTopic "$LOW_STOCK_TOPIC_NAME" \
               --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN" \
@@ -445,67 +439,60 @@ jobs:
                 (if $lowTopicArn != "" then {
                   ResourceType:"AWS::SNS::Topic",
                   LogicalResourceId:"CloudMartLowStockTopic",
-                  ResourceIdentifier:{TopicArn:$lowTopicArn}
+                  ResourceIdentifier:{TopicName:$lowTopic}
                 } else empty end),
                 (if $lowSub != "" then {
                   ResourceType:"AWS::SNS::Subscription",
                   LogicalResourceId:"CloudMartLowStockEmailSubscription",
-                  ResourceIdentifier:{Arn:$lowSub}
+                  ResourceIdentifier:{SubscriptionArn:$lowSub}
                 } else empty end),
                 (if $customerTopicArn != "" then {
                   ResourceType:"AWS::SNS::Topic",
                   LogicalResourceId:"CloudMartCustomerOrderNotificationTopic",
-                  ResourceIdentifier:{TopicArn:$customerTopicArn}
+                  ResourceIdentifier:{TopicName:$customerTopic}
                 } else empty end),
                 (if $customerSub != "" then {
                   ResourceType:"AWS::SNS::Subscription",
                   LogicalResourceId:"CloudMartCustomerOrderNotificationSubscription",
-                  ResourceIdentifier:{Arn:$customerSub}
+                  ResourceIdentifier:{SubscriptionArn:$customerSub}
                 } else empty end)
               ]' > /tmp/cloudmart-sns-import.json
 
-            jq -e '.Resources | type == "object" and length > 0' \
-              /tmp/cloudmart-sns-recovery.json >/dev/null
-
-            jq -e 'type == "array" and length > 0' \
-              /tmp/cloudmart-sns-import.json >/dev/null
-
-            echo "SNS recovery template:"
-            jq . /tmp/cloudmart-sns-recovery.json
-
-            echo "SNS import resources:"
-            jq . /tmp/cloudmart-sns-import.json
-
             IMPORT_COUNT=$(jq 'length' /tmp/cloudmart-sns-import.json)
-            echo "Importing $IMPORT_COUNT retained SNS resource(s)."
 
-            RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
+            if [ "$IMPORT_COUNT" -gt 0 ]; then
+              echo "Importing $IMPORT_COUNT retained SNS resource(s)."
 
-            aws cloudformation create-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$RECOVERY_CHANGESET" \
-              --change-set-type IMPORT \
-              --template-body file:///tmp/cloudmart-sns-recovery.json \
-              --resources-to-import file:///tmp/cloudmart-sns-import.json \
-              --role-arn "$CFN_ROLE_ARN" \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --region "$AWS_REGION"
+              RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
 
-            aws cloudformation wait change-set-create-complete \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$RECOVERY_CHANGESET" \
-              --region "$AWS_REGION"
+              # IMPORT creates the new CloudFormation stack from the
+              # already-existing SNS resources. No SNS resource is recreated.
+              aws cloudformation create-change-set \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$RECOVERY_CHANGESET" \
+                --change-set-type IMPORT \
+                --template-body file:///tmp/cloudmart-sns-recovery.yaml \
+                --resources-to-import file:///tmp/cloudmart-sns-import.json \
+                --role-arn "$CFN_ROLE_ARN" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --region "$AWS_REGION"
 
-            aws cloudformation execute-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$RECOVERY_CHANGESET" \
-              --region "$AWS_REGION"
+              aws cloudformation wait change-set-create-complete \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$RECOVERY_CHANGESET" \
+                --region "$AWS_REGION"
 
-            aws cloudformation wait stack-import-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
+              aws cloudformation execute-change-set \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$RECOVERY_CHANGESET" \
+                --region "$AWS_REGION"
 
-            echo "Retained SNS resources successfully re-adopted."
+              aws cloudformation wait stack-import-complete \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+
+              echo "Retained SNS resources successfully re-adopted."
+            fi
           fi
 
           # SAM updates the recovered stack or creates a new stack when no
