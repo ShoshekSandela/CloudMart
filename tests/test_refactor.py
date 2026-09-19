@@ -51,6 +51,13 @@ class CloudMartRefactorTests(unittest.TestCase):
         self.assertIn("subscription state is not modified", notification)
         self.assertNotIn("status = 'UNSUBSCRIBED'", notification)
 
+    def test_authorizer_role_can_read_auth_token_parameter(self):
+        iam = read("cloudformation/iam-stack.yaml")
+        auth_parameter_arn = (
+            "parameter/cloudmart/${Environment}/auth/token"
+        )
+        self.assertIn(auth_parameter_arn, iam)
+
     def test_infrastructure_contains_new_components_and_order_events(self):
         app = read("cloudformation/application-stack.yaml")
         self.assertIn("CustomerFunction:", app)
