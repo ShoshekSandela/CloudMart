@@ -141,6 +141,7 @@ jobs:
               --region "$AWS_REGION"
 
             echo "IAM stack removed."
+            STACK_STATUS=""
           fi
 
       - name: Deploy IAM stack
@@ -149,23 +150,66 @@ jobs:
           set -euo pipefail
 
           STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
+          CHANGE_SET_NAME="cloudmart-iam-${ENVIRONMENT}-$(date +%s)"
 
-          # IMPORTANT:
-          # Do not pass --role-arn here.
-          # The existing GitHub Actions OIDC role is managed outside this project.
-          # It must deploy the IAM stack that creates/manages the
-          # CloudFormation execution role.
-          aws cloudformation deploy \
-            --template-file cloudformation/iam-stack.yaml \
+          STACK_STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --parameter-overrides Environment="$ENVIRONMENT" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
+
+          if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
+            CHANGE_SET_TYPE="CREATE"
+          else
+            CHANGE_SET_TYPE="UPDATE"
+          fi
+
+          echo "IAM stack deployment mode: $CHANGE_SET_TYPE"
+
+          # IMPORTANT:
+          # - No Bootstrap resources are created here.
+          # - The existing GitHub Actions OIDC role remains external to CloudMart.
+          # - Existing CloudMart-named IAM resources are automatically adopted
+          #   by CloudFormation when they already exist.
+          #
+          # This fixes AWS::EarlyValidation::ResourceExistenceCheck caused by
+          # old CloudMart IAM roles/instance profile left behind by a previous
+          # CloudFormation stack.
+          aws cloudformation create-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --change-set-type "$CHANGE_SET_TYPE" \
+            --template-body file://cloudformation/iam-stack.yaml \
+            --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
             --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+            --import-existing-resources \
+            --region "$AWS_REGION"
 
-          echo "IAM stack deployment completed."
+          aws cloudformation wait change-set-create-complete \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"
 
-          IAM_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text)
+          aws cloudformation execute-change-set \
+            --stack-name "$STACK_NAME" \
+            --change-set-name "$CHANGE_SET_NAME" \
+            --region "$AWS_REGION"
+
+          if [ "$CHANGE_SET_TYPE" = "CREATE" ]; then
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          else
+            aws cloudformation wait stack-update-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+          fi
+
+          IAM_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
 
           case "$IAM_STATUS" in
             CREATE_COMPLETE|UPDATE_COMPLETE)

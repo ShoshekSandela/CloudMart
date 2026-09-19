@@ -20,6 +20,7 @@ Resources:
   # CloudFormation uses this role to create the infrastructure on behalf of GitHub Actions.
   CloudFormationExecutionRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
     Properties:
       RoleName: !Sub cloudmart-${Environment}-cloudformation-execution-role
       Description: CloudMart CloudFormation service role used by GitHub Actions.
@@ -52,6 +53,7 @@ Resources:
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
     Properties:
       RoleName: !Sub cloudmart-${Environment}-lambda-product-role
       Description: CloudMart Product Lambda execution role.
@@ -94,6 +96,7 @@ Resources:
   # Gives Order Lambda access to database parameters and the CloudMart event bus.
   OrderLambdaRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
     Properties:
       RoleName: !Sub cloudmart-${Environment}-lambda-order-role
       Description: CloudMart Order Lambda execution role.
@@ -136,6 +139,7 @@ Resources:
   # Gives the Authorizer access to its token and database parameters.
   LambdaAuthorizerRole:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
     Properties:
       RoleName: !Sub cloudmart-${Environment}-lambda-authorizer-role
       Description: CloudMart API Authorizer Lambda execution role.
@@ -180,6 +184,7 @@ Resources:
   # Gives the Operations EC2 instance Session Manager and database parameter access.
   EC2Role:
     Type: AWS::IAM::Role
+    DeletionPolicy: Retain
     Properties:
       RoleName: !Sub cloudmart-${Environment}-ec2-role
       Description: CloudMart Operations EC2 instance role.
@@ -216,6 +221,7 @@ Resources:
   # Connects the EC2 role to the EC2 instance created by the Application stack.
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
+    DeletionPolicy: Retain
     Properties:
       InstanceProfileName: !Sub cloudmart-${Environment}-ec2-instance-profile
       Roles:
