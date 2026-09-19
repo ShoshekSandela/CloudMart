@@ -345,55 +345,102 @@ jobs:
             echo "Legacy AuthTokenParameter is still owned by the Data stack."
             echo "Applying Retain to the existing resource without changing its properties."
 
-            # get-template returns TemplateBody as a YAML/JSON string.
-            # Do not parse the outer AWS CLI JSON response as if TemplateBody
-            # were already a Python dictionary. We only need to add the two
-            # CloudFormation policy attributes to the existing resource.
+            # CloudFormation may return the original template as either
+            # JSON or YAML text. Handle both formats.
             aws cloudformation get-template \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
               --template-stage Original \
-              --query 'TemplateBody' \
-              --output text > /tmp/cloudmart-data-current.yaml
+              --output json > /tmp/cloudmart-data-current.json
 
             python - <<'PY'
-          from pathlib import Path
+          import json
           import re
+          from pathlib import Path
 
-          source = Path("/tmp/cloudmart-data-current.yaml").read_text()
+          outer = json.loads(Path("/tmp/cloudmart-data-current.json").read_text())
+          template = outer["TemplateBody"]
 
-          match = re.search(r"(?m)^  AuthTokenParameter:\\s*$", source)
-          if not match:
-              raise SystemExit(
-                  "AuthTokenParameter was not found in the current Data stack template"
+          # If TemplateBody itself is JSON, modify it structurally.
+          try:
+              document = json.loads(template)
+          except (TypeError, json.JSONDecodeError):
+              document = None
+
+          if isinstance(document, dict):
+              resources = document.get("Resources", {})
+              resource = resources.get("AuthTokenParameter")
+
+              if not isinstance(resource, dict):
+                  raise SystemExit(
+                      "AuthTokenParameter was not found in the current Data stack template"
+                  )
+
+              # Change only CloudFormation deletion behavior. Do not change
+              # the existing SSM parameter name, type, value, or properties.
+              resource["DeletionPolicy"] = "Retain"
+              resource["UpdateReplacePolicy"] = "Retain"
+
+              Path("/tmp/cloudmart-data-retain.json").write_text(
+                  json.dumps(document, separators=(",", ":"))
               )
+          else:
+              # Otherwise the original template is YAML. Add the policies
+              # immediately below AuthTokenParameter, preserving the rest.
+              source = str(template)
 
-          # Avoid adding duplicate policy attributes if this migration is
-          # retried after a partial run.
-          resource_start = match.end()
-          next_resource = re.search(
-              r"(?m)^  [A-Za-z0-9][A-Za-z0-9]*:\\s*$",
-              source[resource_start:],
-          )
-          resource_end = (
-              resource_start + next_resource.start()
-              if next_resource
-              else len(source)
-          )
-          resource_block = source[match.start():resource_end]
+              match = re.search(
+                  r"(?m)^(\s*)AuthTokenParameter:\s*$",
+                  source,
+              )
+              if not match:
+                  raise SystemExit(
+                      "AuthTokenParameter was not found in the current Data stack template"
+                  )
 
-          additions = []
-          if not re.search(r"(?m)^    DeletionPolicy:\\s*Retain\\s*$", resource_block):
-              additions.append("    DeletionPolicy: Retain")
-          if not re.search(r"(?m)^    UpdateReplacePolicy:\\s*Retain\\s*$", resource_block):
-              additions.append("    UpdateReplacePolicy: Retain")
-
-          if additions:
+              indent = match.group(1)
               insert_at = match.end()
-              source = source[:insert_at] + "\n" + "\n".join(additions) + source[insert_at:]
 
-          Path("/tmp/cloudmart-data-retain.yaml").write_text(source)
+              # Avoid duplicate policy attributes on a retry.
+              next_resource = re.search(
+                  r"(?m)^\s*[A-Za-z0-9][A-Za-z0-9_-]*:\s*$",
+                  source[insert_at:],
+              )
+              resource_end = (
+                  insert_at + next_resource.start()
+                  if next_resource
+                  else len(source)
+              )
+              resource_block = source[match.start():resource_end]
+
+              additions = []
+              if not re.search(
+                  r"(?m)^\s+DeletionPolicy:\s*Retain\s*$",
+                  resource_block,
+              ):
+                  additions.append(f"{indent}  DeletionPolicy: Retain")
+              if not re.search(
+                  r"(?m)^\s+UpdateReplacePolicy:\s*Retain\s*$",
+                  resource_block,
+              ):
+                  additions.append(f"{indent}  UpdateReplacePolicy: Retain")
+
+              if additions:
+                  source = (
+                      source[:insert_at]
+                      + "\n"
+                      + "\n".join(additions)
+                      + source[insert_at:]
+                  )
+
+              Path("/tmp/cloudmart-data-retain.yaml").write_text(source)
           PY
+
+            if [ -f /tmp/cloudmart-data-retain.json ]; then
+              RETAIN_TEMPLATE=/tmp/cloudmart-data-retain.json
+            else
+              RETAIN_TEMPLATE=/tmp/cloudmart-data-retain.yaml
+            fi
 
             aws cloudformation deploy \
               --template-file /tmp/cloudmart-data-retain.json \
