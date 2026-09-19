@@ -22,6 +22,21 @@ class CloudMartRefactorTests(unittest.TestCase):
         self.assertNotIn("initialize_tokens", function_names)
         self.assertNotIn("put_parameter", source)
 
+
+    def test_authorizer_normalizes_bearer_and_configured_token(self):
+        source = read("lambdas/authorizer/index.py")
+        self.assertIn("def normalize_token(value):", source)
+        self.assertIn('token.lower().startswith("bearer ")', source)
+        self.assertIn('config["admin_token"] = normalize_token(admin_token)', source)
+        self.assertIn("secrets.compare_digest(", source)
+
+    def test_authorizer_has_safe_token_diagnostics_without_logging_secrets(self):
+        source = read("lambdas/authorizer/index.py")
+        self.assertIn("def token_fingerprint(token):", source)
+        self.assertIn("token_fingerprint(token)", source)
+        self.assertNotIn("logger.info(token)", source)
+        self.assertNotIn("logger.info(config[", source)
+
     def test_product_lambda_has_no_customer_business_functions(self):
         tree = ast.parse(read("lambdas/product/index.py"))
         function_names = {

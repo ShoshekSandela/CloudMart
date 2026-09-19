@@ -49,16 +49,49 @@ def hash_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def normalize_token(value):
+    """Normalize an Authorization token without changing its value semantics.
+
+    API Gateway supplies the complete Authorization header to a TOKEN
+    authorizer. Accept both the conventional `Bearer <token>` form and a
+    legacy raw-token form, and remove accidental surrounding whitespace.
+    """
+    token = str(value or "").strip()
+
+    if token.lower().startswith("bearer "):
+        token = token[7:].strip()
+
+    return token
+
+
+def token_fingerprint(token):
+    """Return a non-secret fingerprint for diagnostics.
+
+    The raw token is never written to logs.
+    """
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+
+
 def get_authentication_config():
     value = get_ssm_parameter(TOKEN_PARAMETER_NAME, decrypt=True)
+
     try:
         config = json.loads(value)
     except json.JSONDecodeError as exc:
         raise ValueError("Authorization parameter must contain JSON") from exc
 
-    if not isinstance(config, dict) or not config.get("admin_token"):
+    if not isinstance(config, dict):
+        raise ValueError("Authorization parameter must contain an object")
+
+    # Current format is {"admin_token": "<token>"}.
+    # Accept the legacy {"token": "<token>"} format only for backward
+    # compatibility during migration. Do not generate or rotate tokens here.
+    admin_token = config.get("admin_token") or config.get("token")
+
+    if not admin_token:
         raise ValueError("ADMIN token is not initialized")
 
+    config["admin_token"] = normalize_token(admin_token)
     return config
 
 
@@ -95,7 +128,11 @@ def find_customer_identity(connection, token):
 
 
 def find_identity(config, token, connection):
-    if secrets.compare_digest(token, str(config["admin_token"])):
+    configured_admin_token = normalize_token(config["admin_token"])
+
+    if configured_admin_token and secrets.compare_digest(
+        token, configured_admin_token
+    ):
         return {
             "role": "ADMIN",
             "email": None,
@@ -192,12 +229,16 @@ def lambda_handler(event, context):
     if not method_arn or not authorization_header:
         raise Exception("Unauthorized")
 
-    token = authorization_header.strip()
-    if token.lower().startswith("bearer "):
-        token = token[7:].strip()
+    token = normalize_token(authorization_header)
 
     if not token:
         raise Exception("Unauthorized")
+
+    logger.info(
+        "Authorization request received: token_length=%d token_fingerprint=%s",
+        len(token),
+        token_fingerprint(token),
+    )
 
     connection = None
     try:
@@ -209,25 +250,41 @@ def lambda_handler(event, context):
             logger.exception("Failed to load authentication configuration from SSM parameter %s", TOKEN_PARAMETER_NAME)
             raise
 
-        if secrets.compare_digest(token, str(config["admin_token"])):
+        configured_admin_token = normalize_token(config["admin_token"])
+
+        if secrets.compare_digest(token, configured_admin_token):
             identity = {
                 "role": "ADMIN",
                 "email": None,
                 "customer_id": None,
             }
+            logger.info(
+                "Admin token validation succeeded: token_length=%d token_fingerprint=%s",
+                len(token),
+                token_fingerprint(token),
+            )
         else:
+            logger.warning(
+                "Admin token validation did not match: supplied_length=%d "
+                "configured_length=%d supplied_fingerprint=%s "
+                "configured_fingerprint=%s",
+                len(token),
+                len(configured_admin_token),
+                token_fingerprint(token),
+                token_fingerprint(configured_admin_token),
+            )
             connection = get_db_connection()
             identity = find_customer_identity(connection, token)
 
         if not identity:
+            logger.warning(
+                "Authorization failed: token was not mapped to an active identity"
+            )
             raise Exception("Unauthorized")
 
         parts = method_arn.split("/")
         if len(parts) < 2:
             raise Exception("Unauthorized")
-
-        api_arn = parts[0]
-        stage = parts[1]
 
         if identity["role"] == "ADMIN":
             principal_id = "cloudmart-admin"
