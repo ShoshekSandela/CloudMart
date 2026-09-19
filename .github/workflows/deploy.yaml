@@ -40,70 +40,63 @@ jobs:
           set -euo pipefail
 
           STACK_NAME="cloudmart-network-${ENVIRONMENT}"
-          IAM_STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
 
-          NETWORK_STATUS=$(aws cloudformation describe-stacks \
+          STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
-          IAM_STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$IAM_STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || true)
+          echo "Network stack status: ${STATUS:-NOT_FOUND}"
 
-          echo "Network stack status: ${NETWORK_STATUS:-NOT_FOUND}"
-          echo "IAM stack status: ${IAM_STATUS:-NOT_FOUND}"
+          if [ -z "$STATUS" ] || [ "$STATUS" = "None" ]; then
+            echo "Network stack does not exist. Creating it with the existing GitHub Actions role."
 
-          # The existing Network stack currently has an invalid CloudFormation
-          # service-role association. Do not try to update it until the IAM
-          # stack has recreated/validated the execution role.
-          if [ -n "$NETWORK_STATUS" ] && \
-             [ "$NETWORK_STATUS" != "None" ] && \
-             [ "$NETWORK_STATUS" != "NOT_FOUND" ] && \
-             [ "$NETWORK_STATUS" != "CREATE_IN_PROGRESS" ] && \
-             [ "$NETWORK_STATUS" != "CREATE_FAILED" ] && \
-             [ "$NETWORK_STATUS" != "DELETE_IN_PROGRESS" ] && \
-             [ "$NETWORK_STATUS" != "DELETE_FAILED" ] && \
-             [ "$NETWORK_STATUS" != "DELETE_COMPLETE" ]; then
+            aws cloudformation deploy \
+              --template-file cloudformation/network-stack.yaml \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --parameter-overrides Environment="$ENVIRONMENT" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset
 
-            if [ "$IAM_STATUS" != "CREATE_COMPLETE" ] && \
-               [ "$IAM_STATUS" != "UPDATE_COMPLETE" ]; then
-              echo "Existing Network stack found while IAM execution role is not ready."
-              echo "Preserving the existing Network stack for this run."
-              echo "IAM will repair/recreate the execution role next."
+            echo "Network stack created."
+            exit 0
+          fi
+
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Network stack is healthy."
+              ;;
+            UPDATE_ROLLBACK_COMPLETE)
+              echo "Network stack is UPDATE_ROLLBACK_COMPLETE."
+              echo "Preserving the existing Network stack to protect its exports."
+              echo "No Network update will be attempted in this run."
               exit 0
-            fi
-          fi
-
-          DEPLOY_ARGS=(
-            --template-file cloudformation/network-stack.yaml
-            --stack-name "$STACK_NAME"
-            --region "$AWS_REGION"
-            --parameter-overrides Environment="$ENVIRONMENT"
-            --capabilities CAPABILITY_NAMED_IAM
-            --no-fail-on-empty-changeset
-          )
-
-          # Only pass the CloudFormation service role after IAM has successfully
-          # created/validated it. For a new Network stack, the GitHub bootstrap
-          # role performs the initial deployment.
-          if [ "$IAM_STATUS" = "CREATE_COMPLETE" ] || \
-             [ "$IAM_STATUS" = "UPDATE_COMPLETE" ]; then
-            CFN_ROLE_ARN=$(aws iam get-role \
-              --role-name "$ROLE_NAME" \
-              --query 'Role.Arn' \
-              --output text)
-
-            if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
-              DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
-            fi
-          fi
-
-          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
+              ;;
+            CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
+              echo "ERROR: Network stack is busy: $STATUS"
+              exit 1
+              ;;
+            CREATE_FAILED|UPDATE_ROLLBACK_FAILED|DELETE_FAILED)
+              echo "ERROR: Network stack is in failed state: $STATUS"
+              exit 1
+              ;;
+            DELETE_COMPLETE)
+              echo "Network stack is deleted. Recreating it."
+              aws cloudformation deploy \
+                --template-file cloudformation/network-stack.yaml \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --parameter-overrides Environment="$ENVIRONMENT" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --no-fail-on-empty-changeset
+              ;;
+            *)
+              echo "ERROR: Unexpected Network stack state: $STATUS"
+              exit 1
+              ;;
+          esac
 
           echo "Network stack deployment completed."
 
@@ -159,7 +152,7 @@ jobs:
 
           # IMPORTANT:
           # Do not pass --role-arn here.
-          # The existing GitHub Actions OIDC role is the bootstrap role.
+          # The existing GitHub Actions OIDC role is managed outside this project.
           # It must deploy the IAM stack that creates/manages the
           # CloudFormation execution role.
           aws cloudformation deploy \
@@ -171,6 +164,18 @@ jobs:
             --no-fail-on-empty-changeset
 
           echo "IAM stack deployment completed."
+
+          IAM_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text)
+
+          case "$IAM_STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "IAM stack is healthy: $IAM_STATUS"
+              ;;
+            *)
+              echo "ERROR: IAM stack ended in unexpected state: $IAM_STATUS"
+              exit 1
+              ;;
+          esac
 
   deploy-data:
     name: Deploy Data Stack
@@ -220,22 +225,19 @@ jobs:
             echo "Unfinished Data stack removed."
           fi
 
-          # Remove the legacy auth token parameter if it exists outside CloudFormation.
-          # The Data stack will recreate and own this parameter.
+          # Only remove an orphan auth token parameter when the Data stack
+          # does not exist. Never mutate a parameter owned by CloudFormation.
           AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
 
-          if aws ssm get-parameter \
-            --name "$AUTH_PARAMETER" \
-            --region "$AWS_REGION" \
-            >/dev/null 2>&1; then
+          if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
+            if aws ssm get-parameter               --name "$AUTH_PARAMETER"               --region "$AWS_REGION"               >/dev/null 2>&1; then
 
-            echo "Removing legacy SSM parameter: $AUTH_PARAMETER"
+              echo "Removing orphan auth token parameter: $AUTH_PARAMETER"
 
-            aws ssm delete-parameter \
-              --name "$AUTH_PARAMETER" \
-              --region "$AWS_REGION"
+              aws ssm delete-parameter                 --name "$AUTH_PARAMETER"                 --region "$AWS_REGION"
 
-            echo "Legacy auth token parameter removed."
+              echo "Orphan auth token parameter removed."
+            fi
           fi
 
           aws cloudformation deploy \
@@ -382,15 +384,22 @@ jobs:
           LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
           CUSTOMER_TOPIC_NAME="cloudmart-${ENVIRONMENT}-customer-order-notifications"
 
-          LOW_STOCK_TOPIC_ARN=$(aws sns list-topics \
-            --region "$AWS_REGION" \
-            --query 'Topics[].TopicArn' \
-            --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
+          LOW_STOCK_TOPIC_ARN=""
+          CUSTOMER_TOPIC_ARN=""
 
-          CUSTOMER_TOPIC_ARN=$(aws sns list-topics \
-            --region "$AWS_REGION" \
-            --query 'Topics[].TopicArn' \
-            --output text | tr '\t' '\n' | grep -E ":${CUSTOMER_TOPIC_NAME}$" | head -n 1 || true)
+          # Only recover retained SNS resources when the Application stack
+          # does not exist. Healthy Application stacks already own these resources.
+          if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
+            LOW_STOCK_TOPIC_ARN=$(aws sns list-topics \
+              --region "$AWS_REGION" \
+              --query 'Topics[].TopicArn' \
+              --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
+
+            CUSTOMER_TOPIC_ARN=$(aws sns list-topics \
+              --region "$AWS_REGION" \
+              --query 'Topics[].TopicArn' \
+              --output text | tr '\t' '\n' | grep -E ":${CUSTOMER_TOPIC_NAME}$" | head -n 1 || true)
+          fi
 
           rm -f /tmp/cloudmart-sns-recovery.yaml /tmp/cloudmart-sns-import.json
 
@@ -514,7 +523,7 @@ jobs:
               aws cloudformation create-change-set \
                 --stack-name "$STACK_NAME" \
                 --change-set-name "$RECOVERY_CHANGESET" \
-                --change-set-type IMPORT \
+                --change-set-type CREATE \
                 --template-body file:///tmp/cloudmart-sns-recovery.yaml \
                 --resources-to-import file:///tmp/cloudmart-sns-import.json \
                 --role-arn "$CFN_ROLE_ARN" \
@@ -558,6 +567,22 @@ jobs:
               CustomerEmail="$CUSTOMER_EMAIL" \
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
               EC2InstanceType=t3.micro
+
+           APP_STATUS=$(aws cloudformation describe-stacks \
+             --stack-name "$STACK_NAME" \
+             --region "$AWS_REGION" \
+             --query 'Stacks[0].StackStatus' \
+             --output text)
+
+           case "$APP_STATUS" in
+             CREATE_COMPLETE|UPDATE_COMPLETE)
+               echo "Application stack is healthy: $APP_STATUS"
+               ;;
+             *)
+               echo "ERROR: Application stack ended in unexpected state: $APP_STATUS"
+               exit 1
+               ;;
+           esac
 
   initialize:
     name: Initialize CloudMart

@@ -1,9 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudMart IAM Stack. Creates all CloudMart IAM roles and their permissions
-  in code, including the GitHub deployment role, Lambda roles, EC2 role,
-  and the CloudFormation execution role.
+  CloudMart IAM Stack. Creates CloudMart-managed IAM roles and permissions
+  in code, including Lambda roles, the EC2 role, and the CloudFormation
+  execution role. The pre-existing GitHub Actions role used by the repository is
+  intentionally not created or replaced by this stack.
 
 Parameters:
   Environment:
@@ -12,95 +13,9 @@ Parameters:
     AllowedValues: [dev, test, prod]
     Description: Deployment environment name.
 
-  GitHubRepository:
-    Type: String
-    Default: ShoshekSandela/CloudMart
-    Description: GitHub repository allowed to assume the deployment role.
 
 Resources:
 
-  # Allows GitHub Actions to authenticate with AWS using OIDC.
-  GitHubActionsRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub cloudmart-${Environment}-github-actions-role
-      Description: CloudMart GitHub Actions deployment role.
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Federated: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
-            Action: sts:AssumeRoleWithWebIdentity
-            Condition:
-              StringEquals:
-                token.actions.githubusercontent.com:aud: sts.amazonaws.com
-              StringLike:
-                token.actions.githubusercontent.com:sub:
-                  - !Sub repo:${GitHubRepository}:ref:refs/heads/main
-                  - !Sub repo:${GitHubRepository}:ref:refs/heads/feature/order-flow
-                  - !Sub repo:${GitHubRepository}:ref:refs/heads/fix/database-ssm
-      # CloudFormation permissions are supplied by the AWS-managed policy; the workflow only operates on CloudMart stacks.
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
-      Policies:
-        - PolicyName: CloudMartGitHubActionsDeploymentHelpers
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              # Allows the workflow to read only the CloudMart CloudFormation execution role ARN.
-              - Sid: ReadCloudFormationExecutionRole
-                Effect: Allow
-                Action: iam:GetRole
-                Resource: !GetAtt CloudFormationExecutionRole.Arn
-
-              # Allows the workflow to pass only the CloudMart CloudFormation execution role.
-              - Sid: PassCloudFormationExecutionRole
-                Effect: Allow
-                Action: iam:PassRole
-                Resource: !GetAtt CloudFormationExecutionRole.Arn
-                Condition:
-                  StringEquals:
-                    iam:PassedToService: cloudformation.amazonaws.com
-
-
-              # Allows the workflow to initialize the Authorizer after deployment.
-              - Sid: InitializeAuthorizer
-                Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-authorizer
-
-              # Allows the workflow to initialize the Product Lambda database schema.
-              - Sid: InitializeProductLambda
-                Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-product
-
-              # Allows the workflow to synchronize the configured customer after deployment.
-              - Sid: SynchronizeCustomer
-                Effect: Allow
-                Action: lambda:InvokeFunction
-                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-order
-
-              # Allows the workflow to verify configured SNS email subscriptions.
-              - Sid: VerifyNotificationSubscriptions
-                Effect: Allow
-                Action:
-                  - sns:ListSubscriptionsByTopic
-                  - sns:GetSubscriptionAttributes
-                  - sns:Subscribe
-                Resource:
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-low-stock:*
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-customer-order-notifications
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-customer-order-notifications:*
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
 
   # CloudFormation uses this role to create the infrastructure on behalf of GitHub Actions.
   CloudFormationExecutionRole:
@@ -307,12 +222,6 @@ Resources:
         - !Ref EC2Role
 
 Outputs:
-  # ARN used by GitHub Actions to authenticate with AWS.
-  GitHubActionsRoleArn:
-    Description: GitHub Actions IAM role ARN.
-    Value: !GetAtt GitHubActionsRole.Arn
-    Export:
-      Name: !Sub CloudMart-${Environment}-GitHubActionsRoleArn
 
   # ARN used by CloudFormation to create and update CloudMart resources.
   CloudFormationExecutionRoleArn:
