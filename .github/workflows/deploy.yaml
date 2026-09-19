@@ -27,59 +27,83 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Repair CloudFormation execution role
+
+      - name: Deploy network stack
         shell: bash
         run: |
           set -euo pipefail
 
-          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
+          IAM_STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
           ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-          ROLE_ARN="arn:aws:iam::${AWS_ACCOUNT_ID}:role/${ROLE_NAME}"
 
-          # The pre-existing GitHub Actions role is the bootstrap role.
-          # It is already permitted to manage the CloudMart execution role.
-          TRUST_POLICY='{
-            "Version":"2012-10-17",
-            "Statement":[
-              {
-                "Effect":"Allow",
-                "Principal":{"Service":"cloudformation.amazonaws.com"},
-                "Action":"sts:AssumeRole"
-              }
-            ]
-          }'
+          NETWORK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-          if aws iam get-role --role-name "$ROLE_NAME" >/dev/null 2>&1; then
-            echo "CloudFormation execution role exists. Repairing its trust policy."
-            aws iam update-assume-role-policy               --role-name "$ROLE_NAME"               --policy-document "$TRUST_POLICY"
-          else
-            echo "CloudFormation execution role is missing. Creating the code-defined role."
-            aws iam create-role               --role-name "$ROLE_NAME"               --assume-role-policy-document "$TRUST_POLICY"               --description "CloudMart CloudFormation service role used by GitHub Actions."
+          IAM_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$IAM_STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-            for POLICY_ARN in               arn:aws:iam::aws:policy/AmazonVPCFullAccess               arn:aws:iam::aws:policy/AmazonEC2FullAccess               arn:aws:iam::aws:policy/AmazonRDSFullAccess               arn:aws:iam::aws:policy/AmazonS3FullAccess               arn:aws:iam::aws:policy/AmazonSSMFullAccess               arn:aws:iam::aws:policy/AWSLambda_FullAccess               arn:aws:iam::aws:policy/AmazonAPIGatewayAdministrator               arn:aws:iam::aws:policy/AmazonEventBridgeFullAccess               arn:aws:iam::aws:policy/AmazonSNSFullAccess               arn:aws:iam::aws:policy/CloudWatchLogsFullAccess               arn:aws:iam::aws:policy/IAMFullAccess
-            do
-              aws iam attach-role-policy                 --role-name "$ROLE_NAME"                 --policy-arn "$POLICY_ARN"
-            done
+          echo "Network stack status: ${NETWORK_STATUS:-NOT_FOUND}"
+          echo "IAM stack status: ${IAM_STATUS:-NOT_FOUND}"
+
+          # The existing Network stack currently has an invalid CloudFormation
+          # service-role association. Do not try to update it until the IAM
+          # stack has recreated/validated the execution role.
+          if [ -n "$NETWORK_STATUS" ] && \
+             [ "$NETWORK_STATUS" != "None" ] && \
+             [ "$NETWORK_STATUS" != "NOT_FOUND" ] && \
+             [ "$NETWORK_STATUS" != "CREATE_IN_PROGRESS" ] && \
+             [ "$NETWORK_STATUS" != "CREATE_FAILED" ] && \
+             [ "$NETWORK_STATUS" != "DELETE_IN_PROGRESS" ] && \
+             [ "$NETWORK_STATUS" != "DELETE_FAILED" ] && \
+             [ "$NETWORK_STATUS" != "DELETE_COMPLETE" ]; then
+
+            if [ "$IAM_STATUS" != "CREATE_COMPLETE" ] && \
+               [ "$IAM_STATUS" != "UPDATE_COMPLETE" ]; then
+              echo "Existing Network stack found while IAM execution role is not ready."
+              echo "Preserving the existing Network stack for this run."
+              echo "IAM will repair/recreate the execution role next."
+              exit 0
+            fi
           fi
 
-          echo "Waiting for IAM role propagation..."
-          sleep 10
+          DEPLOY_ARGS=(
+            --template-file cloudformation/network-stack.yaml
+            --stack-name "$STACK_NAME"
+            --region "$AWS_REGION"
+            --parameter-overrides Environment="$ENVIRONMENT"
+            --capabilities CAPABILITY_NAMED_IAM
+            --no-fail-on-empty-changeset
+          )
 
-          aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.{Arn:Arn,RoleName:RoleName}'             --output table
+          # Only pass the CloudFormation service role after IAM has successfully
+          # created/validated it. For a new Network stack, the GitHub bootstrap
+          # role performs the initial deployment.
+          if [ "$IAM_STATUS" = "CREATE_COMPLETE" ] || \
+             [ "$IAM_STATUS" = "UPDATE_COMPLETE" ]; then
+            CFN_ROLE_ARN=$(aws iam get-role \
+              --role-name "$ROLE_NAME" \
+              --query 'Role.Arn' \
+              --output text)
 
-      - name: Deploy network stack
-        run: |
-          set -euo pipefail
-          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-          CFN_ROLE_ARN=$(aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.Arn'             --output text)
+            if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
+              DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
+            fi
+          fi
 
-          aws cloudformation deploy             --template-file cloudformation/network-stack.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --role-arn "$CFN_ROLE_ARN"             --parameter-overrides Environment="$ENVIRONMENT"             --capabilities CAPABILITY_NAMED_IAM             --no-fail-on-empty-changeset
+          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
 
           echo "Network stack deployment completed."
 
@@ -89,21 +113,12 @@ jobs:
     needs: deploy-network
     steps:
       - uses: actions/checkout@v5
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Verify CloudFormation execution role
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
-
-          aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.AssumeRolePolicyDocument'             --output json >/dev/null
-
-          echo "CloudFormation execution role is available."
 
       - name: Recover failed IAM stack
         shell: bash
@@ -112,46 +127,50 @@ jobs:
 
           STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
 
-          STACK_STATUS=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].StackStatus'             --output text 2>/dev/null || true)
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-            echo "IAM stack is ROLLBACK_COMPLETE. Deleting failed stack before redeploy."
-            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+          echo "IAM stack status: ${STACK_STATUS:-NOT_FOUND}"
 
-            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ] || \
+             [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "Removing failed/incomplete IAM stack: $STACK_NAME"
 
-            echo "Failed IAM stack removed."
-          elif [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "IAM stack is REVIEW_IN_PROGRESS. Deleting unfinished stack."
-            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+            aws cloudformation delete-stack \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
 
-            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            echo "IAM stack removed."
           fi
 
       - name: Deploy IAM stack
+        shell: bash
         run: |
           set -euo pipefail
+
           STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
-          ROLE_NAME="cloudmart-${ENVIRONMENT}-cloudformation-execution-role"
 
-          CFN_ROLE_ARN=$(aws iam get-role             --role-name "$ROLE_NAME"             --query 'Role.Arn'             --output text 2>/dev/null || true)
-
-          DEPLOY_ARGS=(
-            --template-file cloudformation/iam-stack.yaml
-            --stack-name "$STACK_NAME"
-            --region "$AWS_REGION"
-            --parameter-overrides Environment="$ENVIRONMENT"
-            --capabilities CAPABILITY_NAMED_IAM
+          # IMPORTANT:
+          # Do not pass --role-arn here.
+          # The existing GitHub Actions OIDC role is the bootstrap role.
+          # It must deploy the IAM stack that creates/manages the
+          # CloudFormation execution role.
+          aws cloudformation deploy \
+            --template-file cloudformation/iam-stack.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --parameter-overrides Environment="$ENVIRONMENT" \
+            --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
-          )
 
-          # Use the execution role only when it already exists.
-          # Otherwise the existing GitHub bootstrap role performs this first IAM deployment.
-          if [ -n "$CFN_ROLE_ARN" ] && [ "$CFN_ROLE_ARN" != "None" ]; then
-            DEPLOY_ARGS+=(--role-arn "$CFN_ROLE_ARN")
-          fi
-
-          aws cloudformation deploy "${DEPLOY_ARGS[@]}"
+          echo "IAM stack deployment completed."
 
   deploy-data:
     name: Deploy Data Stack
