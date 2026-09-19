@@ -322,6 +322,14 @@ jobs:
                   "sns:ListSubscriptionsByTopic"
                 ],
                 "Resource": "*"
+              },
+              {
+                "Sid": "ReadAmazonLinuxAmiParameter",
+                "Effect": "Allow",
+                "Action": [
+                  "ssm:GetParameters"
+                ],
+                "Resource": "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
               }
             ]
           }
