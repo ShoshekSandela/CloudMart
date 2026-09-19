@@ -53,10 +53,28 @@ class CloudMartRefactorTests(unittest.TestCase):
 
     def test_authorizer_role_can_read_auth_token_parameter(self):
         iam = read("cloudformation/iam-stack.yaml")
-        auth_parameter_arn = (
-            "parameter/cloudmart/${Environment}/auth/token"
-        )
-        self.assertIn(auth_parameter_arn, iam)
+        start = iam.index("  LambdaAuthorizerRole:")
+        end = iam.index("  # Gives the Operations EC2 instance", start)
+        role = iam[start:end]
+        self.assertIn("Sid: ReadAuthenticationToken", role)
+        self.assertIn("Action:", role)
+        self.assertIn("ssm:GetParameter", role)
+        self.assertIn("parameter/cloudmart/${Environment}/auth/token", role)
+        self.assertNotIn("ssm:PutParameter", role)
+
+    def test_product_role_does_not_read_auth_token(self):
+        iam = read("cloudformation/iam-stack.yaml")
+        start = iam.index("  ProductLambdaRole:")
+        end = iam.index("  # Gives Customer Lambda", start)
+        role = iam[start:end]
+        self.assertNotIn("/auth/token", role)
+
+    def test_token_manager_is_the_only_token_writer(self):
+        authorizer = read("lambdas/authorizer/index.py")
+        token_manager = read("lambdas/token-manager/index.py")
+        self.assertNotIn("put_parameter", authorizer)
+        self.assertIn('Type="SecureString"', token_manager)
+        self.assertIn("Overwrite=True", token_manager)
 
     def test_infrastructure_contains_new_components_and_order_events(self):
         app = read("cloudformation/application-stack.yaml")

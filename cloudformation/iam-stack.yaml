@@ -49,7 +49,6 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
               # Publishes Product inventory events to the CloudMart event bus only.
               - Sid: PublishProductEvents
                 Effect: Allow
@@ -250,7 +249,16 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              # Reads database connection parameters used during token validation.
+              # Reads the authentication token configuration used to validate admin tokens.
+              # Token creation/rotation remains exclusively in Token Manager.
+              - Sid: ReadAuthenticationToken
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+
+              # Reads database connection parameters used during customer token validation.
               - Sid: ReadDatabaseParameters
                 Effect: Allow
                 Action: ssm:GetParameter

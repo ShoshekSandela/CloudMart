@@ -201,7 +201,13 @@ def lambda_handler(event, context):
 
     connection = None
     try:
-        config = get_authentication_config()
+        try:
+            config = get_authentication_config()
+        except Exception:
+            # Never log the token or SSM value. The exception is logged with
+            # the parameter name so IAM/SSM failures are diagnosable.
+            logger.exception("Failed to load authentication configuration from SSM parameter %s", TOKEN_PARAMETER_NAME)
+            raise
 
         if secrets.compare_digest(token, str(config["admin_token"])):
             identity = {
