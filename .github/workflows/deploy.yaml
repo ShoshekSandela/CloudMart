@@ -345,34 +345,54 @@ jobs:
             echo "Legacy AuthTokenParameter is still owned by the Data stack."
             echo "Applying Retain to the existing resource without changing its properties."
 
+            # get-template returns TemplateBody as a YAML/JSON string.
+            # Do not parse the outer AWS CLI JSON response as if TemplateBody
+            # were already a Python dictionary. We only need to add the two
+            # CloudFormation policy attributes to the existing resource.
             aws cloudformation get-template \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
               --template-stage Original \
-              --output json > /tmp/cloudmart-data-current.json
+              --query 'TemplateBody' \
+              --output text > /tmp/cloudmart-data-current.yaml
 
             python - <<'PY'
-          import json
           from pathlib import Path
+          import re
 
-          path = Path("/tmp/cloudmart-data-current.json")
-          payload = json.loads(path.read_text())
+          source = Path("/tmp/cloudmart-data-current.yaml").read_text()
 
-          template = payload["TemplateBody"]
-          resources = template.setdefault("Resources", {})
+          match = re.search(r"(?m)^  AuthTokenParameter:\\s*$", source)
+          if not match:
+              raise SystemExit(
+                  "AuthTokenParameter was not found in the current Data stack template"
+              )
 
-          resource = resources.get("AuthTokenParameter")
-          if not resource:
-              raise SystemExit("AuthTokenParameter was not found in the current Data stack template")
-
-          # Change ONLY the deletion behavior. Do not alter Name, Type,
-          # Value, Description, or Tags.
-          resource["DeletionPolicy"] = "Retain"
-          resource["UpdateReplacePolicy"] = "Retain"
-
-          Path("/tmp/cloudmart-data-retain.json").write_text(
-              json.dumps(template, separators=(",", ":"))
+          # Avoid adding duplicate policy attributes if this migration is
+          # retried after a partial run.
+          resource_start = match.end()
+          next_resource = re.search(
+              r"(?m)^  [A-Za-z0-9][A-Za-z0-9]*:\\s*$",
+              source[resource_start:],
           )
+          resource_end = (
+              resource_start + next_resource.start()
+              if next_resource
+              else len(source)
+          )
+          resource_block = source[match.start():resource_end]
+
+          additions = []
+          if not re.search(r"(?m)^    DeletionPolicy:\\s*Retain\\s*$", resource_block):
+              additions.append("    DeletionPolicy: Retain")
+          if not re.search(r"(?m)^    UpdateReplacePolicy:\\s*Retain\\s*$", resource_block):
+              additions.append("    UpdateReplacePolicy: Retain")
+
+          if additions:
+              insert_at = match.end()
+              source = source[:insert_at] + "\n" + "\n".join(additions) + source[insert_at:]
+
+          Path("/tmp/cloudmart-data-retain.yaml").write_text(source)
           PY
 
             aws cloudformation deploy \
