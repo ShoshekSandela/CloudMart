@@ -320,19 +320,75 @@ jobs:
             echo "Unfinished Data stack removed."
           fi
 
-          # Only remove an orphan auth token parameter when the Data stack
-          # does not exist. Never mutate a parameter owned by CloudFormation.
-          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
+          # Authentication token lifecycle is owned exclusively by Token Manager.
+          # Never delete or reset /cloudmart/${ENVIRONMENT}/auth/token during a
+          # Data stack deployment.
+          echo "Authentication token is managed exclusively by Token Manager; preserving it."
 
-          if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
-            if aws ssm get-parameter               --name "$AUTH_PARAMETER"               --region "$AWS_REGION"               >/dev/null 2>&1; then
+          # One-time migration: if the Data stack still owns the legacy
+          # AuthTokenParameter resource, first apply Retain so removing that
+          # resource from the stack does not delete the live SSM parameter.
+          LEGACY_AUTH_RESOURCE=$(aws cloudformation describe-stack-resources \
+            --stack-name "$STACK_NAME" \
+            --logical-resource-id AuthTokenParameter \
+            --region "$AWS_REGION" \
+            --query 'StackResources[0].LogicalResourceId' \
+            --output text 2>/dev/null || true)
 
-              echo "Removing orphan auth token parameter: $AUTH_PARAMETER"
+          if [ "$LEGACY_AUTH_RESOURCE" = "AuthTokenParameter" ]; then
+            echo "Legacy AuthTokenParameter is still owned by the Data stack."
+            echo "Applying Retain before removing it from CloudFormation management."
 
-              aws ssm delete-parameter                 --name "$AUTH_PARAMETER"                 --region "$AWS_REGION"
+            CURRENT_AUTH_VALUE=$(aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/auth/token" \
+              --region "$AWS_REGION" \
+              --with-decryption \
+              --query 'Parameter.Value' \
+              --output text 2>/dev/null || echo '{}')
 
-              echo "Orphan auth token parameter removed."
-            fi
+            CURRENT_AUTH_VALUE="$CURRENT_AUTH_VALUE" python - <<'PY'
+          from pathlib import Path
+          import os
+          
+          source = Path("cloudformation/data-stack.yaml").read_text()
+          token = os.environ["CURRENT_AUTH_VALUE"].replace("\\", "\\\\").replace('"', '\\"').replace("\n", "")
+          marker = "  # Stores generated CloudMart reports"
+          resource = """  # Temporary migration resource. Retain the existing token before
+            # removing this resource from CloudFormation management.
+            AuthTokenParameter:
+              Type: AWS::SSM::Parameter
+              DeletionPolicy: Retain
+              UpdateReplacePolicy: Retain
+              Properties:
+                Name: !Sub /cloudmart/${Environment}/auth/token
+                Type: String
+                Value: "__TOKEN__"
+                Description: CloudMart authentication token migration.
+                Tags:
+                  - Key: ManagedBy
+                    Value: CloudMart-TokenManager
+          
+          """.replace("__TOKEN__", token)
+          if marker not in source:
+              raise SystemExit("Could not locate data-stack insertion point")
+          Path("/tmp/cloudmart-data-retain.yaml").write_text(source.replace(marker, resource + marker, 1))
+          PY
+
+            aws cloudformation deploy \
+              --template-file /tmp/cloudmart-data-retain.yaml \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --parameter-overrides \
+                Environment="$ENVIRONMENT" \
+                DBName=cloudmart \
+                DBInstanceClass=db.t3.micro \
+                AllocatedStorage=20 \
+                DBUsername="$DB_USERNAME" \
+                DBPassword="$DB_PASSWORD" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset
+
+            echo "Legacy AuthTokenParameter is now retained and can be removed safely."
           fi
 
           aws cloudformation deploy \
@@ -574,82 +630,6 @@ jobs:
                ;;
            esac
 
-      - name: Verify deployed Authorizer with current SSM admin token
-        run: |
-          set -euo pipefail
-
-          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
-
-          API_ID=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs[?OutputKey==`RestApiId`].OutputValue' \
-            --output text)
-
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query 'Account' \
-            --output text)
-
-          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
-
-          RAW_AUTH_CONFIG=$(aws ssm get-parameter \
-            --name "$AUTH_PARAMETER" \
-            --with-decryption \
-            --region "$AWS_REGION" \
-            --query 'Parameter.Value' \
-            --output text)
-
-          ADMIN_TOKEN=$(printf '%s' "$RAW_AUTH_CONFIG" | jq -er '.admin_token // .token')
-
-          test -n "$ADMIN_TOKEN" || {
-            echo "ERROR: Admin token is empty in $AUTH_PARAMETER"
-            exit 1
-          }
-
-          METHOD_ARN="arn:aws:execute-api:${AWS_REGION}:${ACCOUNT_ID}:${API_ID}/${ENVIRONMENT}/GET/products"
-
-          export ADMIN_TOKEN
-
-          python - "$METHOD_ARN" <<'PY' > /tmp/authorizer-test.json
-          import json
-          import os
-          import sys
-
-          method_arn = sys.argv[1]
-          token = os.environ["ADMIN_TOKEN"]
-
-          print(json.dumps({
-              "type": "TOKEN",
-              "authorizationToken": "Bearer " + token,
-              "methodArn": method_arn,
-          }))
-          PY
-
-          aws lambda invoke \
-            --function-name "cloudmart-${ENVIRONMENT}-authorizer" \
-            --region "$AWS_REGION" \
-            --cli-binary-format raw-in-base64-out \
-            --payload fileb:///tmp/authorizer-test.json \
-            /tmp/authorizer-response.json \
-            >/tmp/authorizer-invoke-meta.json
-
-          jq -e '
-            .policyDocument.Statement[0].Effect == "Allow"
-            and .principalId == "cloudmart-admin"
-          ' /tmp/authorizer-response.json >/dev/null || {
-            echo "ERROR: Deployed Authorizer rejected the current SSM admin token."
-            echo "Authorizer response:"
-            jq 'del(.context)' /tmp/authorizer-response.json
-            exit 1
-          }
-
-          echo "Direct Authorizer validation passed."
-
-          rm -f \
-            /tmp/authorizer-test.json \
-            /tmp/authorizer-response.json \
-            /tmp/authorizer-invoke-meta.json
-
   initialize:
     name: Initialize CloudMart
     runs-on: ubuntu-latest
@@ -686,43 +666,38 @@ jobs:
           rm -f /tmp/auth.json
           echo "Authentication tokens initialized successfully."
 
-      - name: Verify GET /products through API Gateway
+      - name: Verify deployed API authentication
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
-
+          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
           API_URL=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
+            --stack-name "cloudmart-application-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].Outputs[?OutputKey==`RestApiUrl`].OutputValue' \
             --output text)
 
-          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
-
-          RAW_AUTH_CONFIG=$(aws ssm get-parameter \
+          ADMIN_TOKEN=$(aws ssm get-parameter \
             --name "$AUTH_PARAMETER" \
-            --with-decryption \
             --region "$AWS_REGION" \
+            --with-decryption \
             --query 'Parameter.Value' \
-            --output text)
+            --output text | jq -r '.admin_token')
 
-          ADMIN_TOKEN=$(printf '%s' "$RAW_AUTH_CONFIG" | jq -er '.admin_token // .token')
+          test -n "$ADMIN_TOKEN" && test "$ADMIN_TOKEN" != "null" || { echo "ERROR: admin_token is missing from $AUTH_PARAMETER"; exit 1; }
 
-          HTTP_STATUS=$(curl -sS \
-            -o /tmp/products-response.json \
-            -w '%{http_code}' \
+          RESPONSE_FILE=/tmp/products-response.json
+          HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
             -H "Authorization: Bearer ${ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
-            "${API_URL}/products")
+            "$API_URL/products")
 
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "ERROR: End-to-end GET /products returned HTTP ${HTTP_STATUS}."
-            echo "Response:"
-            cat /tmp/products-response.json
+          echo "API authentication smoke-test HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: GET /products did not authenticate successfully."
+            cat "$RESPONSE_FILE"
             exit 1
           fi
 
-          echo "End-to-end GET /products authorization check passed with HTTP 200."
-          rm -f /tmp/products-response.json
-
+          echo "API authentication smoke test passed: GET /products returned HTTP 200."
+          rm -f "$RESPONSE_FILE"

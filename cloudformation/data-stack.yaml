@@ -133,17 +133,9 @@ Resources:
       Value: !Ref DBPassword
       Description: CloudMart RDS password
 
-  # Stores the initial authentication token configuration.
-  # Token Manager owns token generation and rotation; the Authorizer is read-only.
-  AuthTokenParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /cloudmart/${Environment}/auth/token
-      # CloudFormation supports String here; existing SecureString parameters are
-      # retained/managed by Token Manager in environments where they already exist.
-      Type: String
-      Value: "{}"
-      Description: CloudMart authentication token configuration managed by Token Manager.
+  # Authentication token is managed exclusively by Token Manager.
+  # It is intentionally not an AWS::SSM::Parameter resource in this stack.
+  # This prevents Data stack updates from resetting the admin token.
 
   # Stores generated CloudMart reports and is private by default.
   CloudMartReportBucket:
@@ -207,10 +199,6 @@ Outputs:
     Value: !Ref DBPasswordParameter
     Export:
       Name: !Sub CloudMart-${Environment}-DBPasswordParameterName
-  AuthTokenParameterName:
-    Value: !Ref AuthTokenParameter
-    Export:
-      Name: !Sub CloudMart-${Environment}-AuthTokenParameterName
   ReportBucketName:
     Value: !Ref CloudMartReportBucket
     Export:
