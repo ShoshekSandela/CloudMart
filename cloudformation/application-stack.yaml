@@ -257,6 +257,7 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+          DEPLOYMENT_VERSION: !Ref ApiDeploymentVersion
       Tags:
         Project: CloudMart
         Environment: !Ref Environment

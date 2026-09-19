@@ -19,6 +19,8 @@ DB_PORT_PARAMETER_NAME = os.environ["DB_PORT_PARAMETER_NAME"]
 DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
 DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
 DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
+DEPLOYMENT_VERSION = os.environ.get("DEPLOYMENT_VERSION", "unknown")
+
 def get_ssm_parameter(name, decrypt=False):
     result = ssm.get_parameter(Name=name, WithDecryption=decrypt)
     return result["Parameter"]["Value"].strip()
@@ -235,7 +237,8 @@ def lambda_handler(event, context):
         raise Exception("Unauthorized")
 
     logger.info(
-        "Authorization request received: token_length=%d token_fingerprint=%s",
+        "Authorization request received: deployment_version=%s token_length=%d token_fingerprint=%s",
+        DEPLOYMENT_VERSION,
         len(token),
         token_fingerprint(token),
     )
@@ -259,7 +262,8 @@ def lambda_handler(event, context):
                 "customer_id": None,
             }
             logger.info(
-                "Admin token validation succeeded: token_length=%d token_fingerprint=%s",
+                "Admin token validation succeeded: deployment_version=%s token_length=%d token_fingerprint=%s",
+                DEPLOYMENT_VERSION,
                 len(token),
                 token_fingerprint(token),
             )
