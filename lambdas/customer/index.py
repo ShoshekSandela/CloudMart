@@ -763,3 +763,8 @@ def lambda_handler(event, context):
     finally:
         if connection:
             connection.close()
+
+
+# Explicit deployment marker/entry point for the public customer-registration version.
+def lambda_handler_v2(event, context):
+    return lambda_handler(event, context)

@@ -159,6 +159,7 @@ Resources:
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartCustomerOrderNotificationTopic
+          CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -381,10 +382,12 @@ Resources:
   # Dedicated customer lifecycle and notification-subscription API.
   CustomerFunction:
     Type: AWS::Serverless::Function
+    Metadata:
+      BuildMethod: python3.12
     Properties:
       FunctionName: !Sub "${ProjectName}-${Environment}-customer"
       Runtime: python3.12
-      Handler: index.lambda_handler
+      Handler: index.lambda_handler_v2
       CodeUri: ../lambdas/customer/
       Role:
         Fn::ImportValue: !Sub "CloudMart-${Environment}-CustomerLambdaRoleArn"

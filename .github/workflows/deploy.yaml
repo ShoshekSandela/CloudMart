@@ -623,6 +623,28 @@ jobs:
 
            echo "POST /customers is publicly accessible at API Gateway."
 
+           echo "Verifying deployed Customer Lambda registration version..."
+
+           CUSTOMER_FUNCTION_NAME="cloudmart-${ENVIRONMENT}-customer"
+           CUSTOMER_HANDLER=$(aws lambda get-function-configuration              --function-name "$CUSTOMER_FUNCTION_NAME"              --region "$AWS_REGION"              --query 'Handler'              --output text)
+
+           CUSTOMER_REGISTRATION_VERSION=$(aws lambda get-function-configuration              --function-name "$CUSTOMER_FUNCTION_NAME"              --region "$AWS_REGION"              --query 'Environment.Variables.CUSTOMER_REGISTRATION_VERSION'              --output text)
+
+           echo "Customer Lambda handler: $CUSTOMER_HANDLER"
+           echo "Customer registration version: $CUSTOMER_REGISTRATION_VERSION"
+
+           test "$CUSTOMER_HANDLER" = "index.lambda_handler_v2" || {
+             echo "ERROR: Customer Lambda is still using the old handler."
+             exit 1
+           }
+
+           test "$CUSTOMER_REGISTRATION_VERSION" = "2" || {
+             echo "ERROR: Customer Lambda registration version is not 2."
+             exit 1
+           }
+
+           echo "Customer Lambda registration version is deployed."
+
            echo "Verifying SNS notification infrastructure..."
            ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notifications$" | head -n 1 || true)
            LOW_STOCK_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-low-stock$" | head -n 1 || true)
