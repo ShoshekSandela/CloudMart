@@ -20,6 +20,7 @@ DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
 DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
 DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
 ORDER_NOTIFICATION_TOPIC_ARN = os.environ["ORDER_NOTIFICATION_TOPIC_ARN"]
+LOW_STOCK_TOPIC_ARN = os.environ["LOW_STOCK_TOPIC_ARN"]
 
 
 def get_parameter(name, decrypt=False):
@@ -106,6 +107,42 @@ def render_items(items):
             f"{name} | Qty: {quantity} | Unit Price: ₹{unit_price} | Subtotal: ₹{subtotal}"
         )
     return "\n".join(rows) if rows else "No item details were provided."
+
+
+def build_low_stock_message(detail):
+    """Build a low-stock email using the same structure as order notifications."""
+    product_name = html.unescape(
+        safe(detail.get("product_name"), f"Product {detail.get('product_id', '')}")
+    )
+    product_id = safe(detail.get("product_id"), "N/A")
+    old_stock = safe(detail.get("old_stock"), "N/A")
+    new_stock = safe(detail.get("new_stock"), "N/A")
+    threshold = safe(detail.get("low_stock_threshold"), "N/A")
+
+    subject = f"CloudMart Low Stock Alert - {product_name}"
+
+    message = f"""CloudMart Low Stock Notification
+
+Hello Admin,
+
+A product has reached its low-stock threshold and requires attention.
+
+Inventory Details
+-----------------
+Product ID: {product_id}
+Product: {product_name}
+Previous Stock: {old_stock}
+Current Stock: {new_stock}
+Low Stock Threshold: {threshold}
+
+Action Required
+---------------
+Please replenish this product soon to avoid inventory shortages.
+
+Thank you,
+CloudMart
+"""
+    return subject[:100], message
 
 
 def build_message(detail_type, detail):
@@ -398,6 +435,36 @@ def publish_order_notification(connection, customer_id, email, subject, message)
     return response, subscription_state
 
 
+def process_low_stock_event(event):
+    """Publish a formatted low-stock notification to the admin SNS topic."""
+    detail = event.get("detail") or {}
+    detail_type = str(event.get("detail-type") or "").strip()
+
+    if detail_type != "Inventory Changed" or detail.get("low_stock") is not True:
+        return {"status": "IGNORED", "detail_type": detail_type}
+
+    subject, message = build_low_stock_message(detail)
+
+    response = sns.publish(
+        TopicArn=LOW_STOCK_TOPIC_ARN,
+        Subject=subject,
+        Message=message,
+    )
+
+    logger.info(
+        "Low-stock notification published to SNS: product_id=%s message_id=%s",
+        detail.get("product_id"),
+        response.get("MessageId"),
+    )
+
+    return {
+        "status": "PUBLISHED_TO_SNS",
+        "notification_type": "LOW_STOCK",
+        "product_id": detail.get("product_id"),
+        "message_id": response.get("MessageId"),
+    }
+
+
 def process_notification_event(event, connection):
     detail = event.get("detail") or {}
     detail_type = str(event.get("detail-type") or "").strip()
@@ -462,7 +529,16 @@ def process_notification_event(event, connection):
 
 
 def lambda_handler(event, context):
-    """Receive EventBridge order events and publish them to customer SNS."""
+    """Receive EventBridge order and low-stock events and publish SNS notifications."""
+    detail_type = str(event.get("detail-type") or "").strip()
+
+    if detail_type == "Inventory Changed":
+        try:
+            return process_low_stock_event(event)
+        except Exception:
+            logger.exception("SNS low-stock notification failed")
+            raise
+
     connection = None
     try:
         connection = get_db_connection()

@@ -90,6 +90,8 @@ Resources:
       Protocol: email
       Endpoint: !Ref NotificationEmail
 
+  # SNS resource policy allows the notification Lambda to publish
+  # formatted low-stock notifications to the admin topic.
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -97,22 +99,23 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowEventBridgePublish
+          - Sid: AllowNotificationLambdaPublish
             Effect: Allow
             Principal:
-              Service: events.amazonaws.com
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-NotificationLambdaRoleArn"
             Action: sns:Publish
             Resource: !Ref CloudMartLowStockTopic
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-low-stock"
 
+  # Routes low-stock inventory events to the same Notification Lambda
+  # used by customer order notifications.
   LowStockEventRule:
     Type: AWS::Events::Rule
-    DependsOn: CloudMartLowStockTopicPolicy
+    DependsOn:
+      - CloudMartLowStockTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-low-stock"
-      Description: Routes low-stock Inventory Changed events directly to the admin SNS topic.
+      Description: Routes low-stock Inventory Changed events to the Notification Lambda.
       EventBusName: !Ref CloudMartEventBus
       State: ENABLED
       EventPattern:
@@ -121,17 +124,17 @@ Resources:
         detail:
           low_stock: [true]
       Targets:
-        - Id: LowStockSnsTarget
-          Arn: !Ref CloudMartLowStockTopic
-          InputTransformer:
-            InputPathsMap:
-              productId: "$.detail.product_id"
-              productName: "$.detail.product_name"
-              oldStock: "$.detail.old_stock"
-              newStock: "$.detail.new_stock"
-              threshold: "$.detail.low_stock_threshold"
-            InputTemplate: >-
-              "CLOUDMART ADMIN LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"
+        - Id: LowStockNotificationLambda
+          Arn: !GetAtt NotificationFunction.Arn
+
+  LowStockNotificationInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref NotificationFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt LowStockEventRule.Arn
   # Routes customer order events to SNS. The SNS email subscription is
   # filtered by the authenticated customer's customer_id.
   NotificationFunction:
@@ -159,6 +162,7 @@ Resources:
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartCustomerOrderNotificationTopic
+          LOW_STOCK_TOPIC_ARN: !Ref CloudMartLowStockTopic
           CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
