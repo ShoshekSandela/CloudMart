@@ -78,12 +78,13 @@ Resources:
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
-  # V2 intentionally replaces the earlier subscription resource.
-  # The previous subscription was externally unsubscribed and is now shown
-  # by SNS as Deleted. This logical ID change makes CloudFormation create a
-  # fresh email subscription automatically.
   CloudMartLowStockEmailSubscriptionV2:
     Type: AWS::SNS::Subscription
+    # CloudFormation creates the admin email subscription automatically.
+    # Retain it if the application stack is removed/recreated so a stack
+    # recovery cannot delete the SNS subscription itself.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
       Protocol: email

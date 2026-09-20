@@ -639,22 +639,11 @@ jobs:
                --region "$AWS_REGION" \
                --output json 2>/tmp/low-stock-sub-error.log); then
                LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
-               LOW_STOCK_AUTHENTICATED=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.ConfirmationWasAuthenticated // "false"')
-
                if [ "$LOW_STOCK_PENDING" = "true" ]; then
                  echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
-                 echo "The subscription was created automatically by CloudFormation."
-                 echo "Confirm it through the SNS console using the confirmation URL from the email."
+                 echo "The admin must click the SNS confirmation link before low-stock emails can be delivered."
                else
                  echo "Admin low-stock SNS subscription is confirmed."
-                 echo "ConfirmationWasAuthenticated=$LOW_STOCK_AUTHENTICATED"
-
-                 if [ "$LOW_STOCK_AUTHENTICATED" != "true" ]; then
-                   echo "WARNING: The subscription was confirmed without authenticated-unsubscribe protection."
-                   echo "Reconfirm it through SNS Console > Subscriptions > Confirm subscription using the URL from the confirmation email."
-                 else
-                   echo "Authenticated unsubscribe protection is enabled."
-                 fi
                fi
              else
                echo "WARNING: Existing admin low-stock subscription ARN is no longer available."
@@ -707,18 +696,7 @@ jobs:
                  | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
                  | .SubscriptionArn
                  | select(startswith("arn:"))' | head -n 1)
-               FINAL_LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
-                 --subscription-arn "$FINAL_LOW_STOCK_SUB_ARN" \
-                 --region "$AWS_REGION" \
-                 --output json)
-               FINAL_LOW_STOCK_AUTHENTICATED=$(echo "$FINAL_LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.ConfirmationWasAuthenticated // "false"')
                echo "Confirmed low-stock SNS subscription: $FINAL_LOW_STOCK_SUB_ARN"
-               echo "ConfirmationWasAuthenticated=$FINAL_LOW_STOCK_AUTHENTICATED"
-               if [ "$FINAL_LOW_STOCK_AUTHENTICATED" = "true" ]; then
-                 echo "Authenticated unsubscribe protection is enabled."
-               else
-                 echo "WARNING: Subscription is confirmed but authenticated-unsubscribe protection is not enabled."
-               fi
                ;;
              PENDING)
                echo "WARNING: CloudFormation created the low-stock email subscription and it is PendingConfirmation."
