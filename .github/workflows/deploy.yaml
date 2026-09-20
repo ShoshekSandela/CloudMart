@@ -486,48 +486,6 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure SNS recovery permissions
-        run: |
-          set -euo pipefail
-
-          cat > /tmp/cloudmart-sns-recovery-policy.json <<'EOF'
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Sid": "CloudMartSNSRecoveryDiscovery",
-                "Effect": "Allow",
-                "Action": [
-                  "sns:ListTopics",
-                  "sns:ListSubscriptionsByTopic",
-                  "sns:GetSubscriptionAttributes"
-                ],
-                "Resource": "*"
-              },
-              {
-                "Sid": "CloudMartRemoveStaleOrderNotificationTopic",
-                "Effect": "Allow",
-                "Action": [
-                  "sns:DeleteTopic"
-                ],
-                "Resource": "*"
-              },
-              {
-                "Sid": "ReadAmazonLinuxAmiParameter",
-                "Effect": "Allow",
-                "Action": [
-                  "ssm:GetParameters"
-                ],
-                "Resource": "arn:aws:ssm:*::parameter/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-              }
-            ]
-          }
-          EOF
-
-          aws iam put-role-policy             --role-name "CloudMart-GitHubActions-Role"             --policy-name "CloudMartSNSRecoveryDiscovery"             --policy-document file:///tmp/cloudmart-sns-recovery-policy.json
-
-          echo "SNS recovery permissions are available."
-
       - name: Prepare schema
         run: cp database/schema.sql lambdas/product/schema.sql
       - name: Validate application template
@@ -608,69 +566,6 @@ jobs:
             STACK_STATUS=""
           fi
 
-          # Recover only the retained low-stock SNS topic if the application
-          # stack had to be recreated. Customer order email subscriptions are
-          # runtime resources and are reconciled non-destructively by Lambda;
-          # they are never recreated or deleted by this deployment step.
-          LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
-          LOW_STOCK_TOPIC_ARN=""
-          if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
-            LOW_STOCK_TOPIC_ARN=$(aws sns list-topics \
-              --region "$AWS_REGION" \
-              --query 'Topics[].TopicArn' \
-              --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
-          fi
-
-          rm -f /tmp/cloudmart-sns-recovery.yaml /tmp/cloudmart-sns-import.json
-
-          if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
-            echo "Retained low-stock SNS topic detected; re-adopting it."
-            cat > /tmp/cloudmart-sns-recovery.yaml <<EOF
-          AWSTemplateFormatVersion: "2010-09-09"
-          Resources:
-            CloudMartLowStockTopic:
-              Type: AWS::SNS::Topic
-              DeletionPolicy: Retain
-              UpdateReplacePolicy: Retain
-              Properties:
-                TopicName: "$LOW_STOCK_TOPIC_NAME"
-          EOF
-
-            jq -n --arg lowTopic "$LOW_STOCK_TOPIC_NAME" '[
-              {
-                ResourceType:"AWS::SNS::Topic",
-                LogicalResourceId:"CloudMartLowStockTopic",
-                ResourceIdentifier:{TopicName:$lowTopic}
-              }
-            ]' > /tmp/cloudmart-sns-import.json
-
-            RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
-
-            aws cloudformation create-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$RECOVERY_CHANGESET" \
-              --change-set-type CREATE \
-              --template-body file:///tmp/cloudmart-sns-recovery.yaml \
-              --resources-to-import file:///tmp/cloudmart-sns-import.json \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait change-set-create-complete \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$RECOVERY_CHANGESET" \
-              --region "$AWS_REGION"
-
-            aws cloudformation execute-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$RECOVERY_CHANGESET" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-import-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-            echo "Retained low-stock SNS topic successfully re-adopted."
-          fi
-
           # SAM updates the recovered stack or creates a new stack when no
           # previous CloudFormation stack exists.
           sam deploy \
@@ -716,15 +611,14 @@ jobs:
            echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"
 
            echo "Checking admin low-stock email subscription..."
-
-           # The email subscription is intentionally NOT managed by CloudFormation
-           # or GitHub Actions. Email endpoints have an owner-controlled
-           # confirmation/unsubscribe lifecycle.
            LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
              --topic-arn "$LOW_STOCK_TOPIC_ARN" \
              --region "$AWS_REGION" \
              --output json)
 
+           # SNS can return lifecycle values such as PendingConfirmation or
+           # Deleted in SubscriptionArn. Only a real ARN may be passed to
+           # GetSubscriptionAttributes.
            LOW_STOCK_SUB_ARN=$(echo "$LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
              .Subscriptions[]?
              | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
@@ -740,43 +634,22 @@ jobs:
            if [ -n "$LOW_STOCK_SUB_ARN" ]; then
              echo "Admin low-stock SNS subscription ARN: $LOW_STOCK_SUB_ARN"
 
-             LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
+             if LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
                --subscription-arn "$LOW_STOCK_SUB_ARN" \
                --region "$AWS_REGION" \
-               --output json)
-
-             LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
-             LOW_STOCK_AUTHENTICATED=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.ConfirmationWasAuthenticated // "false"')
-
-             if [ "$LOW_STOCK_PENDING" = "true" ]; then
-               echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
-               echo "Confirm the subscription from the AWS SNS confirmation email."
-               echo "GitHub Actions will not create, confirm, or delete the email subscription."
-             else
-               echo "Admin low-stock SNS subscription is confirmed."
-               echo "ConfirmationWasAuthenticated=$LOW_STOCK_AUTHENTICATED"
-
-               if [ "$LOW_STOCK_AUTHENTICATED" != "true" ]; then
-                 echo "WARNING: Subscription is confirmed but authenticated unsubscribe protection is not enabled."
-                 echo "Enable AuthenticateOnUnsubscribe=true during the one-time AWS confirmation."
+               --output json 2>/tmp/low-stock-sub-error.log); then
+               LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
+               if [ "$LOW_STOCK_PENDING" = "true" ]; then
+                 echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
+                 echo "The admin must click the SNS confirmation link before low-stock emails can be delivered."
+               else
+                 echo "Admin low-stock SNS subscription is confirmed."
                fi
+             else
+               echo "WARNING: Existing admin low-stock subscription ARN is no longer available."
+               cat /tmp/low-stock-sub-error.log
+               LOW_STOCK_SUB_ARN=""
              fi
-
-           elif [ "$LOW_STOCK_PENDING_PRESENT" = "true" ]; then
-             echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
-             echo "Confirm the subscription from the AWS SNS confirmation email."
-             echo "GitHub Actions will not create, confirm, or delete the email subscription."
-
-           elif [ "$LOW_STOCK_DELETED_PRESENT" = "true" ]; then
-             echo "ERROR: Admin low-stock SNS subscription is Deleted."
-             echo "Create a fresh EMAIL subscription from the SNS console and confirm it."
-             echo "GitHub Actions will not recreate or delete the email subscription."
-             exit 1
-
-           else
-             echo "ERROR: No admin low-stock EMAIL subscription exists for $ADMIN_EMAIL."
-             echo "Create the subscription once from SNS and confirm it."
-             exit 1
            fi
 
            # Remove the obsolete singular topic created by an older version.
@@ -800,7 +673,9 @@ jobs:
              exit 1
            }
 
-           # Final verification is read-only.
+           # Read-only verification. The email subscription itself is created by
+           # CloudFormation from NotificationEmail. GitHub Actions does not call
+           # sns:Subscribe, ConfirmSubscription, or Unsubscribe.
            FINAL_LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
              --topic-arn "$LOW_STOCK_TOPIC_ARN" \
              --region "$AWS_REGION" \
@@ -816,18 +691,24 @@ jobs:
 
            case "$FINAL_LOW_STOCK_SUB_STATUS" in
              CONFIRMED)
-               echo "Final SNS check: admin low-stock subscription is confirmed."
+               FINAL_LOW_STOCK_SUB_ARN=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+                 .Subscriptions[]?
+                 | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+                 | .SubscriptionArn
+                 | select(startswith("arn:"))' | head -n 1)
+               echo "Confirmed low-stock SNS subscription: $FINAL_LOW_STOCK_SUB_ARN"
                ;;
              PENDING)
-               echo "Final SNS check: admin low-stock subscription is PendingConfirmation."
+               echo "WARNING: CloudFormation created the low-stock email subscription and it is PendingConfirmation."
+               echo "The recipient must confirm the SNS email before delivery can begin."
                ;;
              DELETED)
-               echo "Final SNS check: admin low-stock subscription is Deleted."
-               exit 1
+               echo "WARNING: The low-stock email subscription is Deleted."
+               echo "CloudFormation owns this subscription; no manual subscription command is run by GitHub Actions."
                ;;
              *)
-               echo "Final SNS check: no admin low-stock subscription found."
-               exit 1
+               echo "WARNING: No low-stock email subscription is currently visible."
+               echo "CloudFormation is responsible for creating the subscription from NotificationEmail."
                ;;
            esac
 

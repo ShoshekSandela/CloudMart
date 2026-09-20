@@ -78,6 +78,18 @@ Resources:
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
+  CloudMartLowStockEmailSubscription:
+    Type: AWS::SNS::Subscription
+    # CloudFormation creates the admin email subscription automatically.
+    # Retain it if the application stack is removed/recreated so a stack
+    # recovery cannot delete the SNS subscription itself.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TopicArn: !Ref CloudMartLowStockTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -934,6 +946,12 @@ Resources:
           Value: !Ref Environment
 
 Outputs:
+
+  LowStockEmailSubscriptionArn:
+    Description: ARN of the CloudMart admin low-stock email subscription.
+    Value: !Ref CloudMartLowStockEmailSubscription
+    Export:
+      Name: !Sub CloudMart-${Environment}-LowStockEmailSubscriptionArn
 
 
   RestApiId:
