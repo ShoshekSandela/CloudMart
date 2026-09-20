@@ -496,6 +496,23 @@ def process_order_placed_event(connection, order_id):
 
             if insufficient_product:
                 new_status = "FAILED"
+
+                # No inventory is deducted when the order fails, but if the
+                # product is already at or below its configured threshold
+                # (including zero stock), still publish the same Inventory
+                # Changed event used by the Product Lambda. EventBridge then
+                # routes it to the SNS low-stock topic.
+                current_stock = int(insufficient_product["stock_quantity"])
+                threshold = int(insufficient_product["low_stock_threshold"])
+                if current_stock <= threshold:
+                    inventory_events.append({
+                        "product_id": int(insufficient_product["product_id"]),
+                        "product_name": insufficient_product["product_name"],
+                        "old_stock": current_stock,
+                        "new_stock": current_stock,
+                        "threshold": threshold,
+                    })
+
                 logger.warning(
                     "Order %s failed stock check: %s",
                     order_id, failure_reason,

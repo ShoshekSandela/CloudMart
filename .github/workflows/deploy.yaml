@@ -599,13 +599,18 @@ jobs:
             STACK_STATUS=""
           fi
 
-          # Recover the retained low-stock SNS resources if the application
-          # stack had to be recreated. Order notifications use
-          # EventBridge -> SNS -> Notification Lambda -> SES.
+          # Recover only the retained low-stock SNS topic if the application
+          # stack had to be recreated. Email subscriptions are intentionally
+          # recreated by the application template so a Deleted subscription
+          # cannot remain stuck. Order notifications are delivered directly
+          # through the new SNS order-notification topic.
           LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
           LOW_STOCK_TOPIC_ARN=""
           if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
-            LOW_STOCK_TOPIC_ARN=$(aws sns list-topics               --region "$AWS_REGION"               --query 'Topics[].TopicArn'               --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
+            LOW_STOCK_TOPIC_ARN=$(aws sns list-topics \
+              --region "$AWS_REGION" \
+              --query 'Topics[].TopicArn' \
+              --output text | tr '\t' '\n' | grep -E ":${LOW_STOCK_TOPIC_NAME}$" | head -n 1 || true)
           fi
 
           rm -f /tmp/cloudmart-sns-recovery.yaml /tmp/cloudmart-sns-import.json
@@ -623,30 +628,39 @@ jobs:
                 TopicName: "$LOW_STOCK_TOPIC_NAME"
           EOF
 
-            # Do not import the email subscription. An email subscription can
-            # legitimately be in a Deleted or PendingConfirmation state.
-            # The application stack owns the current subscription resource and
-            # will create a fresh confirmation request after the retained topic
-            # is re-adopted.
-            jq -n               --arg lowTopic "$LOW_STOCK_TOPIC_NAME"               '[
-                {
-                  ResourceType:"AWS::SNS::Topic",
-                  LogicalResourceId:"CloudMartLowStockTopic",
-                  ResourceIdentifier:{TopicName:$lowTopic}
-                }
-              ]' > /tmp/cloudmart-sns-import.json
+            jq -n --arg lowTopic "$LOW_STOCK_TOPIC_NAME" '[
+              {
+                ResourceType:"AWS::SNS::Topic",
+                LogicalResourceId:"CloudMartLowStockTopic",
+                ResourceIdentifier:{TopicName:$lowTopic}
+              }
+            ]' > /tmp/cloudmart-sns-import.json
 
-            IMPORT_COUNT=$(jq 'length' /tmp/cloudmart-sns-import.json)
             RECOVERY_CHANGESET="cloudmart-sns-recovery-${GITHUB_RUN_ID}"
 
-            aws cloudformation create-change-set               --stack-name "$STACK_NAME"               --change-set-name "$RECOVERY_CHANGESET"               --change-set-type CREATE               --template-body file:///tmp/cloudmart-sns-recovery.yaml               --resources-to-import file:///tmp/cloudmart-sns-import.json               --capabilities CAPABILITY_NAMED_IAM               --region "$AWS_REGION"
+            aws cloudformation create-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$RECOVERY_CHANGESET" \
+              --change-set-type CREATE \
+              --template-body file:///tmp/cloudmart-sns-recovery.yaml \
+              --resources-to-import file:///tmp/cloudmart-sns-import.json \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --region "$AWS_REGION"
 
-            aws cloudformation wait change-set-create-complete               --stack-name "$STACK_NAME"               --change-set-name "$RECOVERY_CHANGESET"               --region "$AWS_REGION"
+            aws cloudformation wait change-set-create-complete \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$RECOVERY_CHANGESET" \
+              --region "$AWS_REGION"
 
-            aws cloudformation execute-change-set               --stack-name "$STACK_NAME"               --change-set-name "$RECOVERY_CHANGESET"               --region "$AWS_REGION"
+            aws cloudformation execute-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$RECOVERY_CHANGESET" \
+              --region "$AWS_REGION"
 
-            aws cloudformation wait stack-import-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
-            echo "Retained low-stock SNS resources successfully re-adopted."
+            aws cloudformation wait stack-import-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+            echo "Retained low-stock SNS topic successfully re-adopted."
           fi
 
           # SAM updates the recovered stack or creates a new stack when no
