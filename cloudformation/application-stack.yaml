@@ -909,7 +909,7 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
             - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
-  ApiGatewayDeploymentV6:
+  ApiGatewayDeploymentV7:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - ApiGatewayAuthorizer
@@ -937,7 +937,7 @@ Resources:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref CloudMartRestApi
-      DeploymentId: !Ref ApiGatewayDeploymentV6
+      DeploymentId: !Ref ApiGatewayDeploymentV7
       StageName: !Ref Environment
       Description: !Sub "CloudMart ${Environment} API Gateway stage"
       Tags:

@@ -600,6 +600,29 @@ jobs:
                ;;
            esac
 
+           echo "Verifying deployed API Gateway customer-registration method..."
+
+           REST_API_ID=$(aws cloudformation describe-stacks              --stack-name "$STACK_NAME"              --region "$AWS_REGION"              --query 'Stacks[0].Outputs[?OutputKey==`RestApiId`].OutputValue'              --output text)
+
+           CUSTOMERS_RESOURCE_ID=$(aws apigateway get-resources              --rest-api-id "$REST_API_ID"              --region "$AWS_REGION"              --query 'items[?path==`/customers`].id | [0]'              --output text)
+
+           test -n "$CUSTOMERS_RESOURCE_ID" && test "$CUSTOMERS_RESOURCE_ID" != "None" || {
+             echo "ERROR: /customers API Gateway resource was not found."
+             exit 1
+           }
+
+           CUSTOMER_POST_AUTH_TYPE=$(aws apigateway get-method              --rest-api-id "$REST_API_ID"              --resource-id "$CUSTOMERS_RESOURCE_ID"              --http-method POST              --region "$AWS_REGION"              --query 'authorizationType'              --output text)
+
+           echo "POST /customers authorization type: $CUSTOMER_POST_AUTH_TYPE"
+
+           test "$CUSTOMER_POST_AUTH_TYPE" = "NONE" || {
+             echo "ERROR: POST /customers is still protected by API Gateway."
+             echo "Expected authorizationType=NONE but received: $CUSTOMER_POST_AUTH_TYPE"
+             exit 1
+           }
+
+           echo "POST /customers is publicly accessible at API Gateway."
+
            echo "Verifying SNS notification infrastructure..."
            ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notifications$" | head -n 1 || true)
            LOW_STOCK_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-low-stock$" | head -n 1 || true)
@@ -760,6 +783,26 @@ jobs:
             --region "$AWS_REGION" \
             --query 'Stacks[0].Outputs[?OutputKey==`RestApiUrl`].OutputValue' \
             --output text)
+
+          echo "Verifying POST /customers without an Authorization header..."
+
+          CUSTOMER_PUBLIC_RESPONSE=/tmp/customer-public-response.json
+          CUSTOMER_PUBLIC_HTTP_CODE=$(curl -sS -o "$CUSTOMER_PUBLIC_RESPONSE" -w '%{http_code}'             -X POST             -H "Content-Type: application/json"             --data '{}'             "$API_URL/customers")
+
+          echo "POST /customers without Authorization returned HTTP $CUSTOMER_PUBLIC_HTTP_CODE"
+          cat "$CUSTOMER_PUBLIC_RESPONSE"
+
+          # {} is intentionally invalid, so no customer is created.
+          # HTTP 400 proves the request reached Customer Lambda.
+          # HTTP 403 means an old protected route is still deployed.
+          if [ "$CUSTOMER_PUBLIC_HTTP_CODE" != "400" ]; then
+            echo "ERROR: POST /customers public-registration check failed."
+            echo "Expected HTTP 400 from Lambda validation, but received HTTP $CUSTOMER_PUBLIC_HTTP_CODE."
+            exit 1
+          fi
+
+          echo "POST /customers public-registration smoke test passed."
+          rm -f "$CUSTOMER_PUBLIC_RESPONSE"
 
           ADMIN_TOKEN=$(aws ssm get-parameter \
             --name "$AUTH_PARAMETER" \
