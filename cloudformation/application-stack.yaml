@@ -69,10 +69,10 @@ Resources:
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
-  CloudMartLowStockEmailSubscription:
+  # Email subscriptions can be deleted/unsubscribed by the recipient.
+  # Do not retain the subscription resource so CloudFormation can recreate it.
+  CloudMartLowStockEmailSubscriptionV2:
     Type: AWS::SNS::Subscription
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
       Protocol: email
@@ -120,9 +120,40 @@ Resources:
               threshold: "$.detail.low_stock_threshold"
             InputTemplate: >-
               "CLOUDMART ADMIN LOW STOCK ALERT\n\nProduct: <productName>\nProduct ID: <productId>\n\nSTOCK STATUS\nPrevious Stock: <oldStock>\nCurrent Stock: <newStock>\nLow Stock Limit: <threshold>\n\nACTION REQUIRED\nPlease replenish this product soon.\n\n— CloudMart"
-  # Handles customer order notifications. The Lambda looks up the
-  # authenticated customer's current notification subscription and sends
-  # a formatted HTML/text email through SES.
+  # ============================================================
+  # ORDER NOTIFICATION SNS PIPELINE
+  #
+  # EventBridge publishes order lifecycle events to this SNS topic.
+  # SNS invokes Notification Lambda, which resolves the authenticated
+  # customer's notification subscription and sends the email through SES.
+  # ============================================================
+
+  CloudMartOrderNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-order-notification"
+
+  CloudMartOrderNotificationTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref CloudMartOrderNotificationTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgeOrderNotifications
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref CloudMartOrderNotificationTopic
+            Condition:
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${CloudMartEventBus}/${ProjectName}-${Environment}-order-*-notification"
+
+  # Receives order lifecycle events from SNS, looks up the authenticated
+  # customer's current notification subscription, and sends a formatted
+  # HTML/text email through SES.
   NotificationFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -158,16 +189,27 @@ Resources:
       LogGroupName: !Sub "/aws/lambda/${ProjectName}-${Environment}-notification"
       RetentionInDays: 30
 
-  NotificationInvokePermission:
+  OrderNotificationSnsSubscription:
+    Type: AWS::SNS::Subscription
+    DependsOn:
+      - OrderNotificationSnsInvokePermission
+    Properties:
+      TopicArn: !Ref CloudMartOrderNotificationTopic
+      Protocol: lambda
+      Endpoint: !GetAtt NotificationFunction.Arn
+
+  OrderNotificationSnsInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref NotificationFunction
-      Principal: events.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref CloudMartOrderNotificationTopic
 
   OrderPlacedNotificationRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed-notification"
       EventBusName: !Ref CloudMartEventBus
@@ -176,11 +218,13 @@ Resources:
         source: [cloudmart.order]
         detail-type: [OrderPlaced]
       Targets:
-        - Id: CustomerOrderNotification
-          Arn: !GetAtt NotificationFunction.Arn
+        - Id: OrderNotificationSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
 
   OrderConfirmedNotificationRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed-notification"
       EventBusName: !Ref CloudMartEventBus
@@ -189,11 +233,13 @@ Resources:
         source: [cloudmart.order]
         detail-type: [OrderConfirmed]
       Targets:
-        - Id: CustomerOrderNotification
-          Arn: !GetAtt NotificationFunction.Arn
+        - Id: OrderNotificationSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
 
   OrderCanceledNotificationRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled-notification"
       EventBusName: !Ref CloudMartEventBus
@@ -202,11 +248,13 @@ Resources:
         source: [cloudmart.order]
         detail-type: [OrderCanceled]
       Targets:
-        - Id: CustomerOrderNotification
-          Arn: !GetAtt NotificationFunction.Arn
+        - Id: OrderNotificationSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
 
   OrderFailedNotificationRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed-notification"
       EventBusName: !Ref CloudMartEventBus
@@ -215,11 +263,13 @@ Resources:
         source: [cloudmart.order]
         detail-type: [OrderFailed]
       Targets:
-        - Id: CustomerOrderNotification
-          Arn: !GetAtt NotificationFunction.Arn
+        - Id: OrderNotificationSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
 
   OrderCompletedNotificationRule:
     Type: AWS::Events::Rule
+    DependsOn:
+      - CloudMartOrderNotificationTopicPolicy
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-completed-notification"
       EventBusName: !Ref CloudMartEventBus
@@ -228,8 +278,8 @@ Resources:
         source: [cloudmart.order]
         detail-type: [OrderCompleted]
       Targets:
-        - Id: CustomerOrderNotification
-          Arn: !GetAtt NotificationFunction.Arn
+        - Id: OrderNotificationSnsTarget
+          Arn: !Ref CloudMartOrderNotificationTopic
 
   # Validates the Authorization token used by protected API routes.
   LambdaAuthorizer:
@@ -974,6 +1024,9 @@ Outputs:
 
   LowStockTopicArn:
     Value: !Ref CloudMartLowStockTopic
+
+  OrderNotificationTopicArn:
+    Value: !Ref CloudMartOrderNotificationTopic
 
   LowStockRuleArn:
     Value: !GetAtt LowStockEventRule.Arn

@@ -600,8 +600,8 @@ jobs:
           fi
 
           # Recover the retained low-stock SNS resources if the application
-          # stack had to be recreated. Order notifications no longer use SNS;
-          # they are delivered by the Notification Lambda through SES.
+          # stack had to be recreated. Order notifications use
+          # EventBridge -> SNS -> Notification Lambda -> SES.
           LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
           LOW_STOCK_TOPIC_ARN=""
           if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
@@ -612,7 +612,7 @@ jobs:
 
           if [ -n "$LOW_STOCK_TOPIC_ARN" ]; then
             echo "Retained low-stock SNS topic detected; re-adopting it."
-            cat > /tmp/cloudmart-sns-recovery.yaml <<'EOF'
+            cat > /tmp/cloudmart-sns-recovery.yaml <<EOF
           AWSTemplateFormatVersion: "2010-09-09"
           Resources:
             CloudMartLowStockTopic:
@@ -623,32 +623,17 @@ jobs:
                 TopicName: "$LOW_STOCK_TOPIC_NAME"
           EOF
 
-            LOW_STOCK_SUBSCRIPTION_ARN=$(aws sns list-subscriptions-by-topic               --topic-arn "$LOW_STOCK_TOPIC_ARN"               --region "$AWS_REGION"               --output json | jq -r --arg endpoint "$ADMIN_EMAIL"                 '.Subscriptions[]? | select(.Protocol=="email" and .Endpoint==$endpoint and .SubscriptionArn!="PendingConfirmation") | .SubscriptionArn'                 | head -n 1 || true)
-
-            if [ -n "$LOW_STOCK_SUBSCRIPTION_ARN" ]; then
-              cat >> /tmp/cloudmart-sns-recovery.yaml <<EOF
-            CloudMartLowStockEmailSubscription:
-              Type: AWS::SNS::Subscription
-              DeletionPolicy: Retain
-              UpdateReplacePolicy: Retain
-              Properties:
-                TopicArn: "$LOW_STOCK_TOPIC_ARN"
-                Protocol: email
-                Endpoint: "$ADMIN_EMAIL"
-          EOF
-            fi
-
-            jq -n               --arg lowTopic "$LOW_STOCK_TOPIC_NAME"               --arg lowSub "$LOW_STOCK_SUBSCRIPTION_ARN"               '[
+            # Do not import the email subscription. An email subscription can
+            # legitimately be in a Deleted or PendingConfirmation state.
+            # The application stack owns the current subscription resource and
+            # will create a fresh confirmation request after the retained topic
+            # is re-adopted.
+            jq -n               --arg lowTopic "$LOW_STOCK_TOPIC_NAME"               '[
                 {
                   ResourceType:"AWS::SNS::Topic",
                   LogicalResourceId:"CloudMartLowStockTopic",
                   ResourceIdentifier:{TopicName:$lowTopic}
-                },
-                (if $lowSub != "" then {
-                  ResourceType:"AWS::SNS::Subscription",
-                  LogicalResourceId:"CloudMartLowStockEmailSubscription",
-                  ResourceIdentifier:{SubscriptionArn:$lowSub}
-                } else empty end)
+                }
               ]' > /tmp/cloudmart-sns-import.json
 
             IMPORT_COUNT=$(jq 'length' /tmp/cloudmart-sns-import.json)

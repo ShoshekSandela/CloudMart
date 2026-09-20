@@ -214,7 +214,8 @@ CloudMart customer notification settings.
     return subject, html_body, text_body
 
 
-def lambda_handler(event, context):
+def process_notification_event(event, connection):
+    """Process one normalized EventBridge order event."""
     detail = event.get("detail") or {}
     detail_type = str(event.get("detail-type") or "").strip()
     customer_id = detail.get("customer_id")
@@ -235,55 +236,95 @@ def lambda_handler(event, context):
         logger.error("Order notification missing customer_id")
         raise ValueError("customer_id is required")
 
+    recipient = get_recipient(connection, int(customer_id))
+    if not recipient:
+        logger.error("Recipient lookup failed: customer_id=%s", customer_id)
+        raise LookupError("Customer not found")
+
+    if str(recipient["subscription_status"]).upper() == "UNSUBSCRIBED":
+        logger.info(
+            "Notification skipped: customer_id=%s reason=USER_UNSUBSCRIBE",
+            customer_id,
+        )
+        return {"statusCode": 200, "status": "UNSUBSCRIBED"}
+
+    email = recipient["notification_email"]
+    subject, html_body, text_body = build_message(detail_type, detail)
+
+    logger.info(
+        "Order notification prepared: type=%s customer_id=%s template=%s recipient_present=%s",
+        detail_type, customer_id, detail_type, bool(email),
+    )
+    logger.info("Email send attempted: type=%s customer_id=%s", detail_type, customer_id)
+
+    result = ses.send_email(
+        Source=FROM_EMAIL,
+        Destination={"ToAddresses": [email]},
+        Message={
+            "Subject": {"Data": subject, "Charset": "UTF-8"},
+            "Body": {
+                "Html": {"Data": html_body, "Charset": "UTF-8"},
+                "Text": {"Data": text_body, "Charset": "UTF-8"},
+            },
+        },
+    )
+
+    logger.info(
+        "Email send succeeded: type=%s customer_id=%s message_id=%s",
+        detail_type, customer_id, result.get("MessageId"),
+    )
+    return {"statusCode": 200, "status": "SENT"}
+
+
+def lambda_handler(event, context):
+    """Handle EventBridge events delivered directly or through SNS.
+
+    Order notifications use EventBridge -> SNS -> Notification Lambda -> SES.
+    The SNS envelope is unwrapped here so the existing order notification
+    payload remains unchanged.
+    """
+    records = event.get("Records") if isinstance(event, dict) else None
+
+    # Direct EventBridge invocation is still supported for compatibility.
+    if not records:
+        records = [{"event": event}]
+
     connection = None
+    results = []
+
     try:
         connection = get_db_connection()
-        recipient = get_recipient(connection, int(customer_id))
-        if not recipient:
-            logger.error("Recipient lookup failed: customer_id=%s", customer_id)
-            raise LookupError("Customer not found")
 
-        if str(recipient["subscription_status"]).upper() == "UNSUBSCRIBED":
-            logger.info(
-                "Notification skipped: customer_id=%s reason=USER_UNSUBSCRIBE",
-                customer_id,
-            )
-            return {"statusCode": 200, "status": "UNSUBSCRIBED"}
+        for record in records:
+            normalized_event = record.get("event") if isinstance(record, dict) else None
 
-        email = recipient["notification_email"]
-        subject, html_body, text_body = build_message(detail_type, detail)
+            if isinstance(record, dict) and record.get("EventSource") == "aws:sns":
+                sns_payload = record.get("Sns") or {}
+                message = sns_payload.get("Message")
 
-        logger.info(
-            "Order notification prepared: type=%s customer_id=%s template=%s recipient_present=%s",
-            detail_type, customer_id, detail_type, bool(email),
-        )
-        logger.info("Email send attempted: type=%s customer_id=%s", detail_type, customer_id)
+                if not message:
+                    raise ValueError("SNS notification record is missing Sns.Message")
 
-        result = ses.send_email(
-            Source=FROM_EMAIL,
-            Destination={"ToAddresses": [email]},
-            Message={
-                "Subject": {"Data": subject, "Charset": "UTF-8"},
-                "Body": {
-                    "Html": {"Data": html_body, "Charset": "UTF-8"},
-                    "Text": {"Data": text_body, "Charset": "UTF-8"},
-                },
-            },
-        )
+                try:
+                    normalized_event = json.loads(message)
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError("SNS notification message is not valid JSON") from exc
 
-        logger.info(
-            "Email send succeeded: type=%s customer_id=%s message_id=%s",
-            detail_type, customer_id, result.get("MessageId"),
-        )
-        return {"statusCode": 200, "status": "SENT"}
+            if not isinstance(normalized_event, dict):
+                raise ValueError("Notification event payload is invalid")
+
+            results.append(process_notification_event(normalized_event, connection))
+
+        return {
+            "statusCode": 200,
+            "status": "PROCESSED",
+            "results": results,
+        }
 
     except Exception:
         logger.exception(
-            "Email notification failed: type=%s customer_id=%s; "
-            "subscription state is not modified",
-            detail_type, customer_id,
+            "Email notification failed; subscription state is not modified"
         )
-        # Do not update/delete/deactivate the subscription on delivery failure.
         raise
     finally:
         if connection:
