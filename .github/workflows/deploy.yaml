@@ -697,6 +697,17 @@ jobs:
                ;;
            esac
 
+           echo "Verifying SNS notification infrastructure..."
+           ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notifications$" | head -n 1 || true)
+           LOW_STOCK_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-low-stock$" | head -n 1 || true)
+
+           test -n "$ORDER_TOPIC_ARN" || { echo "ERROR: Customer order SNS topic was not created."; exit 1; }
+           test -n "$LOW_STOCK_TOPIC_ARN" || { echo "ERROR: Low-stock SNS topic was not created."; exit 1; }
+
+           echo "Customer order SNS topic: $ORDER_TOPIC_ARN"
+           echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"
+           echo "SNS notification infrastructure is ready."
+
   initialize:
     name: Initialize CloudMart
     runs-on: ubuntu-latest

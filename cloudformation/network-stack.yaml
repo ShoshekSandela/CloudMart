@@ -299,19 +299,6 @@ Resources:
       SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
 
-  # Private Amazon SES API access for the Notification Lambda.
-  SESVPCEndpoint:
-    Type: AWS::EC2::VPCEndpoint
-    Properties:
-      VpcId: !Ref CloudMartVPC
-      ServiceName: !Sub com.amazonaws.${AWS::Region}.email
-      VpcEndpointType: Interface
-      PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateSubnet1
-      SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
-
-Outputs:
   VpcId:
     Value: !Ref CloudMartVPC
     Export:

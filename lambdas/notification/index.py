@@ -12,14 +12,14 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
-ses = boto3.client("ses")
+sns = boto3.client("sns")
 
 DB_HOST_PARAMETER_NAME = os.environ["DB_HOST_PARAMETER_NAME"]
 DB_PORT_PARAMETER_NAME = os.environ["DB_PORT_PARAMETER_NAME"]
 DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
 DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
 DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
-FROM_EMAIL = os.environ["NOTIFICATION_FROM_EMAIL"]
+ORDER_NOTIFICATION_TOPIC_ARN = os.environ["ORDER_NOTIFICATION_TOPIC_ARN"]
 
 
 def get_parameter(name, decrypt=False):
@@ -58,7 +58,8 @@ def order_status(detail_type, detail):
 
 def get_recipient(connection, customer_id):
     with connection.cursor() as cursor:
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT
                 c.customer_id,
                 c.customer_name,
@@ -71,20 +72,22 @@ def get_recipient(connection, customer_id):
                 ON es.customer_id = c.customer_id
             WHERE c.customer_id = %s
             LIMIT 1
-        """, (customer_id,))
+            """,
+            (customer_id,),
+        )
         customer = cursor.fetchone()
 
         if not customer:
             return None
 
-        # Existing customers are active by default. A missing subscription
-        # record is created as ACTIVE. An existing UNSUBSCRIBED record is
-        # never changed by notification processing.
         if customer["subscription_id"] is None:
-            cursor.execute("""
+            cursor.execute(
+                """
                 INSERT INTO email_subscriptions (customer_id, email, status)
                 VALUES (%s, %s, 'ACTIVE')
-            """, (customer_id, customer["customer_email"]))
+                """,
+                (customer_id, customer["customer_email"]),
+            )
             connection.commit()
             customer["notification_email"] = customer["customer_email"]
             customer["subscription_status"] = "ACTIVE"
@@ -93,26 +96,16 @@ def get_recipient(connection, customer_id):
 
 
 def render_items(items):
-    items = items or []
     rows = []
-    text_rows = []
-    for item in items:
-        name = html.escape(safe(item.get("product_name"), f"Product {item.get('product_id', '')}"))
+    for item in items or []:
+        name = html.unescape(safe(item.get("product_name"), f"Product {item.get('product_id', '')}"))
         quantity = safe(item.get("quantity"), "0")
         unit_price = money(item.get("unit_price"))
         subtotal = money(item.get("subtotal"))
         rows.append(
-            f"<tr><td>{name}</td><td>{quantity}</td>"
-            f"<td>₹{unit_price}</td><td>₹{subtotal}</td></tr>"
+            f"{name} | Qty: {quantity} | Unit Price: ₹{unit_price} | Subtotal: ₹{subtotal}"
         )
-        text_rows.append(
-            f"{safe(item.get('product_name'), 'Product ' + safe(item.get('product_id'), ''))} | "
-            f"Qty: {quantity} | Unit: ₹{unit_price} | Subtotal: ₹{subtotal}"
-        )
-    if not rows:
-        rows.append("<tr><td colspan='4'>No item details were provided.</td></tr>")
-        text_rows.append("No item details were provided.")
-    return "".join(rows), "\n".join(text_rows)
+    return "\n".join(rows) if rows else "No item details were provided."
 
 
 def build_message(detail_type, detail):
@@ -122,18 +115,10 @@ def build_message(detail_type, detail):
     order_date = safe(detail.get("order_date") or detail.get("created_at"))
     if not order_date:
         order_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
     total = money(detail.get("total_amount"))
     reason = safe(detail.get("failure_reason"))
 
-    item_rows, item_text = render_items(detail.get("items"))
-    greeting_name = html.escape(customer_name)
-    safe_order_id = html.escape(order_id)
-    safe_status = html.escape(status.title())
-    safe_date = html.escape(order_date)
-    reason_html = (
-        f"<p><strong>Reason:</strong> {html.escape(reason)}</p>"
-        if reason else ""
-    )
     intro = {
         "OrderPlaced": "Your order has been successfully placed.",
         "OrderConfirmed": "Your order has been confirmed and inventory has been reserved.",
@@ -142,189 +127,196 @@ def build_message(detail_type, detail):
         "OrderCompleted": "Your order has been completed successfully.",
     }.get(detail_type, "There is an update regarding your order.")
 
-    subject = f"Order {status.title()} - Order #{order_id}"
+    subject = f"CloudMart Order {status.title()} - #{order_id}"
 
-    html_body = f"""<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>{html.escape(subject)}</title></head>
-<body style="margin:0;padding:24px;background:#f4f6f8;font-family:Arial,sans-serif;color:#222;">
-  <div style="max-width:720px;margin:auto;background:#fff;padding:32px;border-radius:8px;">
-    <h2 style="margin-top:0;">CloudMart Order Notification</h2>
-    <p>Hello {greeting_name},</p>
-    <p>{html.escape(intro)}</p>
-    <h3>Order Details</h3>
-    <table style="width:100%;border-collapse:collapse;">
-      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Order ID</strong></td>
-          <td style="padding:8px;border:1px solid #ddd;">{safe_order_id}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Status</strong></td>
-          <td style="padding:8px;border:1px solid #ddd;">{safe_status}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Customer</strong></td>
-          <td style="padding:8px;border:1px solid #ddd;">{greeting_name}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Order Date</strong></td>
-          <td style="padding:8px;border:1px solid #ddd;">{safe_date}</td></tr>
-      <tr><td style="padding:8px;border:1px solid #ddd;"><strong>Total</strong></td>
-          <td style="padding:8px;border:1px solid #ddd;">₹{html.escape(total)}</td></tr>
-    </table>
-    {reason_html}
-    <h3>Items</h3>
-    <table style="width:100%;border-collapse:collapse;">
-      <thead><tr>
-        <th style="text-align:left;padding:8px;border:1px solid #ddd;">Product</th>
-        <th style="text-align:left;padding:8px;border:1px solid #ddd;">Quantity</th>
-        <th style="text-align:left;padding:8px;border:1px solid #ddd;">Unit Price</th>
-        <th style="text-align:left;padding:8px;border:1px solid #ddd;">Subtotal</th>
-      </tr></thead>
-      <tbody>{item_rows}</tbody>
-    </table>
-    <p style="margin-top:24px;">Thank you for shopping with CloudMart.</p>
-    <p style="font-size:12px;color:#666;">
-      You can unsubscribe from order email notifications through your authenticated
-      CloudMart customer notification settings.
-    </p>
-  </div>
-</body>
-</html>"""
-
-    text_body = f"""CloudMart Order Notification
+    message = f"""CloudMart Order Notification
 
 Hello {customer_name},
 
 {intro}
 
 Order Details
-------------
+-------------
 Order ID: {order_id}
 Order Status: {status.title()}
 Customer: {customer_name}
 Order Date: {order_date}
 Total Amount: ₹{total}
-{f"Reason: {reason}" if reason else ""}
 
 Items
 -----
-{item_text}
-
-Thank you,
-CloudMart
-
-You can unsubscribe from order email notifications through your authenticated
-CloudMart customer notification settings.
+{render_items(detail.get("items"))}
 """
 
-    return subject, html_body, text_body
+    if reason:
+        message += f"\nReason: {reason}\n"
+
+    message += "\nThank you,\nCloudMart\n"
+    return subject[:100], message
+
+
+def ensure_sns_email_subscription(customer_id, email):
+    """Ensure the customer email is subscribed with a customer_id filter.
+
+    SNS email subscriptions require the recipient to confirm the subscription.
+    The database status remains the application's opt-in state; SNS itself
+    determines whether the endpoint is PendingConfirmation or confirmed.
+    """
+    email = str(email).strip().lower()
+    subscriptions = sns.list_subscriptions_by_topic(
+        TopicArn=ORDER_NOTIFICATION_TOPIC_ARN
+    ).get("Subscriptions", [])
+
+    for subscription in subscriptions:
+        endpoint = str(subscription.get("Endpoint") or "").strip().lower()
+        if endpoint != email:
+            continue
+
+        arn = subscription.get("SubscriptionArn")
+        if not arn or arn == "PendingConfirmation":
+            logger.info(
+                "Customer SNS subscription pending confirmation: customer_id=%s",
+                customer_id,
+            )
+            return "PendingConfirmation"
+
+        filter_policy = {"customer_id": [str(customer_id)]}
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicy",
+            AttributeValue=json.dumps(filter_policy),
+        )
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicyScope",
+            AttributeValue="MessageAttributes",
+        )
+        logger.info(
+            "Customer SNS subscription ready: customer_id=%s",
+            customer_id,
+        )
+        return arn
+
+    response = sns.subscribe(
+        TopicArn=ORDER_NOTIFICATION_TOPIC_ARN,
+        Protocol="email",
+        Endpoint=email,
+        ReturnSubscriptionArn=True,
+    )
+    arn = response.get("SubscriptionArn") or "PendingConfirmation"
+
+    if arn != "PendingConfirmation":
+        filter_policy = {"customer_id": [str(customer_id)]}
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicy",
+            AttributeValue=json.dumps(filter_policy),
+        )
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicyScope",
+            AttributeValue="MessageAttributes",
+        )
+
+    logger.info(
+        "Customer SNS subscription created: customer_id=%s state=%s",
+        customer_id,
+        arn if arn == "PendingConfirmation" else "CONFIRMED",
+    )
+    return arn
+
+
+def publish_order_notification(customer_id, email, subject, message):
+    # Reconcile the subscription before publishing. This also supports
+    # existing customers created before SNS notifications were enabled.
+    subscription_state = ensure_sns_email_subscription(customer_id, email)
+
+    response = sns.publish(
+        TopicArn=ORDER_NOTIFICATION_TOPIC_ARN,
+        Subject=subject,
+        Message=message,
+        MessageAttributes={
+            "customer_id": {
+                "DataType": "String",
+                "StringValue": str(customer_id),
+            }
+        },
+    )
+
+    logger.info(
+        "Order notification published to SNS: customer_id=%s subscription_state=%s message_id=%s",
+        customer_id,
+        subscription_state,
+        response.get("MessageId"),
+    )
+
+    return response, subscription_state
 
 
 def process_notification_event(event, connection):
-    """Process one normalized EventBridge order event."""
     detail = event.get("detail") or {}
     detail_type = str(event.get("detail-type") or "").strip()
     customer_id = detail.get("customer_id")
 
     logger.info(
         "Order notification event received: type=%s customer_id=%s order_id=%s",
-        detail_type, customer_id, detail.get("order_id"),
+        detail_type,
+        customer_id,
+        detail.get("order_id"),
     )
 
     if detail_type not in {
-        "OrderPlaced", "OrderConfirmed", "OrderCanceled",
-        "OrderFailed", "OrderCompleted",
+        "OrderPlaced",
+        "OrderConfirmed",
+        "OrderCanceled",
+        "OrderFailed",
+        "OrderCompleted",
     }:
         logger.info("Notification type ignored: %s", detail_type)
-        return {"statusCode": 200, "status": "IGNORED"}
+        return {"status": "IGNORED", "detail_type": detail_type}
 
     if customer_id in (None, ""):
-        logger.error("Order notification missing customer_id")
         raise ValueError("customer_id is required")
 
     recipient = get_recipient(connection, int(customer_id))
     if not recipient:
-        logger.error("Recipient lookup failed: customer_id=%s", customer_id)
-        raise LookupError("Customer not found")
+        raise LookupError(f"Customer {customer_id} not found")
 
     if str(recipient["subscription_status"]).upper() == "UNSUBSCRIBED":
         logger.info(
             "Notification skipped: customer_id=%s reason=USER_UNSUBSCRIBE",
             customer_id,
         )
-        return {"statusCode": 200, "status": "UNSUBSCRIBED"}
+        return {"status": "UNSUBSCRIBED", "customer_id": int(customer_id)}
 
     email = recipient["notification_email"]
-    subject, html_body, text_body = build_message(detail_type, detail)
+    if not email:
+        raise ValueError(f"Customer {customer_id} has no notification email")
 
-    logger.info(
-        "Order notification prepared: type=%s customer_id=%s template=%s recipient_present=%s",
-        detail_type, customer_id, detail_type, bool(email),
-    )
-    logger.info("Email send attempted: type=%s customer_id=%s", detail_type, customer_id)
+    subject, message = build_message(detail_type, detail)
 
-    result = ses.send_email(
-        Source=FROM_EMAIL,
-        Destination={"ToAddresses": [email]},
-        Message={
-            "Subject": {"Data": subject, "Charset": "UTF-8"},
-            "Body": {
-                "Html": {"Data": html_body, "Charset": "UTF-8"},
-                "Text": {"Data": text_body, "Charset": "UTF-8"},
-            },
-        },
+    _, subscription_state = publish_order_notification(
+        int(customer_id),
+        email,
+        subject,
+        message,
     )
 
-    logger.info(
-        "Email send succeeded: type=%s customer_id=%s message_id=%s",
-        detail_type, customer_id, result.get("MessageId"),
-    )
-    return {"statusCode": 200, "status": "SENT"}
+    return {
+        "status": "PUBLISHED_TO_SNS",
+        "customer_id": int(customer_id),
+        "subscription_state": subscription_state,
+    }
 
 
 def lambda_handler(event, context):
-    """Handle EventBridge events delivered directly or through SNS.
-
-    Order notifications use EventBridge -> SNS -> Notification Lambda -> SES.
-    The SNS envelope is unwrapped here so the existing order notification
-    payload remains unchanged.
-    """
-    records = event.get("Records") if isinstance(event, dict) else None
-
-    # Direct EventBridge invocation is still supported for compatibility.
-    if not records:
-        records = [{"event": event}]
-
+    """Receive EventBridge order events and publish them to customer SNS."""
     connection = None
-    results = []
-
     try:
         connection = get_db_connection()
-
-        for record in records:
-            normalized_event = record.get("event") if isinstance(record, dict) else None
-
-            if isinstance(record, dict) and record.get("EventSource") == "aws:sns":
-                sns_payload = record.get("Sns") or {}
-                message = sns_payload.get("Message")
-
-                if not message:
-                    raise ValueError("SNS notification record is missing Sns.Message")
-
-                try:
-                    normalized_event = json.loads(message)
-                except (TypeError, json.JSONDecodeError) as exc:
-                    raise ValueError("SNS notification message is not valid JSON") from exc
-
-            if not isinstance(normalized_event, dict):
-                raise ValueError("Notification event payload is invalid")
-
-            results.append(process_notification_event(normalized_event, connection))
-
-        return {
-            "statusCode": 200,
-            "status": "PROCESSED",
-            "results": results,
-        }
-
+        return process_notification_event(event, connection)
     except Exception:
-        logger.exception(
-            "Email notification failed; subscription state is not modified"
-        )
+        logger.exception("SNS order notification failed")
         raise
     finally:
         if connection:

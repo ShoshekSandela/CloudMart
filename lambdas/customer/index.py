@@ -1,4 +1,5 @@
 import hashlib
+import hashlib
 import json
 import logging
 import os
@@ -11,13 +12,147 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 ssm = boto3.client("ssm")
+sns = boto3.client("sns")
 
 DB_HOST_PARAMETER_NAME = os.environ["DB_HOST_PARAMETER_NAME"]
 DB_PORT_PARAMETER_NAME = os.environ["DB_PORT_PARAMETER_NAME"]
 DB_NAME_PARAMETER_NAME = os.environ["DB_NAME_PARAMETER_NAME"]
 DB_USERNAME_PARAMETER_NAME = os.environ["DB_USERNAME_PARAMETER_NAME"]
 DB_PASSWORD_PARAMETER_NAME = os.environ["DB_PASSWORD_PARAMETER_NAME"]
+ORDER_NOTIFICATION_TOPIC_ARN = os.environ["ORDER_NOTIFICATION_TOPIC_ARN"]
 
+
+
+def _subscription_filter_policy(customer_id):
+    return json.dumps({"customer_id": [str(customer_id)]})
+
+
+def _list_sns_subscriptions():
+    subscriptions = []
+    token = None
+    while True:
+        kwargs = {"TopicArn": ORDER_NOTIFICATION_TOPIC_ARN}
+        if token:
+            kwargs["NextToken"] = token
+        page = sns.list_subscriptions_by_topic(**kwargs)
+        subscriptions.extend(page.get("Subscriptions", []))
+        token = page.get("NextToken")
+        if not token:
+            return subscriptions
+
+
+def _get_filter_policy(subscription_arn):
+    try:
+        attrs = sns.get_subscription_attributes(
+            SubscriptionArn=subscription_arn
+        ).get("Attributes", {})
+        raw = attrs.get("FilterPolicy")
+        return json.loads(raw) if raw else {}
+    except Exception:
+        logger.exception("Unable to read SNS subscription attributes")
+        return {}
+
+
+def ensure_customer_sns_subscription(customer_id, email):
+    email = str(email).strip().lower()
+    subscriptions = _list_sns_subscriptions()
+
+    # Prefer an existing confirmed subscription for this customer.
+    for sub in subscriptions:
+        if str(sub.get("Endpoint") or "").strip().lower() != email:
+            continue
+        arn = sub.get("SubscriptionArn")
+        if not arn or arn == "PendingConfirmation":
+            continue
+        policy = _get_filter_policy(arn)
+        ids = policy.get("customer_id", []) if isinstance(policy, dict) else []
+        if str(customer_id) in [str(value) for value in ids]:
+            return "CONFIRMED"
+
+    # Reuse an endpoint subscription when possible, otherwise create one.
+    for sub in subscriptions:
+        if str(sub.get("Endpoint") or "").strip().lower() != email:
+            continue
+        arn = sub.get("SubscriptionArn")
+        if not arn or arn == "PendingConfirmation":
+            return "PENDING_CONFIRMATION"
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicy",
+            AttributeValue=_subscription_filter_policy(customer_id),
+        )
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicyScope",
+            AttributeValue="MessageAttributes",
+        )
+        return "CONFIRMED"
+
+    result = sns.subscribe(
+        TopicArn=ORDER_NOTIFICATION_TOPIC_ARN,
+        Protocol="email",
+        Endpoint=email,
+        ReturnSubscriptionArn=True,
+    )
+    arn = result.get("SubscriptionArn") or "PendingConfirmation"
+
+    if arn != "PendingConfirmation":
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicy",
+            AttributeValue=_subscription_filter_policy(customer_id),
+        )
+        sns.set_subscription_attributes(
+            SubscriptionArn=arn,
+            AttributeName="FilterPolicyScope",
+            AttributeValue="MessageAttributes",
+        )
+        return "CONFIRMED"
+
+    return "PENDING_CONFIRMATION"
+
+
+def remove_customer_sns_subscription(customer_id, email):
+    email = str(email or "").strip().lower()
+    if not email:
+        return
+
+    for sub in _list_sns_subscriptions():
+        if str(sub.get("Endpoint") or "").strip().lower() != email:
+            continue
+        arn = sub.get("SubscriptionArn")
+        if not arn or arn == "PendingConfirmation":
+            continue
+        policy = _get_filter_policy(arn)
+        ids = policy.get("customer_id", []) if isinstance(policy, dict) else []
+        if str(customer_id) in [str(value) for value in ids]:
+            sns.unsubscribe(SubscriptionArn=arn)
+            logger.info(
+                "Customer SNS subscription removed: customer_id=%s",
+                customer_id,
+            )
+
+
+def sync_customer_sns_subscription(customer_id, old_email, new_email):
+    try:
+        if old_email and str(old_email).strip().lower() != str(new_email).strip().lower():
+            remove_customer_sns_subscription(customer_id, old_email)
+        state = ensure_customer_sns_subscription(customer_id, new_email)
+        logger.info(
+            "Customer SNS notification subscription synchronized: customer_id=%s state=%s",
+            customer_id,
+            state,
+        )
+        return state
+    except Exception:
+        # Customer data changes should not be rolled back because an external
+        # SNS subscription operation failed. Notification Lambda retries the
+        # subscription reconciliation when the next order event arrives.
+        logger.exception(
+            "Customer SNS subscription synchronization failed: customer_id=%s",
+            customer_id,
+        )
+        return "ERROR"
 
 def json_serializer(value):
     if hasattr(value, "isoformat"):
@@ -243,6 +378,24 @@ def unsubscribe_customer(connection, customer_id, actor):
             """, (customer_id,))
 
     connection.commit()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT customer_email FROM customers WHERE customer_id = %s",
+                (customer_id,),
+            )
+            current_customer = cursor.fetchone()
+        if current_customer:
+            remove_customer_sns_subscription(
+                customer_id,
+                current_customer["customer_email"],
+            )
+    except Exception:
+        logger.exception(
+            "SNS unsubscribe synchronization failed: customer_id=%s",
+            customer_id,
+        )
+
     logger.info(
         "Email subscription changed: reason=USER_UNSUBSCRIBE customer_id=%s actor=%s",
         customer_id,
@@ -309,6 +462,12 @@ def lambda_handler(event, context):
                     created_id, token = create_customer(cursor, payload)
                     connection.commit()
                     customer = get_customer(cursor, created_id)
+                    subscription_state = sync_customer_sns_subscription(
+                        created_id,
+                        None,
+                        customer["customer_email"],
+                    )
+                    customer["notification_subscription"] = subscription_state
                     customer["token"] = token
                     return response(201, customer)
                 return response(405, {"message": "Method not allowed"})
@@ -325,11 +484,24 @@ def lambda_handler(event, context):
 
             if method == "PUT":
                 require_admin(auth)
+                existing = get_customer(cursor, customer_id)
+                if not existing:
+                    connection.rollback()
+                    return response(404, {"message": "Customer not found"})
+                old_email = existing["customer_email"]
+
                 customer = update_customer(cursor, customer_id, payload)
                 if not customer:
                     connection.rollback()
                     return response(404, {"message": "Customer not found"})
+
                 connection.commit()
+                subscription_state = sync_customer_sns_subscription(
+                    customer_id,
+                    old_email,
+                    customer["customer_email"],
+                )
+                customer["notification_subscription"] = subscription_state
                 return response(200, customer)
 
             if method == "DELETE":
