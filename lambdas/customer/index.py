@@ -676,7 +676,6 @@ def lambda_handler(event, context):
                     customers = get_customers(cursor)
                     return response(200, {"count": len(customers), "customers": customers})
                 if method == "POST":
-                    require_admin(auth)
                     created_id, token = create_customer(cursor, payload)
                     connection.commit()
                     customer = get_customer(cursor, created_id)

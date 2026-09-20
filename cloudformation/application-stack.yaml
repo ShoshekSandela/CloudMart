@@ -838,8 +838,9 @@ Resources:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref CustomersResource
       HttpMethod: POST
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
+      # Customer registration is intentionally public.
+      # The Customer Lambda generates and returns the customer's token.
+      AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
