@@ -585,6 +585,8 @@ def publish_inventory_event_from_order(product_id, product_name, old_stock, new_
             logger.error("Inventory Changed event failed: %s", json.dumps(result, default=json_serializer))
             return False
         logger.info("Inventory Changed event published: %s", json.dumps(detail))
+        if detail["low_stock"]:
+            publish_operation_metric("LowStockEvents")
         return True
     except Exception:
         logger.exception("Unable to publish Inventory Changed event")

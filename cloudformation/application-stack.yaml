@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Application Stack.
   Creates API Gateway, Lambda functions, EventBridge rules, SNS notifications,
-  and the Operations EC2 environment. IAM roles are imported from the IAM stack.
+  and event-driven application resources. IAM roles are imported from the IAM stack.
 
 Parameters:
   Environment:
@@ -29,10 +29,6 @@ Parameters:
   ApiDeploymentVersion:
     Type: String
     Default: "1"
-
-  EC2InstanceType:
-    Type: String
-    Default: t3.micro
 
 Resources:
 
@@ -370,6 +366,7 @@ Resources:
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           EVENT_BUS_NAME: !Ref CloudMartEventBus
+          ENVIRONMENT: !Ref Environment
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -453,6 +450,7 @@ Resources:
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           EVENT_BUS_NAME: !Ref CloudMartEventBus
+          ENVIRONMENT: !Ref Environment
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -501,37 +499,6 @@ Resources:
       Principal: events.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
       SourceArn: !GetAtt OrderPlacedProcessingEventRule.Arn
-
-  # Creates the managed EC2 operations environment automatically.
-  OperationsEC2Instance:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: !Ref EC2InstanceType
-      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
-      SubnetId:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-PublicSubnetId"
-      SecurityGroupIds:
-        - Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2SecurityGroupId"
-      IamInstanceProfile:
-        Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2InstanceProfileName"
-      Tags:
-        - Key: Name
-          Value: !Sub cloudmart-${Environment}-operations-ec2
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          set -e
-          dnf install -y mariadb105 || dnf install -y mariadb
-          mkdir -p /opt/cloudmart
-          cat > /opt/cloudmart/README.txt <<'EOF'
-          CloudMart Operations Environment
-          MySQL client is installed for RDS access.
-          Use AWS Systems Manager Session Manager to connect to this instance.
-          EOF
 
   OrdersResource:
     Type: AWS::ApiGateway::Resource
@@ -992,9 +959,6 @@ Outputs:
 
   AuthorizerLambdaArn:
     Value: !GetAtt LambdaAuthorizer.Arn
-
-  OperationsEC2InstanceId:
-    Value: !Ref OperationsEC2Instance
 
   ApiGatewayAuthorizerId:
     Value: !Ref ApiGatewayAuthorizer

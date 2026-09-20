@@ -1,0 +1,27 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: Arial, sans-serif; background: #f4f6f8; color: #1f2937; }
+.topbar { display: flex; justify-content: space-between; align-items: center; padding: 22px 40px; background: #111827; color: white; }
+.topbar h1 { margin: 0; font-size: 25px; }
+.topbar p { margin: 5px 0 0; opacity: .75; }
+.logout { color: white; text-decoration: none; padding: 9px 14px; border: 1px solid #6b7280; border-radius: 6px; }
+.container { max-width: 1250px; margin: 30px auto; padding: 0 20px; }
+.summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 22px; }
+.card, .panel { background: white; border-radius: 10px; padding: 20px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.card span { display: block; color: #6b7280; }
+.card strong { display: block; margin-top: 8px; font-size: 30px; }
+.panel { margin-bottom: 22px; }
+.panel-title h2, .panel h2 { margin-top: 0; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 12px; border-bottom: 1px solid #e5e7eb; }
+th { background: #f9fafb; }
+.low-stock { background: #fff7ed; }
+.button, button { display: inline-block; border: 0; border-radius: 6px; padding: 10px 16px; background: #2563eb; color: white; text-decoration: none; cursor: pointer; }
+.login-page { min-height: 100vh; display: grid; place-items: center; }
+.login-card { width: min(420px, 90%); background: white; padding: 32px; border-radius: 10px; box-shadow: 0 4px 18px rgba(0,0,0,.1); }
+.login-card h1 { margin-bottom: 5px; }
+.login-card p { color: #6b7280; }
+.login-card label { display: block; margin: 20px 0 7px; }
+.login-card input { width: 100%; padding: 11px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 15px; }
+.error { background: #fee2e2; color: #991b1b; padding: 10px; border-radius: 6px; }
+@media (max-width: 700px) { .summary-grid { grid-template-columns: 1fr; } .topbar { padding: 18px; } .container { padding: 0 12px; } }

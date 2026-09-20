@@ -54,6 +54,13 @@ Resources:
                 Effect: Allow
                 Action: events:PutEvents
                 Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
+              - Sid: PublishOperationsMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CloudMart/Operations
       Tags:
         - Key: Project
           Value: CloudMart
@@ -148,6 +155,13 @@ Resources:
                 Effect: Allow
                 Action: events:PutEvents
                 Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
+              - Sid: PublishOperationsMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CloudMart/Operations
       Tags:
         - Key: Project
           Value: CloudMart
@@ -301,6 +315,48 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Gives the Daily Report Lambda access to RDS parameters and the report bucket.
+  ReportLambdaRole:
+    Type: AWS::IAM::Role
+    DeletionPolicy: Retain
+    Properties:
+      RoleName: !Sub cloudmart-${Environment}-lambda-report-role
+      Description: CloudMart Daily Report Lambda execution role.
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole
+      Policies:
+        - PolicyName: CloudMartReportPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadDatabaseParameters
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+              - Sid: WriteReports
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                Resource: "*"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
   # Gives the Operations EC2 instance Session Manager and database parameter access.
   EC2Role:
     Type: AWS::IAM::Role
@@ -332,13 +388,24 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+        - PolicyName: CloudMartECDashboardS3Read
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadReportBucket
+                Effect: Allow
+                Action:
+                  - s3:ListBucket
+                  - s3:GetObject
+                Resource: "*"
       Tags:
         - Key: Project
           Value: CloudMart
         - Key: Environment
           Value: !Ref Environment
 
-  # Connects the EC2 role to the EC2 instance created by the Application stack.
+  # Connects the EC2 role to the Operations EC2 instance.
   EC2InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     DeletionPolicy: Retain
@@ -387,6 +454,12 @@ Outputs:
     Value: !GetAtt LambdaAuthorizerRole.Arn
     Export:
       Name: !Sub CloudMart-${Environment}-LambdaAuthorizerRoleArn
+
+  ReportLambdaRoleArn:
+    Description: Daily Report Lambda IAM role ARN.
+    Value: !GetAtt ReportLambdaRole.Arn
+    Export:
+      Name: !Sub CloudMart-${Environment}-ReportLambdaRoleArn
 
   # ARN used by the Operations EC2 instance.
   EC2RoleArn:

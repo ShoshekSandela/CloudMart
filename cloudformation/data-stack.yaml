@@ -133,6 +133,38 @@ Resources:
       Value: !Ref DBPassword
       Description: CloudMart RDS password
 
+  # Allows only the CloudMart Daily Report role to write generated reports.
+  CloudMartReportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudMartReportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowDailyReportLambdaWrite
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportLambdaRoleArn"
+            Action: s3:PutObject
+            Resource: !Sub "${CloudMartReportBucket.Arn}/reports/*"
+          - Sid: AllowOperationsEC2ListBucket
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2RoleArn"
+            Action: s3:ListBucket
+            Resource: !GetAtt CloudMartReportBucket.Arn
+          - Sid: AllowOperationsEC2ReadObjects
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2RoleArn"
+            Action: s3:GetObject
+            Resource:
+              - !Sub "${CloudMartReportBucket.Arn}/dashboard-source/*"
+              - !Sub "${CloudMartReportBucket.Arn}/reports/*"
+
   # Authentication token is managed exclusively by Token Manager.
   # It is intentionally not an AWS::SSM::Parameter resource in this stack.
   # This prevents Data stack updates from resetting the admin token.

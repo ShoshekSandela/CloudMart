@@ -1,0 +1,380 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  CloudMart Milestone 5 monitoring stack.
+  Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
+  CloudWatch dashboard, four alarms, and SNS notifications.
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, test, prod]
+
+  ProjectName:
+    Type: String
+    Default: cloudmart
+
+  NotificationEmail:
+    Type: String
+    AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+
+  EC2InstanceType:
+    Type: String
+    Default: t3.micro
+
+  DashboardSourcePrefix:
+    Type: String
+    Default: dashboard-source
+
+Resources:
+
+  # ------------------------------------------------------------
+  # Daily report Lambda
+  # ------------------------------------------------------------
+  DailyReportFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-daily-report"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      CodeUri: ../lambdas/report/
+      Role:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportLambdaRoleArn"
+      Timeout: 60
+      MemorySize: 256
+      VpcConfig:
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-LambdaSecurityGroupId"
+        SubnetIds:
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet1Id"
+          - Fn::ImportValue: !Sub "CloudMart-${Environment}-PrivateSubnet2Id"
+      Environment:
+        Variables:
+          DB_HOST_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/host
+          DB_PORT_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/port
+          DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
+          DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
+          DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
+          REPORT_BUCKET_NAME:
+            Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
+          REPORT_PREFIX: reports
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  DailyReportSchedule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-daily-report"
+      Description: Runs the CloudMart daily report once every day.
+      ScheduleExpression: rate(1 day)
+      State: ENABLED
+      Targets:
+        - Id: DailyReportLambda
+          Arn: !GetAtt DailyReportFunction.Arn
+
+  DailyReportSchedulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref DailyReportFunction
+      Principal: events.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !GetAtt DailyReportSchedule.Arn
+
+  # ------------------------------------------------------------
+  # Operations EC2 dashboard
+  # ------------------------------------------------------------
+  OperationsEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: !Ref EC2InstanceType
+      ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
+      SubnetId:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-PublicSubnetId"
+      SecurityGroupIds:
+        - Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2SecurityGroupId"
+      IamInstanceProfile:
+        Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2InstanceProfileName"
+      Tags:
+        - Key: Name
+          Value: !Sub "cloudmart-${Environment}-operations-ec2"
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            set -euo pipefail
+
+            dnf install -y python3 python3-pip mariadb105 || dnf install -y python3 python3-pip mariadb
+            mkdir -p /opt/cloudmart/dashboard
+
+            aws s3 sync "s3://${REPORT_BUCKET}/${SOURCE_PREFIX}" /opt/cloudmart/dashboard --delete
+
+            python3 -m pip install --upgrade pip
+            python3 -m pip install -r /opt/cloudmart/dashboard/requirements.txt
+
+            cat > /etc/systemd/system/cloudmart-dashboard.service <<'SERVICE'
+            [Unit]
+            Description=CloudMart Operations Dashboard
+            After=network.target
+
+            [Service]
+            Type=simple
+            WorkingDirectory=/opt/cloudmart/dashboard
+            Environment="DB_HOST_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/host"
+            Environment="DB_PORT_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/port"
+            Environment="DB_NAME_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/name"
+            Environment="DB_USERNAME_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/username"
+            Environment="DB_PASSWORD_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/password"
+            Environment="AUTH_TOKEN_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/auth/token"
+            Environment="REPORT_BUCKET_NAME=${REPORT_BUCKET}"
+            Environment="REPORT_PREFIX=reports"
+            ExecStart=/usr/bin/python3 /opt/cloudmart/dashboard/app.py
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            SERVICE
+
+            systemctl daemon-reload
+            systemctl enable cloudmart-dashboard
+            systemctl restart cloudmart-dashboard
+          - REPORT_BUCKET:
+              Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
+            SOURCE_PREFIX: !Ref DashboardSourcePrefix
+            ENVIRONMENT: !Ref Environment
+
+  # ------------------------------------------------------------
+  # SNS topic used by all four operational alarms
+  # ------------------------------------------------------------
+  MonitoringTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref MonitoringTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  # ------------------------------------------------------------
+  # CloudWatch alarms
+  # ------------------------------------------------------------
+  RDSCPUAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu-80"
+      AlarmDescription: RDS CPU utilization is 80 percent or higher.
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value:
+            Fn::ImportValue: !Sub "CloudMart-${Environment}-DBInstanceIdentifier"
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 80
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  OrdersFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-orders-failed"
+      AlarmDescription: One or more order failures were recorded in five minutes.
+      Namespace: CloudMart/Operations
+      MetricName: OrdersFailed
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  LowStockAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-low-stock"
+      AlarmDescription: One or more low-stock events were recorded in five minutes.
+      Namespace: CloudMart/Operations
+      MetricName: LowStockEvents
+      Dimensions:
+        - Name: Environment
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  API5XXAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-api-5xx"
+      AlarmDescription: API Gateway returned one or more 5XX responses in five minutes.
+      Namespace: AWS/ApiGateway
+      MetricName: 5XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub "${ProjectName}-${Environment}-api"
+        - Name: Stage
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  # ------------------------------------------------------------
+  # CloudWatch operations dashboard
+  # ------------------------------------------------------------
+  OperationsDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub "${ProjectName}-operations"
+      DashboardBody:
+        Fn::Sub:
+          - |
+            {
+              "widgets": [
+                {
+                  "type": "metric",
+                  "x": 0,
+                  "y": 0,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "CloudMart Order and Inventory Metrics",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "CloudMart/Operations", "OrdersPlaced", "Environment", "${Environment}" ],
+                      [ ".", "OrdersFailed", ".", "." ],
+                      [ ".", "LowStockEvents", ".", "." ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 12,
+                  "y": 0,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "RDS CPU Utilization",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Average",
+                    "metrics": [
+                      [ "AWS/RDS", "CPUUtilization", "DBInstanceIdentifier", "${DB_INSTANCE_ID}" ]
+                    ],
+                    "annotations": {
+                      "horizontal": [
+                        { "label": "Alarm threshold", "value": 80 }
+                      ]
+                    }
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 0,
+                  "y": 6,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "API Gateway 5XX Errors",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/ApiGateway", "5XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 12,
+                  "y": 6,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "Order Lambda Errors",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-${Environment}-order" ]
+                    ]
+                  }
+                }
+              ]
+            }
+          - DB_INSTANCE_ID:
+              Fn::ImportValue: !Sub "CloudMart-${Environment}-DBInstanceIdentifier"
+
+Outputs:
+  OperationsEC2InstanceId:
+    Description: Operations dashboard EC2 instance ID.
+    Value: !Ref OperationsEC2Instance
+
+  OperationsEC2PublicIp:
+    Description: Operations dashboard EC2 public IP address.
+    Value: !GetAtt OperationsEC2Instance.PublicIp
+
+  DashboardUrl:
+    Description: Live CloudMart Operations Dashboard URL.
+    Value: !Sub "http://${OperationsEC2Instance.PublicIp}/dashboard"
+
+  DailyReportFunctionArn:
+    Description: Daily report Lambda ARN.
+    Value: !GetAtt DailyReportFunction.Arn
+
+  ReportBucketName:
+    Description: Existing CloudMart report bucket used by the dashboard and report Lambda.
+    Value:
+      Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
+
+  MonitoringTopicArn:
+    Description: SNS topic used by the four monitoring alarms.
+    Value: !Ref MonitoringTopic
+
+  OperationsDashboardName:
+    Description: CloudWatch operations dashboard name.
+    Value: !Sub "${ProjectName}-operations"

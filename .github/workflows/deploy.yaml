@@ -11,6 +11,7 @@ on:
       - "cloudformation/**"
       - "lambdas/**"
       - "database/schema.sql"
+      - "dashboard/**"
       - ".github/workflows/deploy.yaml"
 
 permissions:
@@ -850,3 +851,109 @@ jobs:
 
           echo "API authentication smoke test passed: GET /products returned HTTP 200."
           rm -f "$RESPONSE_FILE"
+
+  deploy-monitoring:
+    name: Deploy API Monitoring and EC2 Dashboard
+    runs-on: ubuntu-latest
+    needs: deploy-application
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/setup-sam@v2
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload dashboard source
+        run: |
+          set -euo pipefail
+
+          REPORT_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "cloudmart-data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`ReportBucketName`].OutputValue' \
+            --output text)
+
+          test -n "$REPORT_BUCKET" || { echo "Report bucket was not found."; exit 1; }
+
+          aws s3 sync dashboard "s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}" --delete
+          echo "Dashboard source uploaded to s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}"
+
+      - name: Validate monitoring template
+        run: sam validate --template-file cloudformation/API-Monitoring-EC2.yaml
+
+      - name: Build monitoring stack
+        run: sam build --template-file cloudformation/API-Monitoring-EC2.yaml
+
+      - name: Deploy API-Monitoring-EC2 stack
+        env:
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        run: |
+          set -euo pipefail
+          test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
+
+          STACK_NAME="API-Monitoring-EC2-${ENVIRONMENT}"
+
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
+
+          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ] || [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "Monitoring stack is in $STACK_STATUS. Removing the unfinished stack."
+            aws cloudformation delete-stack \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+            STACK_STATUS=""
+          fi
+
+          if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+            STACK_STATUS=""
+          fi
+
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              ProjectName=cloudmart \
+              NotificationEmail="$ADMIN_EMAIL" \
+              EC2InstanceType=t3.micro \
+              DashboardSourcePrefix="dashboard-source/${GITHUB_SHA}"
+
+          MONITORING_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          case "$MONITORING_STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Monitoring stack is healthy: $MONITORING_STATUS"
+              ;;
+            *)
+              echo "ERROR: Monitoring stack ended in unexpected state: $MONITORING_STATUS"
+              exit 1
+              ;;
+          esac
+
+          echo "Dashboard URL:"
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`DashboardUrl`].OutputValue' \
+            --output text
+
