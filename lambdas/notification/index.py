@@ -231,6 +231,15 @@ def publish_order_notification(customer_id, email, subject, message):
     # existing customers created before SNS notifications were enabled.
     subscription_state = ensure_sns_email_subscription(customer_id, email)
 
+    # SNS email subscriptions must be confirmed by the recipient before
+    # messages can be delivered to the email endpoint.
+    if subscription_state == "PendingConfirmation":
+        logger.warning(
+            "Order notification not delivered: customer_id=%s reason=SNS_SUBSCRIPTION_PENDING_CONFIRMATION",
+            customer_id,
+        )
+        return None, subscription_state
+
     response = sns.publish(
         TopicArn=ORDER_NOTIFICATION_TOPIC_ARN,
         Subject=subject,
@@ -302,8 +311,14 @@ def process_notification_event(event, connection):
         message,
     )
 
+    status = (
+        "PENDING_CONFIRMATION"
+        if subscription_state == "PendingConfirmation"
+        else "PUBLISHED_TO_SNS"
+    )
+
     return {
-        "status": "PUBLISHED_TO_SNS",
+        "status": status,
         "customer_id": int(customer_id),
         "subscription_state": subscription_state,
     }

@@ -504,6 +504,14 @@ jobs:
                 "Resource": "*"
               },
               {
+                "Sid": "CloudMartRemoveStaleOrderNotificationTopic",
+                "Effect": "Allow",
+                "Action": [
+                  "sns:DeleteTopic"
+                ],
+                "Resource": "*"
+              },
+              {
                 "Sid": "ReadAmazonLinuxAmiParameter",
                 "Effect": "Allow",
                 "Action": [
@@ -706,6 +714,28 @@ jobs:
 
            echo "Customer order SNS topic: $ORDER_TOPIC_ARN"
            echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"
+
+           # Remove the obsolete singular topic created by an older version.
+           # The current CloudFormation-managed topic is plural:
+           # cloudmart-${ENVIRONMENT}-order-notifications.
+           STALE_ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
+
+           if [ -n "$STALE_ORDER_TOPIC_ARN" ]; then
+             echo "Deleting stale SNS topic: $STALE_ORDER_TOPIC_ARN"
+             aws sns delete-topic                --topic-arn "$STALE_ORDER_TOPIC_ARN"                --region "$AWS_REGION"
+             echo "Stale singular order-notification topic deleted."
+           else
+             echo "No stale singular order-notification topic found."
+           fi
+
+           # Verify the obsolete singular topic is gone.
+           STALE_ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
+
+           test -z "$STALE_ORDER_TOPIC_ARN" || {
+             echo "ERROR: stale singular order-notification topic still exists."
+             exit 1
+           }
+
            echo "SNS notification infrastructure is ready."
 
   initialize:

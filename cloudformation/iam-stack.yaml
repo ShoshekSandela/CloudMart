@@ -91,15 +91,19 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
-              - Sid: ManageCustomerOrderSnsSubscription
+              - Sid: ManageCustomerOrderSnsTopic
                 Effect: Allow
                 Action:
                   - sns:Subscribe
                   - sns:ListSubscriptionsByTopic
                   - sns:GetSubscriptionAttributes
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+              - Sid: ManageCustomerOrderSnsSubscriptions
+                Effect: Allow
+                Action:
                   - sns:SetSubscriptionAttributes
                   - sns:Unsubscribe
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
       Tags:
         - Key: Project
           Value: CloudMart
@@ -224,6 +228,17 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+              - Sid: ManageCustomerOrderSnsTopic
+                Effect: Allow
+                Action:
+                  - sns:ListSubscriptionsByTopic
+                  - sns:Subscribe
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
+              - Sid: ManageCustomerOrderSnsSubscriptions
+                Effect: Allow
+                Action:
+                  - sns:SetSubscriptionAttributes
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
               - Sid: PublishCustomerOrderNotifications
                 Effect: Allow
                 Action:
