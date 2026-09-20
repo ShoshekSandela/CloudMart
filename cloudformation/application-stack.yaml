@@ -944,6 +944,13 @@ Resources:
 
 Outputs:
 
+  LowStockEmailSubscriptionArn:
+    Description: ARN of the CloudMart admin low-stock email subscription.
+    Value: !Ref CloudMartLowStockEmailSubscription
+    Export:
+      Name: !Sub CloudMart-${Environment}-LowStockEmailSubscriptionArn
+
+
   RestApiId:
     Value: !Ref CloudMartRestApi
 

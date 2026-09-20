@@ -155,17 +155,48 @@ Items
     return subject[:100], message
 
 
+def _is_valid_subscription_arn(subscription_arn):
+    """Return True only for a real SNS subscription ARN.
+
+    ListSubscriptionsByTopic can expose non-ARN lifecycle values such as
+    PendingConfirmation (and, during deletion/reconciliation, Deleted).
+    Those values must never be sent to GetSubscriptionAttributes or
+    SetSubscriptionAttributes.
+    """
+    if not subscription_arn:
+        return False
+
+    parts = str(subscription_arn).split(":")
+    return (
+        len(parts) >= 7
+        and parts[0] == "arn"
+        and parts[2] == "sns"
+        and bool(parts[3])
+        and bool(parts[4])
+        and bool(parts[5])
+        and bool(parts[6])
+    )
+
+
 def _get_subscription_attributes(subscription_arn):
+    if not _is_valid_subscription_arn(subscription_arn):
+        logger.warning(
+            "Skipping SNS subscription attribute lookup for non-ARN state: %s",
+            subscription_arn,
+        )
+        return {}
+
     try:
         return sns.get_subscription_attributes(
             SubscriptionArn=subscription_arn
         ).get("Attributes", {})
     except Exception:
-        logger.exception(
-            "Unable to read SNS subscription attributes: subscription_arn=%s",
+        logger.warning(
+            "Unable to read SNS subscription attributes; treating subscription as stale: subscription_arn=%s",
             subscription_arn,
+            exc_info=True,
         )
-        return {}
+        return None
 
 
 def _set_customer_subscription_filter(subscription_arn, customer_id):
@@ -203,11 +234,37 @@ def ensure_sns_email_subscription(customer_id, email):
             continue
 
         arn = subscription.get("SubscriptionArn")
-        if not arn or arn == "PendingConfirmation":
-            matching_pending = True
+        if not _is_valid_subscription_arn(arn):
+            state = str(arn or "").strip() or "UNKNOWN"
+            if state.lower() == "pendingconfirmation":
+                matching_pending = True
+            else:
+                logger.warning(
+                    "Ignoring stale SNS subscription state: customer_id=%s email=%s state=%s",
+                    customer_id,
+                    email,
+                    state,
+                )
             continue
 
         attrs = _get_subscription_attributes(arn)
+        if attrs is None:
+            logger.warning(
+                "Ignoring stale/unavailable SNS subscription: customer_id=%s subscription_arn=%s",
+                customer_id,
+                arn,
+            )
+            continue
+
+        if attrs.get("TopicArn") and attrs.get("TopicArn") != ORDER_NOTIFICATION_TOPIC_ARN:
+            logger.warning(
+                "Ignoring SNS subscription from a different topic: customer_id=%s subscription_arn=%s topic=%s",
+                customer_id,
+                arn,
+                attrs.get("TopicArn"),
+            )
+            continue
+
         if str(attrs.get("PendingConfirmation", "false")).lower() == "true":
             matching_pending = True
             continue
@@ -241,22 +298,42 @@ def ensure_sns_email_subscription(customer_id, email):
     )
     arn = response.get("SubscriptionArn") or "PendingConfirmation"
 
-    # Email subscriptions normally require endpoint confirmation before they
-    # can receive messages. Do not treat a pending ARN as confirmed.
-    if arn != "PendingConfirmation":
+    # ReturnSubscriptionArn=True returns the subscription ARN even when the
+    # email endpoint is still awaiting confirmation. Check the actual SNS
+    # state before applying a filter or publishing a notification.
+    if _is_valid_subscription_arn(arn):
+        attrs = _get_subscription_attributes(arn)
+        if attrs is None or str(attrs.get("PendingConfirmation", "false")).lower() == "true":
+            logger.info(
+                "Customer SNS subscription created but not yet confirmed/available: customer_id=%s subscription_arn=%s",
+                customer_id,
+                arn,
+            )
+            return "PendingConfirmation"
+
+        if attrs.get("TopicArn") and attrs.get("TopicArn") != ORDER_NOTIFICATION_TOPIC_ARN:
+            logger.error(
+                "SNS subscription belongs to a different topic: customer_id=%s subscription_arn=%s topic=%s",
+                customer_id,
+                arn,
+                attrs.get("TopicArn"),
+            )
+            return "PendingConfirmation"
+
         _set_customer_subscription_filter(arn, customer_id)
         logger.info(
             "Customer SNS subscription ready: customer_id=%s subscription_arn=%s",
             customer_id,
             arn,
         )
-    else:
-        logger.info(
-            "Customer SNS subscription created and awaiting confirmation: customer_id=%s",
-            customer_id,
-        )
+        return arn
 
-    return arn
+    logger.info(
+        "Customer SNS subscription created and awaiting confirmation: customer_id=%s state=%s",
+        customer_id,
+        arn,
+    )
+    return "PendingConfirmation"
 
 def publish_order_notification(customer_id, email, subject, message):
     # Reconcile the subscription before publishing. This also supports

@@ -714,6 +714,38 @@ jobs:
            echo "Customer order SNS topic: $ORDER_TOPIC_ARN"
            echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"
 
+           echo "Checking admin low-stock email subscription..."
+           LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+             --topic-arn "$LOW_STOCK_TOPIC_ARN" \
+             --region "$AWS_REGION" \
+             --output json)
+
+           LOW_STOCK_SUB_ARN=$(echo "$LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+             .Subscriptions[]?
+             | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+             | .SubscriptionArn' | head -n 1)
+
+           if [ -z "$LOW_STOCK_SUB_ARN" ] || [ "$LOW_STOCK_SUB_ARN" = "null" ]; then
+             echo "ERROR: No low-stock SNS subscription exists for the configured admin email."
+             exit 1
+           fi
+
+           if [ "$LOW_STOCK_SUB_ARN" = "PendingConfirmation" ]; then
+             echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
+             echo "The admin must click the SNS confirmation link before low-stock emails can be delivered."
+           else
+             LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
+               --subscription-arn "$LOW_STOCK_SUB_ARN" \
+               --region "$AWS_REGION" \
+               --output json)
+             LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
+             if [ "$LOW_STOCK_PENDING" = "true" ]; then
+               echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
+             else
+               echo "Admin low-stock SNS subscription is confirmed."
+             fi
+           fi
+
            # Remove the obsolete singular topic created by an older version.
            # The current CloudFormation-managed topic is plural:
            # cloudmart-${ENVIRONMENT}-order-notifications.
