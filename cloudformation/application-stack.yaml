@@ -63,7 +63,7 @@ Resources:
 
   # Shared SNS topic for customer order notifications.
   # Each customer email subscription is filtered by customer_id.
-  CloudMartOrderNotificationTopic:
+  CloudMartCustomerOrderNotificationTopic:
     Type: AWS::SNS::Topic
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
@@ -155,7 +155,7 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartOrderNotificationTopic
+          ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartCustomerOrderNotificationTopic
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -400,7 +400,7 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartOrderNotificationTopic
+          ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartCustomerOrderNotificationTopic
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
@@ -997,7 +997,7 @@ Outputs:
     Value: !GetAtt CloudMartEventBus.Arn
 
   OrderNotificationTopicArn:
-    Value: !Ref CloudMartOrderNotificationTopic
+    Value: !Ref CloudMartCustomerOrderNotificationTopic
 
   LowStockTopicArn:
     Value: !Ref CloudMartLowStockTopic
