@@ -80,8 +80,8 @@ Resources:
 
   CloudMartLowStockEmailSubscription:
     Type: AWS::SNS::Subscription
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
+    # CloudFormation owns the email subscription lifecycle. Retaining an
+    # email subscription can leave a stale "Deleted" physical subscription.
     Properties:
       TopicArn: !Ref CloudMartLowStockTopic
       Protocol: email

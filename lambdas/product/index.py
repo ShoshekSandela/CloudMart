@@ -288,8 +288,8 @@ def publish_inventory_event(
     new_stock,
     threshold
 ):
-
-    low_stock = new_stock <= threshold
+    """Publish one inventory lifecycle event to the CloudMart event bus."""
+    low_stock = int(new_stock) <= int(threshold)
 
     event_detail = {
         "product_id": int(product_id),
@@ -297,11 +297,10 @@ def publish_inventory_event(
         "old_stock": int(old_stock),
         "new_stock": int(new_stock),
         "low_stock_threshold": int(threshold),
-        "low_stock": low_stock
+        "low_stock": bool(low_stock)
     }
 
     try:
-
         result = events.put_events(
             Entries=[
                 {
@@ -313,21 +312,34 @@ def publish_inventory_event(
             ]
         )
 
-        if result.get("FailedEntryCount", 0) > 0:
+        failed_count = int(result.get("FailedEntryCount", 0))
+        if failed_count > 0:
+            log_json(
+                "error",
+                "EventBridge inventory event failed",
+                result=result,
+                **event_detail
+            )
+            raise RuntimeError(
+                f"EventBridge rejected {failed_count} inventory event(s)"
+            )
 
-            log_json("error", "EventBridge failed", result=result)
-
-            return False
-
-        log_json("info", "Inventory event published", **event_detail)
-
+        log_json(
+            "info",
+            "Inventory event published",
+            event_bus=os.environ["EVENT_BUS_NAME"],
+            **event_detail
+        )
         return True
 
     except Exception:
-
-        log_json("error", "Unable to publish inventory event")
-
-        return False
+        log_json(
+            "error",
+            "Unable to publish inventory event",
+            event_bus=os.environ["EVENT_BUS_NAME"],
+            **event_detail
+        )
+        raise
 
 
 # ============================================================
@@ -834,7 +846,28 @@ def lambda_handler(event, context):
                     product_id
                 )
 
-                log_json("info", "Product created", product_id=int(product_id))
+                # If a product is created already at/below its threshold,
+                # emit the same Inventory Changed event used by stock updates.
+                if int(payload["stock_quantity"]) <= int(payload["low_stock_threshold"]):
+                    publish_inventory_event(
+                        product_id,
+                        product["name"],
+                        int(payload["stock_quantity"]),
+                        int(payload["stock_quantity"]),
+                        int(payload["low_stock_threshold"])
+                    )
+
+                log_json(
+                    "info",
+                    "Product created",
+                    product_id=int(product_id),
+                    stock_quantity=int(payload["stock_quantity"]),
+                    low_stock_threshold=int(payload["low_stock_threshold"]),
+                    low_stock=(
+                        int(payload["stock_quantity"])
+                        <= int(payload["low_stock_threshold"])
+                    )
+                )
 
                 return response(
                     201,
