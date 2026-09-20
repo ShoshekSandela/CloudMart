@@ -608,10 +608,9 @@ jobs:
           fi
 
           # Recover only the retained low-stock SNS topic if the application
-          # stack had to be recreated. Email subscriptions are intentionally
-          # recreated by the application template so a Deleted subscription
-          # cannot remain stuck. Order notifications are delivered directly
-          # through the new SNS order-notification topic.
+          # stack had to be recreated. Customer order email subscriptions are
+          # runtime resources and are reconciled non-destructively by Lambda;
+          # they are never recreated or deleted by this deployment step.
           LOW_STOCK_TOPIC_NAME="cloudmart-${ENVIRONMENT}-low-stock"
           LOW_STOCK_TOPIC_ARN=""
           if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then

@@ -1,5 +1,4 @@
 import hashlib
-import hashlib
 import json
 import logging
 import os
@@ -41,53 +40,112 @@ def _list_sns_subscriptions():
             return subscriptions
 
 
-def _get_filter_policy(subscription_arn):
+def _get_subscription_attributes(subscription_arn):
     try:
-        attrs = sns.get_subscription_attributes(
+        return sns.get_subscription_attributes(
             SubscriptionArn=subscription_arn
         ).get("Attributes", {})
-        raw = attrs.get("FilterPolicy")
-        return json.loads(raw) if raw else {}
     except Exception:
-        logger.exception("Unable to read SNS subscription attributes")
+        logger.exception(
+            "Unable to read SNS subscription attributes: subscription_arn=%s",
+            subscription_arn,
+        )
         return {}
 
 
+def _get_filter_policy(subscription_arn):
+    attrs = _get_subscription_attributes(subscription_arn)
+    raw = attrs.get("FilterPolicy")
+    if not raw:
+        return {}
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Invalid SNS filter policy: subscription_arn=%s",
+            subscription_arn,
+        )
+        return {}
+
+
+def _subscription_is_confirmed(subscription):
+    arn = subscription.get("SubscriptionArn")
+    if not arn or arn == "PendingConfirmation":
+        return False
+    attrs = _get_subscription_attributes(arn)
+    return str(attrs.get("PendingConfirmation", "false")).lower() != "true"
+
+
+def _set_customer_subscription_filter(subscription_arn, customer_id):
+    sns.set_subscription_attributes(
+        SubscriptionArn=subscription_arn,
+        AttributeName="FilterPolicy",
+        AttributeValue=_subscription_filter_policy(customer_id),
+    )
+    sns.set_subscription_attributes(
+        SubscriptionArn=subscription_arn,
+        AttributeName="FilterPolicyScope",
+        AttributeValue="MessageAttributes",
+    )
+
+
 def ensure_customer_sns_subscription(customer_id, email):
+    """Ensure one confirmed/pending SNS email subscription for a customer.
+
+    This function is intentionally non-destructive. It never calls
+    Unsubscribe. The only code path allowed to remove an SNS subscription is
+    the explicit customer unsubscribe API.
+    """
     email = str(email).strip().lower()
     subscriptions = _list_sns_subscriptions()
 
-    # Prefer an existing confirmed subscription for this customer.
+    matching_pending = False
+    matching_confirmed = []
+
     for sub in subscriptions:
-        if str(sub.get("Endpoint") or "").strip().lower() != email:
+        endpoint = str(sub.get("Endpoint") or "").strip().lower()
+        if endpoint != email:
             continue
+
         arn = sub.get("SubscriptionArn")
         if not arn or arn == "PendingConfirmation":
+            matching_pending = True
             continue
+
+        if not _subscription_is_confirmed(sub):
+            matching_pending = True
+            continue
+
+        matching_confirmed.append(sub)
+
+    # Reuse an existing confirmed subscription whenever possible.
+    for sub in matching_confirmed:
+        arn = sub["SubscriptionArn"]
         policy = _get_filter_policy(arn)
         ids = policy.get("customer_id", []) if isinstance(policy, dict) else []
         if str(customer_id) in [str(value) for value in ids]:
             return "CONFIRMED"
 
-    # Reuse an endpoint subscription when possible, otherwise create one.
-    for sub in subscriptions:
-        if str(sub.get("Endpoint") or "").strip().lower() != email:
-            continue
-        arn = sub.get("SubscriptionArn")
-        if not arn or arn == "PendingConfirmation":
-            return "PENDING_CONFIRMATION"
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicy",
-            AttributeValue=_subscription_filter_policy(customer_id),
-        )
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicyScope",
-            AttributeValue="MessageAttributes",
+    # A confirmed endpoint subscription can be safely associated with this
+    # customer without creating another subscription.
+    if matching_confirmed:
+        arn = matching_confirmed[0]["SubscriptionArn"]
+        _set_customer_subscription_filter(arn, customer_id)
+        logger.info(
+            "Customer SNS subscription reused: customer_id=%s subscription_arn=%s",
+            customer_id,
+            arn,
         )
         return "CONFIRMED"
 
+    if matching_pending:
+        logger.info(
+            "Customer SNS subscription pending confirmation: customer_id=%s",
+            customer_id,
+        )
+        return "PENDING_CONFIRMATION"
+
+    # No subscription exists for this endpoint, so create exactly one.
     result = sns.subscribe(
         TopicArn=ORDER_NOTIFICATION_TOPIC_ARN,
         Protocol="email",
@@ -97,47 +155,79 @@ def ensure_customer_sns_subscription(customer_id, email):
     arn = result.get("SubscriptionArn") or "PendingConfirmation"
 
     if arn != "PendingConfirmation":
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicy",
-            AttributeValue=_subscription_filter_policy(customer_id),
-        )
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicyScope",
-            AttributeValue="MessageAttributes",
+        _set_customer_subscription_filter(arn, customer_id)
+        logger.info(
+            "Customer SNS subscription created and confirmed: customer_id=%s subscription_arn=%s",
+            customer_id,
+            arn,
         )
         return "CONFIRMED"
 
+    logger.info(
+        "Customer SNS subscription created and awaiting confirmation: customer_id=%s",
+        customer_id,
+    )
     return "PENDING_CONFIRMATION"
 
 
-def remove_customer_sns_subscription(customer_id, email):
+def remove_customer_sns_subscription(customer_id, email, reason="EXPLICIT_UNSUBSCRIBE"):
+    """Remove an SNS subscription only for an explicit unsubscribe action."""
     email = str(email or "").strip().lower()
     if not email:
-        return
+        return False
 
     for sub in _list_sns_subscriptions():
         if str(sub.get("Endpoint") or "").strip().lower() != email:
             continue
+
         arn = sub.get("SubscriptionArn")
         if not arn or arn == "PendingConfirmation":
             continue
+
+        if not _subscription_is_confirmed(sub):
+            continue
+
         policy = _get_filter_policy(arn)
         ids = policy.get("customer_id", []) if isinstance(policy, dict) else []
-        if str(customer_id) in [str(value) for value in ids]:
-            sns.unsubscribe(SubscriptionArn=arn)
-            logger.info(
-                "Customer SNS subscription removed: customer_id=%s",
-                customer_id,
-            )
+        if str(customer_id) not in [str(value) for value in ids]:
+            continue
+
+        # This is the only application path that intentionally deletes an
+        # SNS subscription. It is reached only by the explicit unsubscribe
+        # endpoint below.
+        sns.unsubscribe(SubscriptionArn=arn)
+        logger.info(
+            "Customer SNS subscription removed: customer_id=%s reason=%s subscription_arn=%s",
+            customer_id,
+            reason,
+            arn,
+        )
+        return True
+
+    return False
 
 
 def sync_customer_sns_subscription(customer_id, old_email, new_email):
     try:
-        if old_email and str(old_email).strip().lower() != str(new_email).strip().lower():
-            remove_customer_sns_subscription(customer_id, old_email)
-        state = ensure_customer_sns_subscription(customer_id, new_email)
+        old_normalized = str(old_email or "").strip().lower()
+        new_normalized = str(new_email or "").strip().lower()
+
+        # Always establish the new endpoint first. If confirmation is still
+        # pending, keep the old confirmed subscription intact so an email
+        # change can never interrupt an already-working notification path.
+        state = ensure_customer_sns_subscription(customer_id, new_normalized)
+
+        if (
+            old_normalized
+            and old_normalized != new_normalized
+            and state == "CONFIRMED"
+        ):
+            remove_customer_sns_subscription(
+                customer_id,
+                old_normalized,
+                reason="CUSTOMER_EMAIL_CHANGED_AFTER_NEW_SUBSCRIPTION_CONFIRMED",
+            )
+
         logger.info(
             "Customer SNS notification subscription synchronized: customer_id=%s state=%s",
             customer_id,
@@ -152,7 +242,10 @@ def sync_customer_sns_subscription(customer_id, old_email, new_email):
             "Customer SNS subscription synchronization failed: customer_id=%s",
             customer_id,
         )
-        return "ERROR"
+        return "SYNC_FAILED"
+
+
+
 
 def json_serializer(value):
     if hasattr(value, "isoformat"):
@@ -389,6 +482,7 @@ def unsubscribe_customer(connection, customer_id, actor):
             remove_customer_sns_subscription(
                 customer_id,
                 current_customer["customer_email"],
+                reason="EXPLICIT_UNSUBSCRIBE",
             )
     except Exception:
         logger.exception(

@@ -232,6 +232,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - sns:ListSubscriptionsByTopic
+                  - sns:GetSubscriptionAttributes
                   - sns:Subscribe
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
               - Sid: ManageCustomerOrderSnsSubscriptions

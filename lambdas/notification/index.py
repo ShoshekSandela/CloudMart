@@ -155,17 +155,47 @@ Items
     return subject[:100], message
 
 
-def ensure_sns_email_subscription(customer_id, email):
-    """Ensure the customer email is subscribed with a customer_id filter.
+def _get_subscription_attributes(subscription_arn):
+    try:
+        return sns.get_subscription_attributes(
+            SubscriptionArn=subscription_arn
+        ).get("Attributes", {})
+    except Exception:
+        logger.exception(
+            "Unable to read SNS subscription attributes: subscription_arn=%s",
+            subscription_arn,
+        )
+        return {}
 
-    SNS email subscriptions require the recipient to confirm the subscription.
-    The database status remains the application's opt-in state; SNS itself
-    determines whether the endpoint is PendingConfirmation or confirmed.
+
+def _set_customer_subscription_filter(subscription_arn, customer_id):
+    filter_policy = {"customer_id": [str(customer_id)]}
+    sns.set_subscription_attributes(
+        SubscriptionArn=subscription_arn,
+        AttributeName="FilterPolicy",
+        AttributeValue=json.dumps(filter_policy),
+    )
+    sns.set_subscription_attributes(
+        SubscriptionArn=subscription_arn,
+        AttributeName="FilterPolicyScope",
+        AttributeValue="MessageAttributes",
+    )
+
+
+def ensure_sns_email_subscription(customer_id, email):
+    """Ensure the customer's SNS email subscription exists.
+
+    This reconciliation is deliberately non-destructive. It never calls
+    Unsubscribe, so an order notification cannot delete a confirmed
+    subscription. The explicit customer unsubscribe API owns deletion.
     """
     email = str(email).strip().lower()
     subscriptions = sns.list_subscriptions_by_topic(
         TopicArn=ORDER_NOTIFICATION_TOPIC_ARN
     ).get("Subscriptions", [])
+
+    matching_confirmed = []
+    matching_pending = False
 
     for subscription in subscriptions:
         endpoint = str(subscription.get("Endpoint") or "").strip().lower()
@@ -174,28 +204,34 @@ def ensure_sns_email_subscription(customer_id, email):
 
         arn = subscription.get("SubscriptionArn")
         if not arn or arn == "PendingConfirmation":
-            logger.info(
-                "Customer SNS subscription pending confirmation: customer_id=%s",
-                customer_id,
-            )
-            return "PendingConfirmation"
+            matching_pending = True
+            continue
 
-        filter_policy = {"customer_id": [str(customer_id)]}
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicy",
-            AttributeValue=json.dumps(filter_policy),
-        )
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicyScope",
-            AttributeValue="MessageAttributes",
-        )
+        attrs = _get_subscription_attributes(arn)
+        if str(attrs.get("PendingConfirmation", "false")).lower() == "true":
+            matching_pending = True
+            continue
+
+        matching_confirmed.append(subscription)
+
+    # Reuse an existing confirmed subscription. This makes application
+    # restarts and concurrent notification retries non-destructive.
+    if matching_confirmed:
+        arn = matching_confirmed[0]["SubscriptionArn"]
+        _set_customer_subscription_filter(arn, customer_id)
         logger.info(
-            "Customer SNS subscription ready: customer_id=%s",
+            "Customer SNS subscription ready: customer_id=%s subscription_arn=%s",
             customer_id,
+            arn,
         )
         return arn
+
+    if matching_pending:
+        logger.info(
+            "Customer SNS subscription pending confirmation: customer_id=%s",
+            customer_id,
+        )
+        return "PendingConfirmation"
 
     response = sns.subscribe(
         TopicArn=ORDER_NOTIFICATION_TOPIC_ARN,
@@ -205,26 +241,22 @@ def ensure_sns_email_subscription(customer_id, email):
     )
     arn = response.get("SubscriptionArn") or "PendingConfirmation"
 
+    # Email subscriptions normally require endpoint confirmation before they
+    # can receive messages. Do not treat a pending ARN as confirmed.
     if arn != "PendingConfirmation":
-        filter_policy = {"customer_id": [str(customer_id)]}
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicy",
-            AttributeValue=json.dumps(filter_policy),
+        _set_customer_subscription_filter(arn, customer_id)
+        logger.info(
+            "Customer SNS subscription ready: customer_id=%s subscription_arn=%s",
+            customer_id,
+            arn,
         )
-        sns.set_subscription_attributes(
-            SubscriptionArn=arn,
-            AttributeName="FilterPolicyScope",
-            AttributeValue="MessageAttributes",
+    else:
+        logger.info(
+            "Customer SNS subscription created and awaiting confirmation: customer_id=%s",
+            customer_id,
         )
 
-    logger.info(
-        "Customer SNS subscription created: customer_id=%s state=%s",
-        customer_id,
-        arn if arn == "PendingConfirmation" else "CONFIRMED",
-    )
     return arn
-
 
 def publish_order_notification(customer_id, email, subject, message):
     # Reconcile the subscription before publishing. This also supports
