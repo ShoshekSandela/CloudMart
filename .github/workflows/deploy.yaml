@@ -105,6 +105,8 @@ jobs:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
     needs: deploy-network
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     steps:
       - uses: actions/checkout@v5
 
@@ -183,7 +185,9 @@ jobs:
               --change-set-name "$CHANGE_SET_NAME" \
               --change-set-type CREATE \
               --template-body file://cloudformation/iam-stack.yaml \
-              --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              --parameters \
+                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+                ParameterKey=GitHubActionsRoleName,ParameterValue="${AWS_ROLE_ARN##*/}" \
               --capabilities CAPABILITY_NAMED_IAM \
               --import-existing-resources \
               --region "$AWS_REGION"
@@ -211,7 +215,9 @@ jobs:
               --template-file cloudformation/iam-stack.yaml \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
-              --parameter-overrides Environment="$ENVIRONMENT" \
+              --parameter-overrides \
+                Environment="$ENVIRONMENT" \
+                GitHubActionsRoleName="${AWS_ROLE_ARN##*/}" \
               --capabilities CAPABILITY_NAMED_IAM \
               --no-fail-on-empty-changeset
 
@@ -237,7 +243,9 @@ jobs:
               --change-set-name "$CHANGE_SET_NAME" \
               --change-set-type CREATE \
               --template-body file://cloudformation/iam-stack.yaml \
-              --parameters ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+              --parameters \
+                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+                ParameterKey=GitHubActionsRoleName,ParameterValue="${AWS_ROLE_ARN##*/}" \
               --capabilities CAPABILITY_NAMED_IAM \
               --import-existing-resources \
               --region "$AWS_REGION"
@@ -901,16 +909,49 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
-          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ] || [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "Monitoring stack is in $STACK_STATUS. Removing the unfinished stack."
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-            STACK_STATUS=""
+          # A previous monitoring deployment may still be rolling back.
+          # Wait for CloudFormation to finish before deciding whether the
+          # failed stack can be deleted and recreated.
+          if [ "$STACK_STATUS" = "ROLLBACK_IN_PROGRESS" ] || \
+             [ "$STACK_STATUS" = "UPDATE_ROLLBACK_IN_PROGRESS" ]; then
+            echo "Monitoring stack is currently $STACK_STATUS. Waiting for rollback to finish."
+
+            for i in {1..30}; do
+              sleep 20
+
+              STACK_STATUS=$(aws cloudformation describe-stacks \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --query 'Stacks[0].StackStatus' \
+                --output text 2>/dev/null || true)
+
+              echo "Monitoring stack status: $STACK_STATUS"
+
+              case "$STACK_STATUS" in
+                ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS)
+                  ;;
+                *)
+                  break
+                  ;;
+              esac
+            done
           fi
+
+          case "$STACK_STATUS" in
+            ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS|ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|DELETE_FAILED)
+              echo "Monitoring stack is in $STACK_STATUS. Removing the failed/incomplete stack."
+
+              aws cloudformation delete-stack \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+
+              aws cloudformation wait stack-delete-complete \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION"
+
+              STACK_STATUS=""
+              ;;
+          esac
 
           if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
             aws cloudformation wait stack-delete-complete \

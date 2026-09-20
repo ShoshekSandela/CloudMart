@@ -13,9 +13,38 @@ Parameters:
     AllowedValues: [dev, test, prod]
     Description: Deployment environment name.
 
+  GitHubActionsRoleName:
+    Type: String
+    Description: Existing GitHub Actions IAM role name used by the deployment workflow.
 
 Resources:
 
+  # Adds only the CloudWatch permissions required by the monitoring stack
+  # to the existing GitHub Actions deployment role.
+  GitHubActionsMonitoringPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub CloudMart-${Environment}-MonitoringDeploymentPolicy
+      Roles:
+        - !Ref GitHubActionsRoleName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ManageCloudWatchDashboard
+            Effect: Allow
+            Action:
+              - cloudwatch:PutDashboard
+              - cloudwatch:DeleteDashboards
+              - cloudwatch:GetDashboard
+              - cloudwatch:ListDashboards
+            Resource: "*"
+          - Sid: ManageCloudWatchAlarms
+            Effect: Allow
+            Action:
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:DescribeAlarms
+            Resource: "*"
 
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
