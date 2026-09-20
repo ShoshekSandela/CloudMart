@@ -78,15 +78,6 @@ Resources:
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
-  CloudMartLowStockEmailSubscription:
-    Type: AWS::SNS::Subscription
-    # CloudFormation owns the email subscription lifecycle. Retaining an
-    # email subscription can leave a stale "Deleted" physical subscription.
-    Properties:
-      TopicArn: !Ref CloudMartLowStockTopic
-      Protocol: email
-      Endpoint: !Ref NotificationEmail
-
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -943,12 +934,6 @@ Resources:
           Value: !Ref Environment
 
 Outputs:
-
-  LowStockEmailSubscriptionArn:
-    Description: ARN of the CloudMart admin low-stock email subscription.
-    Value: !Ref CloudMartLowStockEmailSubscription
-    Export:
-      Name: !Sub CloudMart-${Environment}-LowStockEmailSubscriptionArn
 
 
   RestApiId:

@@ -499,7 +499,8 @@ jobs:
                 "Effect": "Allow",
                 "Action": [
                   "sns:ListTopics",
-                  "sns:ListSubscriptionsByTopic"
+                  "sns:ListSubscriptionsByTopic",
+                  "sns:GetSubscriptionAttributes"
                 ],
                 "Resource": "*"
               },
@@ -715,14 +716,15 @@ jobs:
            echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"
 
            echo "Checking admin low-stock email subscription..."
+
+           # The email subscription is intentionally NOT managed by CloudFormation
+           # or GitHub Actions. Email endpoints have an owner-controlled
+           # confirmation/unsubscribe lifecycle.
            LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
              --topic-arn "$LOW_STOCK_TOPIC_ARN" \
              --region "$AWS_REGION" \
              --output json)
 
-           # SNS can return lifecycle values such as PendingConfirmation or
-           # Deleted in SubscriptionArn. Only a real ARN may be passed to
-           # GetSubscriptionAttributes.
            LOW_STOCK_SUB_ARN=$(echo "$LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
              .Subscriptions[]?
              | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
@@ -738,57 +740,43 @@ jobs:
            if [ -n "$LOW_STOCK_SUB_ARN" ]; then
              echo "Admin low-stock SNS subscription ARN: $LOW_STOCK_SUB_ARN"
 
-             if LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
+             LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
                --subscription-arn "$LOW_STOCK_SUB_ARN" \
                --region "$AWS_REGION" \
-               --output json 2>/tmp/low-stock-sub-error.log); then
-               LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
-               if [ "$LOW_STOCK_PENDING" = "true" ]; then
-                 echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
-                 echo "The admin must click the SNS confirmation link before low-stock emails can be delivered."
-               else
-                 echo "Admin low-stock SNS subscription is confirmed."
-               fi
-             else
-               echo "WARNING: Existing admin low-stock subscription ARN is no longer available."
-               cat /tmp/low-stock-sub-error.log
-               LOW_STOCK_SUB_ARN=""
-             fi
-           fi
+               --output json)
 
-           # If the previous subscription was deleted outside CloudFormation,
-           # CloudFormation can retain the stale physical resource ID because
-           # the template itself has not changed. Recreate the email
-           # subscription automatically instead of failing the deployment.
-           if [ -z "$LOW_STOCK_SUB_ARN" ]; then
-             if [ "$LOW_STOCK_PENDING_PRESENT" = "true" ]; then
+             LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
+             LOW_STOCK_AUTHENTICATED=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.ConfirmationWasAuthenticated // "false"')
+
+             if [ "$LOW_STOCK_PENDING" = "true" ]; then
                echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
-               echo "The admin must click the SNS confirmation link before low-stock emails can be delivered."
-             elif [ "$LOW_STOCK_DELETED_PRESENT" = "true" ]; then
-               echo "WARNING: Found a Deleted admin low-stock SNS subscription."
-               echo "Creating a replacement subscription automatically..."
-               NEW_LOW_STOCK_SUBSCRIPTION=$(aws sns subscribe \
-                 --topic-arn "$LOW_STOCK_TOPIC_ARN" \
-                 --protocol email \
-                 --notification-endpoint "$ADMIN_EMAIL" \
-                 --return-subscription-arn \
-                 --region "$AWS_REGION" \
-                 --output json)
-               echo "Replacement admin subscription created: $NEW_LOW_STOCK_SUBSCRIPTION"
-               echo "The admin must click the new SNS confirmation email before low-stock notifications can be delivered."
+               echo "Confirm the subscription from the AWS SNS confirmation email."
+               echo "GitHub Actions will not create, confirm, or delete the email subscription."
              else
-               echo "WARNING: No admin low-stock SNS subscription exists."
-               echo "Creating the subscription automatically..."
-               NEW_LOW_STOCK_SUBSCRIPTION=$(aws sns subscribe \
-                 --topic-arn "$LOW_STOCK_TOPIC_ARN" \
-                 --protocol email \
-                 --notification-endpoint "$ADMIN_EMAIL" \
-                 --return-subscription-arn \
-                 --region "$AWS_REGION" \
-                 --output json)
-               echo "Admin subscription created: $NEW_LOW_STOCK_SUBSCRIPTION"
-               echo "The admin must click the SNS confirmation email before low-stock notifications can be delivered."
+               echo "Admin low-stock SNS subscription is confirmed."
+               echo "ConfirmationWasAuthenticated=$LOW_STOCK_AUTHENTICATED"
+
+               if [ "$LOW_STOCK_AUTHENTICATED" != "true" ]; then
+                 echo "WARNING: Subscription is confirmed but authenticated unsubscribe protection is not enabled."
+                 echo "Enable AuthenticateOnUnsubscribe=true during the one-time AWS confirmation."
+               fi
              fi
+
+           elif [ "$LOW_STOCK_PENDING_PRESENT" = "true" ]; then
+             echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
+             echo "Confirm the subscription from the AWS SNS confirmation email."
+             echo "GitHub Actions will not create, confirm, or delete the email subscription."
+
+           elif [ "$LOW_STOCK_DELETED_PRESENT" = "true" ]; then
+             echo "ERROR: Admin low-stock SNS subscription is Deleted."
+             echo "Create a fresh EMAIL subscription from the SNS console and confirm it."
+             echo "GitHub Actions will not recreate or delete the email subscription."
+             exit 1
+
+           else
+             echo "ERROR: No admin low-stock EMAIL subscription exists for $ADMIN_EMAIL."
+             echo "Create the subscription once from SNS and confirm it."
+             exit 1
            fi
 
            # Remove the obsolete singular topic created by an older version.
@@ -812,10 +800,7 @@ jobs:
              exit 1
            }
 
-           # Final verification. A newly-created email subscription remains
-           # PendingConfirmation until the recipient clicks the SNS confirmation
-           # link. PendingConfirmation is a valid intermediate state and must NOT
-           # fail the deployment.
+           # Final verification is read-only.
            FINAL_LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
              --topic-arn "$LOW_STOCK_TOPIC_ARN" \
              --region "$AWS_REGION" \
@@ -831,26 +816,17 @@ jobs:
 
            case "$FINAL_LOW_STOCK_SUB_STATUS" in
              CONFIRMED)
-               FINAL_LOW_STOCK_SUB_ARN=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
-                 .Subscriptions[]?
-                 | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
-                 | .SubscriptionArn
-                 | select(startswith("arn:"))' | head -n 1)
-               echo "Confirmed low-stock SNS subscription: $FINAL_LOW_STOCK_SUB_ARN"
+               echo "Final SNS check: admin low-stock subscription is confirmed."
                ;;
              PENDING)
-               echo "WARNING: low-stock SNS subscription is PendingConfirmation."
-               echo "The SNS confirmation email has been sent to $ADMIN_EMAIL."
-               echo "Click the Confirm subscription link in that email before testing low-stock alerts."
-               echo "GitHub Actions will not fail because the subscription is waiting for email confirmation."
+               echo "Final SNS check: admin low-stock subscription is PendingConfirmation."
                ;;
              DELETED)
-               echo "ERROR: low-stock SNS subscription is still Deleted for $ADMIN_EMAIL."
-               echo "A replacement subscription could not be established."
+               echo "Final SNS check: admin low-stock subscription is Deleted."
                exit 1
                ;;
              *)
-               echo "ERROR: no low-stock SNS subscription exists for $ADMIN_EMAIL."
+               echo "Final SNS check: no admin low-stock subscription found."
                exit 1
                ;;
            esac
