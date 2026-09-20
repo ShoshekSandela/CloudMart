@@ -78,7 +78,7 @@ Resources:
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
 
-  CloudMartLowStockEmailSubscriptionV2:
+  CloudMartLowStockEmailSubscriptionV3:
     Type: AWS::SNS::Subscription
     # CloudFormation creates the admin email subscription automatically.
     # Retain it if the application stack is removed/recreated so a stack
@@ -949,7 +949,7 @@ Outputs:
 
   LowStockEmailSubscriptionArn:
     Description: ARN of the CloudMart admin low-stock email subscription.
-    Value: !Ref CloudMartLowStockEmailSubscriptionV2
+    Value: !Ref CloudMartLowStockEmailSubscriptionV3
     Export:
       Name: !Sub CloudMart-${Environment}-LowStockEmailSubscriptionArn
 
