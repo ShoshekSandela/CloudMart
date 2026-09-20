@@ -407,6 +407,7 @@ Resources:
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
           ORDER_NOTIFICATION_TOPIC_ARN: !Ref CloudMartCustomerOrderNotificationTopic
+          CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
         Environment: !Ref Environment
