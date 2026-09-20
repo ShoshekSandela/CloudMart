@@ -282,10 +282,50 @@ def remove_customer_sns_subscription(customer_id, email, reason="EXPLICIT_UNSUBS
     return False
 
 
-def sync_customer_sns_subscription(customer_id, old_email, new_email):
+def _get_customer_email_subscription_status(connection, customer_id):
+    """Return the application-level subscription state for a customer."""
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            SELECT status
+            FROM email_subscriptions
+            WHERE customer_id = %s
+            LIMIT 1
+        """, (customer_id,))
+        row = cursor.fetchone()
+    return str(row["status"]).upper() if row else None
+
+
+def _update_customer_email_subscription_status(connection, customer_id, status):
+    """Update notification state without ever reactivating an unsubscribed customer."""
+    status = str(status).upper()
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE email_subscriptions
+            SET status = %s,
+                unsubscribed_at = CASE
+                    WHEN %s = 'UNSUBSCRIBED' THEN unsubscribed_at
+                    ELSE NULL
+                END
+            WHERE customer_id = %s
+              AND status <> 'UNSUBSCRIBED'
+        """, (status, status, customer_id))
+    connection.commit()
+
+
+def sync_customer_sns_subscription(connection, customer_id, old_email, new_email):
     try:
         old_normalized = str(old_email or "").strip().lower()
         new_normalized = str(new_email or "").strip().lower()
+
+        # An explicit unsubscribe is an application-level choice. A customer
+        # email update must not silently opt that customer back in.
+        current_status = _get_customer_email_subscription_status(connection, customer_id)
+        if current_status == "UNSUBSCRIBED":
+            logger.info(
+                "Skipping SNS subscription synchronization for unsubscribed customer: customer_id=%s",
+                customer_id,
+            )
+            return "UNSUBSCRIBED"
 
         # Always establish the new endpoint first. If confirmation is still
         # pending, keep the old confirmed subscription intact so an email
@@ -301,6 +341,15 @@ def sync_customer_sns_subscription(customer_id, old_email, new_email):
                 customer_id,
                 old_normalized,
                 reason="CUSTOMER_EMAIL_CHANGED_AFTER_NEW_SUBSCRIPTION_CONFIRMED",
+            )
+
+        # Keep the DB state aligned with SNS reconciliation. The explicit
+        # unsubscribe state is protected by the WHERE clause in the helper.
+        if state == "CONFIRMED":
+            _update_customer_email_subscription_status(connection, customer_id, "ACTIVE")
+        elif state == "PENDING_CONFIRMATION":
+            _update_customer_email_subscription_status(
+                connection, customer_id, "PENDING_CONFIRMATION"
             )
 
         logger.info(
@@ -632,6 +681,7 @@ def lambda_handler(event, context):
                     connection.commit()
                     customer = get_customer(cursor, created_id)
                     subscription_state = sync_customer_sns_subscription(
+                        connection,
                         created_id,
                         None,
                         customer["customer_email"],
@@ -666,6 +716,7 @@ def lambda_handler(event, context):
 
                 connection.commit()
                 subscription_state = sync_customer_sns_subscription(
+                    connection,
                     customer_id,
                     old_email,
                     customer["customer_email"],

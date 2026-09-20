@@ -335,10 +335,37 @@ def ensure_sns_email_subscription(customer_id, email):
     )
     return "PendingConfirmation"
 
-def publish_order_notification(customer_id, email, subject, message):
+def _update_subscription_status(connection, customer_id, status):
+    """Record SNS reconciliation state without reactivating an unsubscribed customer."""
+    status = str(status).upper()
+    with connection.cursor() as cursor:
+        cursor.execute("""
+            UPDATE email_subscriptions
+            SET status = %s,
+                unsubscribed_at = CASE
+                    WHEN %s = 'UNSUBSCRIBED' THEN unsubscribed_at
+                    ELSE NULL
+                END
+            WHERE customer_id = %s
+              AND status <> 'UNSUBSCRIBED'
+        """, (status, status, customer_id))
+    connection.commit()
+
+
+def publish_order_notification(connection, customer_id, email, subject, message):
     # Reconcile the subscription before publishing. This also supports
     # existing customers created before SNS notifications were enabled.
     subscription_state = ensure_sns_email_subscription(customer_id, email)
+
+    # Keep the application state aligned with the actual SNS state. A deleted
+    # or missing subscription is recreated automatically; the resulting
+    # PendingConfirmation state prevents a publish until the recipient
+    # confirms the new SNS email subscription.
+    if subscription_state == "PendingConfirmation":
+        _update_subscription_status(connection, customer_id, "PENDING_CONFIRMATION")
+
+    else:
+        _update_subscription_status(connection, customer_id, "ACTIVE")
 
     # SNS email subscriptions must be confirmed by the recipient before
     # messages can be delivered to the email endpoint.
@@ -414,6 +441,7 @@ def process_notification_event(event, connection):
     subject, message = build_message(detail_type, detail)
 
     _, subscription_state = publish_order_notification(
+        connection,
         int(customer_id),
         email,
         subject,
