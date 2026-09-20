@@ -103,7 +103,8 @@ Resources:
                 Action:
                   - sns:SetSubscriptionAttributes
                   - sns:Unsubscribe
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
+                # SNS IAM authorizes subscription-management actions against the topic ARN.
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
       Tags:
         - Key: Project
           Value: CloudMart
@@ -239,7 +240,9 @@ Resources:
                 Effect: Allow
                 Action:
                   - sns:SetSubscriptionAttributes
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications:*
+                # SNS IAM policies use the topic ARN for subscription-management actions.
+                # Do not append :* here; SetSubscriptionAttributes authorizes against the topic.
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
               - Sid: PublishCustomerOrderNotifications
                 Effect: Allow
                 Action:
