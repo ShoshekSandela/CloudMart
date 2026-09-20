@@ -812,38 +812,50 @@ jobs:
              exit 1
            }
 
-           # Final verification: a low-stock email subscription must exist as a
-           # real ARN and must not be PendingConfirmation.
+           # Final verification. A newly-created email subscription remains
+           # PendingConfirmation until the recipient clicks the SNS confirmation
+           # link. PendingConfirmation is a valid intermediate state and must NOT
+           # fail the deployment.
            FINAL_LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
              --topic-arn "$LOW_STOCK_TOPIC_ARN" \
              --region "$AWS_REGION" \
              --output json)
 
-           FINAL_LOW_STOCK_SUB_ARN=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+           FINAL_LOW_STOCK_SUB_STATUS=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
              .Subscriptions[]?
              | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
-             | .SubscriptionArn
-             | select(startswith("arn:"))' | head -n 1)
+             | if .SubscriptionArn == "PendingConfirmation" then "PENDING"
+               elif .SubscriptionArn == "Deleted" then "DELETED"
+               elif (.SubscriptionArn // "" | startswith("arn:")) then "CONFIRMED"
+               else "UNKNOWN" end' | head -n 1)
 
-           test -n "$FINAL_LOW_STOCK_SUB_ARN" || {
-             echo "ERROR: no real low-stock SNS subscription ARN exists for $ADMIN_EMAIL."
-             exit 1
-           }
+           case "$FINAL_LOW_STOCK_SUB_STATUS" in
+             CONFIRMED)
+               FINAL_LOW_STOCK_SUB_ARN=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+                 .Subscriptions[]?
+                 | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+                 | .SubscriptionArn
+                 | select(startswith("arn:"))' | head -n 1)
+               echo "Confirmed low-stock SNS subscription: $FINAL_LOW_STOCK_SUB_ARN"
+               ;;
+             PENDING)
+               echo "WARNING: low-stock SNS subscription is PendingConfirmation."
+               echo "The SNS confirmation email has been sent to $ADMIN_EMAIL."
+               echo "Click the Confirm subscription link in that email before testing low-stock alerts."
+               echo "GitHub Actions will not fail because the subscription is waiting for email confirmation."
+               ;;
+             DELETED)
+               echo "ERROR: low-stock SNS subscription is still Deleted for $ADMIN_EMAIL."
+               echo "A replacement subscription could not be established."
+               exit 1
+               ;;
+             *)
+               echo "ERROR: no low-stock SNS subscription exists for $ADMIN_EMAIL."
+               exit 1
+               ;;
+           esac
 
-           FINAL_LOW_STOCK_PENDING=$(aws sns get-subscription-attributes \
-             --subscription-arn "$FINAL_LOW_STOCK_SUB_ARN" \
-             --region "$AWS_REGION" \
-             --query 'Attributes.PendingConfirmation' \
-             --output text)
-
-           if [ "$FINAL_LOW_STOCK_PENDING" = "true" ]; then
-             echo "WARNING: low-stock SNS subscription is PendingConfirmation."
-             echo "Confirm the AWS SNS email confirmation before testing low-stock alerts."
-           else
-             echo "Confirmed low-stock SNS subscription: $FINAL_LOW_STOCK_SUB_ARN"
-           fi
-
-           echo "SNS notification infrastructure is ready."
+           echo "SNS notification infrastructure check completed."
 
   initialize:
     name: Initialize CloudMart
