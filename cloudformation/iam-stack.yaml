@@ -62,6 +62,12 @@ Resources:
               - iam:GetRole
             Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cloudmart-${Environment}-cloudformation-execution-role
 
+          - Sid: PassCloudFormationExecutionRole
+            Effect: Allow
+            Action:
+              - iam:PassRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cloudmart-${Environment}-cloudformation-execution-role
+
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
     Type: AWS::IAM::Role
