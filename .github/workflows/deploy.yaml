@@ -67,7 +67,17 @@ jobs:
 
           case "$STATUS" in
             CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "Network stack is healthy."
+              echo "Network stack exists. Deploying the current network template."
+
+              aws cloudformation deploy \
+                --template-file cloudformation/network-stack.yaml \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --parameter-overrides Environment="$ENVIRONMENT" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --no-fail-on-empty-changeset
+
+              echo "Network stack update completed."
               ;;
             UPDATE_ROLLBACK_COMPLETE)
               echo "Network stack is UPDATE_ROLLBACK_COMPLETE."
