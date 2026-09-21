@@ -122,7 +122,16 @@ Resources:
             rm -rf /opt/cloudmart/dashboard/venv
             python3 -m venv /opt/cloudmart/dashboard/venv
 
-            /opt/cloudmart/dashboard/venv/bin/python -m pip install --no-cache-dir -r /opt/cloudmart/dashboard/requirements.txt
+            # Install application dependencies inside the virtual environment.
+            # Do not install/upgrade the system-managed pip package from requirements.txt.
+            # Amazon Linux manages its system pip through RPM, and attempting to
+            # replace it can make cloud-init stop before the dashboard service is created.
+            grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
+              /opt/cloudmart/dashboard/requirements.txt \
+              > /opt/cloudmart/dashboard/requirements-runtime.txt
+
+            /opt/cloudmart/dashboard/venv/bin/python -m pip install --no-cache-dir --disable-pip-version-check \
+              -r /opt/cloudmart/dashboard/requirements-runtime.txt
 
             cat > /opt/cloudmart/dashboard/run_dashboard.py <<'PY'
             from app import app
@@ -161,7 +170,7 @@ Resources:
             systemctl enable cloudmart-dashboard
             systemctl restart cloudmart-dashboard
 
-            sleep 3
+            sleep 5
             systemctl is-active --quiet cloudmart-dashboard
             ss -lntp | grep -q ':80 '
           - REPORT_BUCKET:
