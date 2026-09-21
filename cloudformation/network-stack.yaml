@@ -214,7 +214,7 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-          Description: Public HTTP access to the CloudMart Operations Dashboard
+          Description: Public HTTP access to the CloudMart Operations Dashboard - HTTP80-v2
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
