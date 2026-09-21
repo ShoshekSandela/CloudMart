@@ -124,10 +124,12 @@ jobs:
             --query 'Stacks[0].Outputs[?OutputKey==`EC2SecurityGroupId`].OutputValue' \
             --output text)
 
-          test -n "$EC2_SG_ID" && test "$EC2_SG_ID" != "None" || {
+          if [ -z "$EC2_SG_ID" ] || [ "$EC2_SG_ID" = "None" ]; then
             echo "ERROR: EC2SecurityGroupId output was not found."
             exit 1
-          }
+          fi
+
+          echo "EC2 security group: $EC2_SG_ID"
 
           HTTP_RULE=$(aws ec2 describe-security-groups \
             --group-ids "$EC2_SG_ID" \
@@ -135,10 +137,11 @@ jobs:
             --query 'SecurityGroups[0].IpPermissions[?IpProtocol==`tcp` && FromPort==`80` && ToPort==`80`].IpRanges[?CidrIp==`0.0.0.0/0`].CidrIp' \
             --output text)
 
-          test -n "$HTTP_RULE" && test "$HTTP_RULE" != "None" || {
-            echo "ERROR: TCP port 80 is not present on $EC2_SG_ID."
+          if [ -z "$HTTP_RULE" ] || [ "$HTTP_RULE" = "None" ]; then
+            echo "ERROR: TCP port 80 is still missing from $EC2_SG_ID."
+            echo "Expected CloudFormation resource: EC2DashboardHttpIngressV2"
             exit 1
-          }
+          fi
 
           echo "Verified TCP port 80 on EC2 security group: $EC2_SG_ID"
 

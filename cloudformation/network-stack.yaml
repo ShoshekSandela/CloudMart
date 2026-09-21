@@ -222,9 +222,10 @@ Resources:
           Value: !Ref Environment
 
   # Dedicated CloudFormation resource for the Operations Dashboard HTTP rule.
-  # This explicitly manages TCP/80 so CloudFormation can reconcile the rule
-  # even when the security group has drifted from the recorded stack state.
-  EC2DashboardHttpIngress:
+  # V2 intentionally uses a new logical ID so CloudFormation creates/reconciles
+  # the live TCP/80 rule even though the previous resource is already recorded
+  # as part of an UPDATE_COMPLETE stack.
+  EC2DashboardHttpIngressV2:
     Type: AWS::EC2::SecurityGroupIngress
     Properties:
       GroupId: !Ref EC2SecurityGroup
