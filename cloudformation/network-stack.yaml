@@ -304,6 +304,7 @@ Resources:
       SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
 
+Outputs:
   VpcId:
     Value: !Ref CloudMartVPC
     Export:
