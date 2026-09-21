@@ -124,30 +124,21 @@ jobs:
             --query 'Stacks[0].Outputs[?OutputKey==`EC2SecurityGroupId`].OutputValue' \
             --output text)
 
-          if [ -z "$EC2_SG_ID" ] || [ "$EC2_SG_ID" = "None" ]; then
+          test -n "$EC2_SG_ID" && test "$EC2_SG_ID" != "None" || {
             echo "ERROR: EC2SecurityGroupId output was not found."
             exit 1
-          fi
+          }
 
-          echo "EC2 security group: $EC2_SG_ID"
-
-          HTTP_RULE_COUNT=$(aws ec2 describe-security-groups \
+          HTTP_RULE=$(aws ec2 describe-security-groups \
             --group-ids "$EC2_SG_ID" \
             --region "$AWS_REGION" \
-            --query 'length(SecurityGroups[0].IpPermissions[?IpProtocol==`tcp` && FromPort==`80` && ToPort==`80`])' \
+            --query 'SecurityGroups[0].IpPermissions[?IpProtocol==`tcp` && FromPort==`80` && ToPort==`80`].IpRanges[?CidrIp==`0.0.0.0/0`].CidrIp' \
             --output text)
 
-          if [ "$HTTP_RULE_COUNT" != "1" ]; then
-            echo "ERROR: TCP port 80 is still missing from $EC2_SG_ID."
-            echo "The EC2 security group must contain TCP/80 in SecurityGroupIngress."
-            echo "Current ingress rules:"
-            aws ec2 describe-security-groups \
-              --group-ids "$EC2_SG_ID" \
-              --region "$AWS_REGION" \
-              --query 'SecurityGroups[0].IpPermissions' \
-              --output json
+          test -n "$HTTP_RULE" && test "$HTTP_RULE" != "None" || {
+            echo "ERROR: TCP port 80 is not present on $EC2_SG_ID."
             exit 1
-          fi
+          }
 
           echo "Verified TCP port 80 on EC2 security group: $EC2_SG_ID"
 
@@ -1039,10 +1030,22 @@ jobs:
             STACK_STATUS=""
           fi
 
+          CFN_EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "cloudmart-iam-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`CloudFormationExecutionRoleArn`].OutputValue' \
+            --output text)
+
+          test -n "$CFN_EXECUTION_ROLE_ARN" && test "$CFN_EXECUTION_ROLE_ARN" != "None" || {
+            echo "ERROR: CloudFormationExecutionRoleArn output was not found."
+            exit 1
+          }
+
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
+            --role-arn "$CFN_EXECUTION_ROLE_ARN" \
             --resolve-s3 \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-confirm-changeset \

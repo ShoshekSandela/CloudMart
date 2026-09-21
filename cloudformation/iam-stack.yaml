@@ -17,16 +17,10 @@ Parameters:
     Type: String
     Description: Existing GitHub Actions IAM role name used by the deployment workflow.
 
-
-  ProjectDashboardName:
-    Type: String
-    Default: cloudmart-operations
-    Description: CloudWatch Operations dashboard name.
-
-
 Resources:
 
-  # Adds only the CloudWatch permissions required by the monitoring stack.
+  # Adds only the CloudWatch permissions required by the monitoring stack
+  # to the existing GitHub Actions deployment role.
   GitHubActionsMonitoringPolicy:
     Type: AWS::IAM::Policy
     Properties:
@@ -36,49 +30,31 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: ManageOperationsDashboard
+          - Sid: ManageCloudWatchDashboard
             Effect: Allow
             Action:
               - cloudwatch:PutDashboard
               - cloudwatch:DeleteDashboards
-            Resource: !Sub arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/${ProjectDashboardName}
-          - Sid: ManageOperationsAlarms
+              - cloudwatch:GetDashboard
+              - cloudwatch:ListDashboards
+            Resource: "*"
+          - Sid: ManageCloudWatchAlarms
             Effect: Allow
             Action:
               - cloudwatch:PutMetricAlarm
               - cloudwatch:DeleteAlarms
-            Resource:
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-rds-cpu-80
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-orders-failed
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-low-stock
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-api-5xx
-
-  # The monitoring stack owns the Operations EC2 instance. Its physical
-  # instance ID/ARN can change when CloudFormation replaces the instance, so
-  # lifecycle permission must not depend on a stale instance ARN.
-  # Restrict the permission to the CloudMart deployment region and CloudMart
-  # tagged resources so the GitHub Actions role can update the managed
-  # Operations EC2 instance reliably.
-  GitHubActionsEC2LifecyclePolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: !Sub CloudMart-${Environment}-OperationsEC2LifecyclePolicy
-      Roles:
-        - !Ref GitHubActionsRoleName
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
+              - cloudwatch:DescribeAlarms
+            Resource: "*"
+          # CloudFormation may stop/start the Operations EC2 instance
+          # when updating EC2 properties such as its security group.
           - Sid: ManageOperationsEC2Lifecycle
             Effect: Allow
             Action:
               - ec2:StopInstances
               - ec2:StartInstances
               - ec2:TerminateInstances
+              - ec2:ModifyInstanceAttribute
             Resource: "*"
-            Condition:
-              StringEquals:
-                aws:RequestedRegion: !Ref AWS::Region
-                ec2:ResourceTag/Project: CloudMart
 
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
