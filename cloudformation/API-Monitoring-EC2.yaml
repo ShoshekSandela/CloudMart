@@ -28,6 +28,12 @@ Parameters:
     Type: String
     Default: dashboard-source
 
+  # Changes on every monitoring deployment so the EC2 UserData is refreshed
+  # and the dashboard instance is recreated from the current bootstrap code.
+  DashboardBootstrapVersion:
+    Type: String
+    Default: "1"
+
 Resources:
 
   # ------------------------------------------------------------
@@ -89,6 +95,8 @@ Resources:
   # ------------------------------------------------------------
   OperationsEC2Instance:
     Type: AWS::EC2::Instance
+    # DashboardBootstrapVersion is injected into UserData so each monitoring
+    # deployment can intentionally refresh the EC2 dashboard bootstrap.
     Properties:
       InstanceType: !Ref EC2InstanceType
       ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"
@@ -111,6 +119,9 @@ Resources:
             #!/bin/bash
             set -euo pipefail
 
+            # Bootstrap version: ${BOOTSTRAP_VERSION}
+            # Do NOT install or upgrade the RPM-managed system pip package.
+            # The dashboard uses only the pip bundled inside its virtualenv.
             dnf install -y python3 python3-pip mariadb105 || dnf install -y python3 python3-pip mariadb
             mkdir -p /opt/cloudmart/dashboard
 
@@ -171,12 +182,22 @@ Resources:
             systemctl restart cloudmart-dashboard
 
             sleep 5
-            systemctl is-active --quiet cloudmart-dashboard
-            ss -lntp | grep -q ':80 '
+            systemctl is-active --quiet cloudmart-dashboard || {
+              echo "Dashboard service failed to start."
+              systemctl status cloudmart-dashboard --no-pager || true
+              journalctl -u cloudmart-dashboard -n 100 --no-pager || true
+              exit 1
+            }
+            ss -lntp | grep -q ':80 ' || {
+              echo "Dashboard service is active but port 80 is not listening."
+              ss -lntp || true
+              exit 1
+            }
           - REPORT_BUCKET:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
             SOURCE_PREFIX: !Ref DashboardSourcePrefix
             ENVIRONMENT: !Ref Environment
+            BOOTSTRAP_VERSION: !Ref DashboardBootstrapVersion
 
   # ------------------------------------------------------------
   # SNS topic used by all four operational alarms
@@ -405,7 +426,4 @@ Outputs:
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
     Value: !Sub "${ProjectName}-operations"
-
-
-
 

@@ -1017,6 +1017,8 @@ jobs:
           }
 
           echo "Using CloudFormation execution role: $CFN_EXECUTION_ROLE_ARN"
+          echo "Dashboard bootstrap version: ${GITHUB_RUN_NUMBER}"
+          echo "Dashboard source prefix: dashboard-source/${GITHUB_SHA}"
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -1032,7 +1034,8 @@ jobs:
               ProjectName=cloudmart \
               NotificationEmail="$ADMIN_EMAIL" \
               EC2InstanceType=t3.micro \
-              DashboardSourcePrefix="dashboard-source/${GITHUB_SHA}"
+              DashboardSourcePrefix="dashboard-source/${GITHUB_SHA}" \
+              DashboardBootstrapVersion="${GITHUB_RUN_NUMBER}"
 
           MONITORING_STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
