@@ -17,18 +17,12 @@ Parameters:
     Type: String
     Description: Existing GitHub Actions IAM role name used by the deployment workflow.
 
-  OperationsEC2InstanceArn:
-    Type: String
-    Default: ''
-    Description: Existing Operations EC2 instance ARN. Populated automatically by the deployment workflow.
 
   ProjectDashboardName:
     Type: String
     Default: cloudmart-operations
     Description: CloudWatch Operations dashboard name.
 
-Conditions:
-  HasOperationsEC2InstanceArn: !Not [!Equals [!Ref OperationsEC2InstanceArn, '']]
 
 Resources:
 
@@ -59,9 +53,14 @@ Resources:
               - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-low-stock
               - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-api-5xx
 
+  # The monitoring stack owns the Operations EC2 instance. Its physical
+  # instance ID/ARN can change when CloudFormation replaces the instance, so
+  # lifecycle permission must not depend on a stale instance ARN.
+  # Restrict the permission to the CloudMart deployment region and CloudMart
+  # tagged resources so the GitHub Actions role can update the managed
+  # Operations EC2 instance reliably.
   GitHubActionsEC2LifecyclePolicy:
     Type: AWS::IAM::Policy
-    Condition: HasOperationsEC2InstanceArn
     Properties:
       PolicyName: !Sub CloudMart-${Environment}-OperationsEC2LifecyclePolicy
       Roles:
@@ -75,7 +74,11 @@ Resources:
               - ec2:StopInstances
               - ec2:StartInstances
               - ec2:TerminateInstances
-            Resource: !Ref OperationsEC2InstanceArn
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: !Ref AWS::Region
+                ec2:ResourceTag/Project: CloudMart
 
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
