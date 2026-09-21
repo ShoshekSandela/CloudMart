@@ -93,7 +93,7 @@ Resources:
   # ------------------------------------------------------------
   # Operations EC2 dashboard
   # ------------------------------------------------------------
-  OperationsEC2Instance:
+  OperationsEC2InstanceV2:
     Type: AWS::EC2::Instance
     # DashboardBootstrapVersion is injected into UserData so each monitoring
     # deployment can intentionally refresh the EC2 dashboard bootstrap.
@@ -400,15 +400,15 @@ Resources:
 Outputs:
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
-    Value: !Ref OperationsEC2Instance
+    Value: !Ref OperationsEC2InstanceV2
 
   OperationsEC2PublicIp:
     Description: Operations dashboard EC2 public IP address.
-    Value: !GetAtt OperationsEC2Instance.PublicIp
+    Value: !GetAtt OperationsEC2InstanceV2.PublicIp
 
   DashboardUrl:
     Description: Live CloudMart Operations Dashboard URL.
-    Value: !Sub "http://${OperationsEC2Instance.PublicIp}/dashboard"
+    Value: !Sub "http://${OperationsEC2InstanceV2.PublicIp}/dashboard"
 
   DailyReportFunctionArn:
     Description: Daily report Lambda ARN.
@@ -426,4 +426,3 @@ Outputs:
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
     Value: !Sub "${ProjectName}-operations"
-

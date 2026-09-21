@@ -1053,6 +1053,28 @@ jobs:
               ;;
           esac
 
+          DASHBOARD_INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`OperationsEC2InstanceId`].OutputValue' \
+            --output text)
+
+          test -n "$DASHBOARD_INSTANCE_ID" && test "$DASHBOARD_INSTANCE_ID" != "None" || {
+            echo "ERROR: Operations dashboard EC2 instance ID was not returned."
+            exit 1
+          }
+
+          echo "Operations dashboard EC2 instance: $DASHBOARD_INSTANCE_ID"
+          aws ec2 wait instance-status-ok --instance-ids "$DASHBOARD_INSTANCE_ID" --region "$AWS_REGION"
+
+          DASHBOARD_IP=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`OperationsEC2PublicIp`].OutputValue' \
+            --output text)
+
+          echo "Operations dashboard public IP: $DASHBOARD_IP"
+
           echo "Dashboard URL:"
           aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
