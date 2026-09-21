@@ -71,9 +71,15 @@ jobs:
               ;;
             UPDATE_ROLLBACK_COMPLETE)
               echo "Network stack is UPDATE_ROLLBACK_COMPLETE."
-              echo "Preserving the existing Network stack to protect its exports."
-              echo "No Network update will be attempted in this run."
-              exit 0
+              echo "Recovering the stack with the current network template."
+
+              aws cloudformation deploy \
+                --template-file cloudformation/network-stack.yaml \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --parameter-overrides Environment="$ENVIRONMENT" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --no-fail-on-empty-changeset
               ;;
             CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
               echo "ERROR: Network stack is busy: $STATUS"
@@ -100,6 +106,36 @@ jobs:
           esac
 
           echo "Network stack deployment completed."
+
+          echo "Verifying CloudMart EC2 security group includes HTTP port 80..."
+          EC2_SG_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`EC2SecurityGroupId`].OutputValue' \
+            --output text)
+
+          test -n "$EC2_SG_ID" && test "$EC2_SG_ID" != "None" || {
+            echo "ERROR: EC2SecurityGroupId output was not found."
+            exit 1
+          }
+
+          HTTP_RULE=$(aws ec2 describe-security-group-rules \
+            --group-id "$EC2_SG_ID" \
+            --region "$AWS_REGION" \
+            --filters \
+              Name=ip-permission.protocol,Values=tcp \
+              Name=from-port,Values=80 \
+              Name=to-port,Values=80 \
+              Name=cidr,Values=0.0.0.0/0 \
+            --query 'SecurityGroupRules[?IsEgress==`false`].SecurityGroupRuleId' \
+            --output text)
+
+          test -n "$HTTP_RULE" && test "$HTTP_RULE" != "None" || {
+            echo "ERROR: TCP port 80 is not present on $EC2_SG_ID."
+            exit 1
+          }
+
+          echo "Verified TCP port 80 on EC2 security group: $EC2_SG_ID"
 
   deploy-iam:
     name: Deploy IAM Stack
