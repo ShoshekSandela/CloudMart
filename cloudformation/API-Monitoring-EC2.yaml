@@ -116,17 +116,31 @@ Resources:
 
             aws s3 sync "s3://${REPORT_BUCKET}/${SOURCE_PREFIX}" /opt/cloudmart/dashboard --delete
 
+            test -f /opt/cloudmart/dashboard/app.py
+            test -f /opt/cloudmart/dashboard/requirements.txt
+
+            rm -rf /opt/cloudmart/dashboard/venv
             python3 -m venv /opt/cloudmart/dashboard/venv
-            /opt/cloudmart/dashboard/venv/bin/pip install --no-cache-dir -r /opt/cloudmart/dashboard/requirements.txt
+
+            /opt/cloudmart/dashboard/venv/bin/python -m pip install --no-cache-dir -r /opt/cloudmart/dashboard/requirements.txt
+
+            cat > /opt/cloudmart/dashboard/run_dashboard.py <<'PY'
+            from app import app
+
+            if __name__ == "__main__":
+                app.run(host="0.0.0.0", port=80, debug=False)
+            PY
 
             cat > /etc/systemd/system/cloudmart-dashboard.service <<'SERVICE'
             [Unit]
             Description=CloudMart Operations Dashboard
-            After=network.target
+            After=network-online.target
+            Wants=network-online.target
 
             [Service]
             Type=simple
             WorkingDirectory=/opt/cloudmart/dashboard
+            Environment="PYTHONUNBUFFERED=1"
             Environment="DB_HOST_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/host"
             Environment="DB_PORT_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/port"
             Environment="DB_NAME_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/name"
@@ -135,7 +149,7 @@ Resources:
             Environment="AUTH_TOKEN_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/auth/token"
             Environment="REPORT_BUCKET_NAME=${REPORT_BUCKET}"
             Environment="REPORT_PREFIX=reports"
-            ExecStart=/opt/cloudmart/dashboard/venv/bin/python /opt/cloudmart/dashboard/app.py
+            ExecStart=/opt/cloudmart/dashboard/venv/bin/python /opt/cloudmart/dashboard/run_dashboard.py
             Restart=always
             RestartSec=5
 
@@ -146,6 +160,10 @@ Resources:
             systemctl daemon-reload
             systemctl enable cloudmart-dashboard
             systemctl restart cloudmart-dashboard
+
+            sleep 3
+            systemctl is-active --quiet cloudmart-dashboard
+            ss -lntp | grep -q ':80 '
           - REPORT_BUCKET:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
             SOURCE_PREFIX: !Ref DashboardSourcePrefix
