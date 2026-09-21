@@ -162,6 +162,36 @@ jobs:
 
           echo "IAM stack status: ${STACK_STATUS:-NOT_FOUND}"
 
+          # Resolve the existing Operations EC2 instance dynamically.
+          # This keeps EC2 lifecycle permissions scoped to the actual instance ARN.
+          OPERATIONS_EC2_ID=$(aws cloudformation describe-stack-resource \
+            --stack-name "API-Monitoring-EC2-${ENVIRONMENT}" \
+            --logical-resource-id OperationsEC2Instance \
+            --region "$AWS_REGION" \
+            --query 'StackResourceDetail.PhysicalResourceId' \
+            --output text 2>/dev/null || true)
+
+          OPERATIONS_EC2_ARN=""
+          if [ -n "$OPERATIONS_EC2_ID" ] && [ "$OPERATIONS_EC2_ID" != "None" ]; then
+            AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+            OPERATIONS_EC2_ARN="arn:aws:ec2:${AWS_REGION}:${AWS_ACCOUNT_ID}:instance/${OPERATIONS_EC2_ID}"
+          fi
+
+          echo "Operations EC2 ARN: ${OPERATIONS_EC2_ARN:-NOT_FOUND}"
+
+          IAM_CREATE_PARAMETERS=(
+            "ParameterKey=Environment,ParameterValue=$ENVIRONMENT"
+            "ParameterKey=GitHubActionsRoleName,ParameterValue=${AWS_ROLE_ARN##*/}"
+          )
+          IAM_DEPLOY_PARAMETERS=(
+            "Environment=$ENVIRONMENT"
+            "GitHubActionsRoleName=${AWS_ROLE_ARN##*/}"
+          )
+          if [ -n "$OPERATIONS_EC2_ARN" ]; then
+            IAM_CREATE_PARAMETERS+=("ParameterKey=OperationsEC2InstanceArn,ParameterValue=$OPERATIONS_EC2_ARN")
+            IAM_DEPLOY_PARAMETERS+=("OperationsEC2InstanceArn=$OPERATIONS_EC2_ARN")
+          fi
+
           # No Bootstrap resources are created here.
           # The existing GitHub Actions OIDC role remains external to CloudMart.
           #
@@ -185,9 +215,7 @@ jobs:
               --change-set-name "$CHANGE_SET_NAME" \
               --change-set-type CREATE \
               --template-body file://cloudformation/iam-stack.yaml \
-              --parameters \
-                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
-                ParameterKey=GitHubActionsRoleName,ParameterValue="${AWS_ROLE_ARN##*/}" \
+              --parameters "${IAM_CREATE_PARAMETERS[@]}" \
               --capabilities CAPABILITY_NAMED_IAM \
               --import-existing-resources \
               --region "$AWS_REGION"
@@ -215,9 +243,7 @@ jobs:
               --template-file cloudformation/iam-stack.yaml \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
-              --parameter-overrides \
-                Environment="$ENVIRONMENT" \
-                GitHubActionsRoleName="${AWS_ROLE_ARN##*/}" \
+              --parameter-overrides "${IAM_DEPLOY_PARAMETERS[@]}" \
               --capabilities CAPABILITY_NAMED_IAM \
               --no-fail-on-empty-changeset
 
@@ -243,9 +269,7 @@ jobs:
               --change-set-name "$CHANGE_SET_NAME" \
               --change-set-type CREATE \
               --template-body file://cloudformation/iam-stack.yaml \
-              --parameters \
-                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
-                ParameterKey=GitHubActionsRoleName,ParameterValue="${AWS_ROLE_ARN##*/}" \
+              --parameters "${IAM_CREATE_PARAMETERS[@]}" \
               --capabilities CAPABILITY_NAMED_IAM \
               --import-existing-resources \
               --region "$AWS_REGION"

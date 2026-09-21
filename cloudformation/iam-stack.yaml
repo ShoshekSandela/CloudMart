@@ -17,10 +17,22 @@ Parameters:
     Type: String
     Description: Existing GitHub Actions IAM role name used by the deployment workflow.
 
+  OperationsEC2InstanceArn:
+    Type: String
+    Default: ''
+    Description: Existing Operations EC2 instance ARN. Populated automatically by the deployment workflow.
+
+  ProjectDashboardName:
+    Type: String
+    Default: cloudmart-operations
+    Description: CloudWatch Operations dashboard name.
+
+Conditions:
+  HasOperationsEC2InstanceArn: !Not [!Equals [!Ref OperationsEC2InstanceArn, '']]
+
 Resources:
 
-  # Adds only the CloudWatch permissions required by the monitoring stack
-  # to the existing GitHub Actions deployment role.
+  # Adds only the CloudWatch permissions required by the monitoring stack.
   GitHubActionsMonitoringPolicy:
     Type: AWS::IAM::Policy
     Properties:
@@ -30,21 +42,45 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: ManageCloudWatchDashboard
+          - Sid: ManageOperationsDashboard
             Effect: Allow
             Action:
               - cloudwatch:PutDashboard
               - cloudwatch:DeleteDashboards
-              - cloudwatch:GetDashboard
-              - cloudwatch:ListDashboards
+            Resource: !Sub arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/${ProjectDashboardName}
+          - Sid: DescribeOperationsAlarms
+            Effect: Allow
+            Action:
+              - cloudwatch:DescribeAlarms
             Resource: "*"
-          - Sid: ManageCloudWatchAlarms
+          - Sid: ManageOperationsAlarms
             Effect: Allow
             Action:
               - cloudwatch:PutMetricAlarm
               - cloudwatch:DeleteAlarms
-              - cloudwatch:DescribeAlarms
-            Resource: "*"
+            Resource:
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-rds-cpu-80
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-orders-failed
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-low-stock
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-api-5xx
+
+  GitHubActionsEC2LifecyclePolicy:
+    Type: AWS::IAM::Policy
+    Condition: HasOperationsEC2InstanceArn
+    Properties:
+      PolicyName: !Sub CloudMart-${Environment}-OperationsEC2LifecyclePolicy
+      Roles:
+        - !Ref GitHubActionsRoleName
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ManageOperationsEC2Lifecycle
+            Effect: Allow
+            Action:
+              - ec2:StopInstances
+              - ec2:StartInstances
+              - ec2:TerminateInstances
+            Resource: !Ref OperationsEC2InstanceArn
 
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
