@@ -1005,17 +1005,6 @@ jobs:
             STACK_STATUS=""
           fi
 
-          CFN_EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
-            --stack-name "cloudmart-iam-${ENVIRONMENT}" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs[?OutputKey==`CloudFormationExecutionRoleArn`].OutputValue' \
-            --output text)
-
-          test -n "$CFN_EXECUTION_ROLE_ARN" && test "$CFN_EXECUTION_ROLE_ARN" != "None" || {
-            echo "ERROR: CloudFormationExecutionRoleArn output was not found."
-            exit 1
-          }
-
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
