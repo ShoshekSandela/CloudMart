@@ -131,13 +131,13 @@ jobs:
 
           echo "EC2 security group: $EC2_SG_ID"
 
-          HTTP_RULE=$(aws ec2 describe-security-groups \
+          HTTP_RULE_COUNT=$(aws ec2 describe-security-groups \
             --group-ids "$EC2_SG_ID" \
             --region "$AWS_REGION" \
-            --query 'SecurityGroups[0].IpPermissions[?IpProtocol==`tcp` && FromPort==`80` && ToPort==`80`].IpRanges[?CidrIp==`0.0.0.0/0`].CidrIp' \
+            --query 'length(SecurityGroups[0].IpPermissions[?IpProtocol==`tcp` && FromPort==`80` && ToPort==`80`])' \
             --output text)
 
-          if [ -z "$HTTP_RULE" ] || [ "$HTTP_RULE" = "None" ]; then
+          if [ "$HTTP_RULE_COUNT" != "1" ]; then
             echo "ERROR: TCP port 80 is still missing from $EC2_SG_ID."
             echo "The EC2 security group must contain TCP/80 in SecurityGroupIngress."
             echo "Current ingress rules:"
