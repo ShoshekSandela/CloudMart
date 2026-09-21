@@ -139,7 +139,13 @@ jobs:
 
           if [ -z "$HTTP_RULE" ] || [ "$HTTP_RULE" = "None" ]; then
             echo "ERROR: TCP port 80 is still missing from $EC2_SG_ID."
-            echo "Expected CloudFormation resource: EC2DashboardHttpIngressV2"
+            echo "The EC2 security group must contain TCP/80 in SecurityGroupIngress."
+            echo "Current ingress rules:"
+            aws ec2 describe-security-groups \
+              --group-ids "$EC2_SG_ID" \
+              --region "$AWS_REGION" \
+              --query 'SecurityGroups[0].IpPermissions' \
+              --output json
             exit 1
           fi
 

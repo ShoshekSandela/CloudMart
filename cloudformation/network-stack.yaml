@@ -210,6 +210,11 @@ Resources:
           ToPort: 22
           CidrIp: 0.0.0.0/0
           Description: SSH access to the CloudMart Operations EC2 instance
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: Public HTTP access to the CloudMart Operations Dashboard
       SecurityGroupEgress:
         - IpProtocol: -1
           CidrIp: 0.0.0.0/0
@@ -221,19 +226,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Dedicated CloudFormation resource for the Operations Dashboard HTTP rule.
-  # V2 intentionally uses a new logical ID so CloudFormation creates/reconciles
-  # the live TCP/80 rule even though the previous resource is already recorded
-  # as part of an UPDATE_COMPLETE stack.
-  EC2DashboardHttpIngressV2:
-    Type: AWS::EC2::SecurityGroupIngress
-    Properties:
-      GroupId: !Ref EC2SecurityGroup
-      IpProtocol: tcp
-      FromPort: 80
-      ToPort: 80
-      CidrIp: 0.0.0.0/0
-      Description: Public HTTP access to the CloudMart Operations Dashboard
 
   VPCEndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
