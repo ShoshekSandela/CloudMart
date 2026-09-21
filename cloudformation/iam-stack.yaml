@@ -56,6 +56,12 @@ Resources:
               - ec2:ModifyInstanceAttribute
             Resource: "*"
 
+          - Sid: ReadCloudFormationExecutionRole
+            Effect: Allow
+            Action:
+              - iam:GetRole
+            Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cloudmart-${Environment}-cloudformation-execution-role
+
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
     Type: AWS::IAM::Role
