@@ -48,21 +48,16 @@ Resources:
               - cloudwatch:PutDashboard
               - cloudwatch:DeleteDashboards
             Resource: !Sub arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/${ProjectDashboardName}
-          - Sid: DescribeOperationsAlarms
-            Effect: Allow
-            Action:
-              - cloudwatch:DescribeAlarms
-            Resource: "*"
           - Sid: ManageOperationsAlarms
             Effect: Allow
             Action:
               - cloudwatch:PutMetricAlarm
               - cloudwatch:DeleteAlarms
             Resource:
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-rds-cpu-80
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-orders-failed
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-low-stock
-              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm/cloudmart-${Environment}-api-5xx
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-rds-cpu-80
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-orders-failed
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-low-stock
+              - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:cloudmart-${Environment}-api-5xx
 
   GitHubActionsEC2LifecyclePolicy:
     Type: AWS::IAM::Policy
