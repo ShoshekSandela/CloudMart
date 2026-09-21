@@ -120,14 +120,15 @@ jobs:
           }
 
           HTTP_RULE=$(aws ec2 describe-security-group-rules \
-            --group-id "$EC2_SG_ID" \
             --region "$AWS_REGION" \
             --filters \
+              Name=group-id,Values="$EC2_SG_ID" \
+              Name=is-egress,Values=false \
               Name=ip-permission.protocol,Values=tcp \
               Name=from-port,Values=80 \
               Name=to-port,Values=80 \
               Name=cidr,Values=0.0.0.0/0 \
-            --query 'SecurityGroupRules[?IsEgress==`false`].SecurityGroupRuleId' \
+            --query 'SecurityGroupRules[].SecurityGroupRuleId' \
             --output text)
 
           test -n "$HTTP_RULE" && test "$HTTP_RULE" != "None" || {
