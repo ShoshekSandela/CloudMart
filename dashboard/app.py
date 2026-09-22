@@ -66,7 +66,7 @@ def login_required(view):
 
 @app.get("/")
 def home():
-    return redirect(url_for("dashboard"))
+    return redirect(url_for("login"))
 
 
 @app.route("/login", methods=["GET", "POST"])
