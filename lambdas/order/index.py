@@ -1499,6 +1499,11 @@ def lambda_handler(event, context):
                     "Order %s created but OrderPlaced could not be published",
                     order["order_id"],
                 )
+            else:
+                # Publish the custom metric only after OrderPlaced was accepted
+                # by EventBridge. The CloudWatch Monitoring VPC endpoint keeps
+                # this call private and avoids the NAT Gateway requirement.
+                publish_operation_metric("OrdersPlaced")
 
             # Do NOT process inventory synchronously here. API Gateway has a
             # hard integration timeout of about 29 seconds. The OrderPlaced

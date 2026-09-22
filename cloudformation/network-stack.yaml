@@ -304,6 +304,20 @@ Resources:
         - !Ref PrivateSubnet1
       SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
 
+  # Private CloudWatch Monitoring API access from the VPC.
+  # This allows Lambda functions to publish custom CloudWatch metrics
+  # without requiring a NAT Gateway.
+  CloudWatchMonitoringVPCEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      VpcEndpointType: Interface
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateSubnet1
+      SecurityGroupIds: [!Ref VPCEndpointSecurityGroup]
+
 
 Outputs:
   VpcId:
