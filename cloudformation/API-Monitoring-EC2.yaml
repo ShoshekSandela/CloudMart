@@ -612,17 +612,7 @@ Resources:
                   "y": 18,
                   "width": 12,
                   "height": 6,
-                  "properties": {
-                    "title": "API Gateway 5XX Errors",
-                    "view": "timeSeries",
-                    "region": "${AWS::Region}",
-                    "period": 300,
-                    "stat": "Sum",
-                    "metrics": [
-                      [ "AWS/ApiGateway", "5XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
-                    ]
-                  }
-                }
+                  "properties": }
               ]
             }
           - DB_INSTANCE_ID:
