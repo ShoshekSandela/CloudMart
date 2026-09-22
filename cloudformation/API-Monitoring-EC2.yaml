@@ -232,7 +232,7 @@ Resources:
                 --max-time 10 \
                 http://127.0.0.1/dashboard || true)"
 
-              echo "Local dashboard attempt ${attempt}/15: HTTP ${HTTP_CODE}"
+              echo "Local dashboard attempt $attempt/15: HTTP $HTTP_CODE"
 
               case "$HTTP_CODE" in
                 200|301|302|303|307|308)
@@ -471,7 +471,7 @@ Outputs:
 
   DashboardUrl:
     Description: Live CloudMart Operations Dashboard URL.
-    Value: !Sub "http://${OperationsEC2InstanceV2.PublicIp}/dashboard"
+    Value: !Sub "http://${OperationsEC2InstanceV3.PublicIp}/dashboard"
 
   DailyReportFunctionArn:
     Description: Daily report Lambda ARN.
