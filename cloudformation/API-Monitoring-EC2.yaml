@@ -174,6 +174,33 @@ Resources:
             /opt/cloudmart/dashboard/venv/bin/python -c \
               "from app import app; print('CloudMart Flask application imported successfully')"
 
+            echo "Verifying required CloudMart SSM parameters are readable..."
+            aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/database/host" \
+              --with-decryption \
+              --region "${AWS_REGION}" >/dev/null
+            aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/database/port" \
+              --with-decryption \
+              --region "${AWS_REGION}" >/dev/null
+            aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/database/name" \
+              --with-decryption \
+              --region "${AWS_REGION}" >/dev/null
+            aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/database/username" \
+              --with-decryption \
+              --region "${AWS_REGION}" >/dev/null
+            aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/database/password" \
+              --with-decryption \
+              --region "${AWS_REGION}" >/dev/null
+            aws ssm get-parameter \
+              --name "/cloudmart/${ENVIRONMENT}/auth/token" \
+              --with-decryption \
+              --region "${AWS_REGION}" >/dev/null
+            echo "Required CloudMart SSM parameters are readable."
+
             echo "Creating CloudMart dashboard systemd service..."
 
             cat > /etc/systemd/system/cloudmart-dashboard.service <<'SERVICE'
@@ -199,6 +226,7 @@ Resources:
             Environment="AUTH_TOKEN_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/auth/token"
             Environment="REPORT_BUCKET_NAME=${REPORT_BUCKET}"
             Environment="REPORT_PREFIX=reports"
+            Environment="PORT=80"
 
             ExecStart=/opt/cloudmart/dashboard/venv/bin/gunicorn \
               --bind 0.0.0.0:80 \

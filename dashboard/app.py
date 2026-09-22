@@ -10,8 +10,11 @@ from flask import Flask, redirect, render_template, request, session, url_for
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 
-ssm = boto3.client("ssm")
-s3 = boto3.client("s3")
+AWS_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+_boto3_kwargs = {"region_name": AWS_REGION} if AWS_REGION else {}
+
+ssm = boto3.client("ssm", **_boto3_kwargs)
+s3 = boto3.client("s3", **_boto3_kwargs)
 
 
 def get_parameter(name, decrypt=True):
@@ -19,6 +22,20 @@ def get_parameter(name, decrypt=True):
 
 
 def get_connection():
+    """Create a private VPC RDS connection using SSM-managed parameters."""
+    required = (
+        "DB_HOST_PARAMETER_NAME",
+        "DB_PORT_PARAMETER_NAME",
+        "DB_USERNAME_PARAMETER_NAME",
+        "DB_PASSWORD_PARAMETER_NAME",
+        "DB_NAME_PARAMETER_NAME",
+    )
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        raise RuntimeError(
+            "Missing CloudMart database configuration: " + ", ".join(missing)
+        )
+
     return pymysql.connect(
         host=get_parameter(os.environ["DB_HOST_PARAMETER_NAME"]),
         port=int(get_parameter(os.environ["DB_PORT_PARAMETER_NAME"])),
@@ -26,7 +43,7 @@ def get_connection():
         password=get_parameter(os.environ["DB_PASSWORD_PARAMETER_NAME"]),
         database=get_parameter(os.environ["DB_NAME_PARAMETER_NAME"]),
         cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=10,
+        connect_timeout=20,
         read_timeout=20,
         write_timeout=20,
     )
@@ -171,4 +188,5 @@ def latest_report():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=80)
+    port = int(os.environ.get("PORT", "80"))
+    app.run(host="0.0.0.0", port=port)

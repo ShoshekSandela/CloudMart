@@ -1083,8 +1083,17 @@ jobs:
           echo "Dashboard URL:"
           echo "$DASHBOARD_URL"
 
-           # Dashboard HTTP health checks are intentionally not performed here.
-           # CloudFormation creates the EC2 instance and the URL is published
-           # without making GitHub Actions fail on dashboard startup timing.
-           echo "Dashboard URL published successfully: $DASHBOARD_URL"
+          {
+            echo "## CloudMart Operations Dashboard"
+            echo ""
+            echo "Dashboard URL: $DASHBOARD_URL"
+            echo ""
+            echo "The dashboard is deployed on the CloudMart EC2 instance inside the VPC."
+            echo "It connects to the private RDS database through the EC2-to-RDS security-group path."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Dashboard HTTP health checks are intentionally not performed here.
+          # CloudFormation creates the EC2 instance and the URL is published
+          # without making GitHub Actions fail on dashboard startup timing.
+          echo "Dashboard URL published successfully: $DASHBOARD_URL"
 

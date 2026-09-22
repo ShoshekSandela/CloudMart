@@ -455,12 +455,20 @@ Resources:
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ReadReportBucket
+              - Sid: ListReportBucket
                 Effect: Allow
                 Action:
                   - s3:ListBucket
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports
+
+              - Sid: ReadDashboardAndReportObjects
+                Effect: Allow
+                Action:
                   - s3:GetObject
-                Resource: "*"
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports/dashboard-source/*
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports/reports/*
       Tags:
         - Key: Project
           Value: CloudMart
