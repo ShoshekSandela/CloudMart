@@ -1488,7 +1488,7 @@ def lambda_handler(event, context):
                 items,
             )
             logger.info("POST /orders: PENDING order created order_id=%s", order["order_id"])
-            publish_operation_metric("OrdersPlaced")
+            
 
             # Publish the PENDING lifecycle event first so the customer
             # receives the Order Placed notification before the final
