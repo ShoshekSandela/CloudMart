@@ -93,7 +93,7 @@ Resources:
   # ------------------------------------------------------------
   # Operations EC2 dashboard
   # ------------------------------------------------------------
-  OperationsEC2InstanceV3:
+  OperationsEC2InstanceV4:
     Type: AWS::EC2::Instance
     # DashboardBootstrapVersion is injected into UserData so each monitoring
     # deployment can intentionally refresh the EC2 dashboard bootstrap.
@@ -125,6 +125,11 @@ Resources:
 
             echo "===== CloudMart dashboard bootstrap started ====="
             echo "Bootstrap version: ${BOOTSTRAP_VERSION}"
+            # Explicit AWS region for boto3/AWS CLI before importing the app.
+            export AWS_DEFAULT_REGION="${AWS_REGION}"
+            export AWS_REGION="${AWS_REGION}"
+            echo "AWS region: ${AWS_REGION}"
+
 
             # Install OS packages only. Never upgrade the RPM-managed system pip.
             dnf install -y python3 python3-pip mariadb105 || \
@@ -157,6 +162,13 @@ Resources:
               --disable-pip-version-check \
               -r /opt/cloudmart/dashboard/requirements-runtime.txt
 
+            echo "Ensuring Gunicorn is installed in the virtual environment..."
+            /opt/cloudmart/dashboard/venv/bin/python -m pip install \
+              --no-cache-dir \
+              --disable-pip-version-check \
+              "gunicorn==22.0.0"
+            test -x /opt/cloudmart/dashboard/venv/bin/gunicorn
+
             echo "Testing dashboard application import..."
             cd /opt/cloudmart/dashboard
             /opt/cloudmart/dashboard/venv/bin/python -c \
@@ -177,6 +189,8 @@ Resources:
             WorkingDirectory=/opt/cloudmart/dashboard
             Environment="PYTHONUNBUFFERED=1"
             Environment="PYTHONPATH=/opt/cloudmart/dashboard"
+            Environment="AWS_DEFAULT_REGION=${AWS_REGION}"
+            Environment="AWS_REGION=${AWS_REGION}"
             Environment="DB_HOST_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/host"
             Environment="DB_PORT_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/port"
             Environment="DB_NAME_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/name"
@@ -260,6 +274,7 @@ Resources:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
             SOURCE_PREFIX: !Ref DashboardSourcePrefix
             ENVIRONMENT: !Ref Environment
+            AWS_REGION: !Ref "AWS::Region"
             BOOTSTRAP_VERSION: !Ref DashboardBootstrapVersion
 
   # ------------------------------------------------------------
@@ -463,15 +478,15 @@ Resources:
 Outputs:
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
-    Value: !Ref OperationsEC2InstanceV3
+    Value: !Ref OperationsEC2InstanceV4
 
   OperationsEC2PublicIp:
     Description: Operations dashboard EC2 public IP address.
-    Value: !GetAtt OperationsEC2InstanceV3.PublicIp
+    Value: !GetAtt OperationsEC2InstanceV4.PublicIp
 
   DashboardUrl:
     Description: Live CloudMart Operations Dashboard URL.
-    Value: !Sub "http://${OperationsEC2InstanceV3.PublicIp}/dashboard"
+    Value: !Sub "http://${OperationsEC2InstanceV4.PublicIp}/dashboard"
 
   DailyReportFunctionArn:
     Description: Daily report Lambda ARN.
