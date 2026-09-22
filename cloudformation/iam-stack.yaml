@@ -205,7 +205,7 @@ Resources:
               # Reads only the database parameters required by Order Lambda.
               - Sid: ReadDatabaseParameters
                 Effect: Allow
-                Action: ssm:GetParameter
+                Action: ssm:GetParameters
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
