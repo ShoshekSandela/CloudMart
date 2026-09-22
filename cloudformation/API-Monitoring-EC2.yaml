@@ -93,7 +93,7 @@ Resources:
   # ------------------------------------------------------------
   # Operations EC2 dashboard
   # ------------------------------------------------------------
-  OperationsEC2InstanceV2:
+  OperationsEC2InstanceV3:
     Type: AWS::EC2::Instance
     # DashboardBootstrapVersion is injected into UserData so each monitoring
     # deployment can intentionally refresh the EC2 dashboard bootstrap.
@@ -113,43 +113,56 @@ Resources:
           Value: CloudMart
         - Key: Environment
           Value: !Ref Environment
+        - Key: DashboardBootstrapVersion
+          Value: !Ref DashboardBootstrapVersion
       UserData:
         Fn::Base64: !Sub
           - |
             #!/bin/bash
-            set -euo pipefail
+            set -Eeuo pipefail
 
-            # Bootstrap version: ${BOOTSTRAP_VERSION}
-            # Do NOT install or upgrade the RPM-managed system pip package.
-            # The dashboard uses only the pip bundled inside its virtualenv.
-            dnf install -y python3 python3-pip mariadb105 || dnf install -y python3 python3-pip mariadb
+            exec > >(tee -a /var/log/cloudmart-dashboard-bootstrap.log) 2>&1
+
+            echo "===== CloudMart dashboard bootstrap started ====="
+            echo "Bootstrap version: ${BOOTSTRAP_VERSION}"
+
+            # Install OS packages only. Never upgrade the RPM-managed system pip.
+            dnf install -y python3 python3-pip mariadb105 || \
+              dnf install -y python3 python3-pip mariadb
+
             mkdir -p /opt/cloudmart/dashboard
 
-            aws s3 sync "s3://${REPORT_BUCKET}/${SOURCE_PREFIX}" /opt/cloudmart/dashboard --delete
+            echo "Downloading dashboard source from S3..."
+            aws s3 sync "s3://${REPORT_BUCKET}/${SOURCE_PREFIX}" \
+              /opt/cloudmart/dashboard --delete
 
             test -f /opt/cloudmart/dashboard/app.py
             test -f /opt/cloudmart/dashboard/requirements.txt
 
+            echo "Creating isolated Python virtual environment..."
             rm -rf /opt/cloudmart/dashboard/venv
             python3 -m venv /opt/cloudmart/dashboard/venv
 
-            # Install application dependencies inside the virtual environment.
-            # Do not install/upgrade the system-managed pip package from requirements.txt.
-            # Amazon Linux manages its system pip through RPM, and attempting to
-            # replace it can make cloud-init stop before the dashboard service is created.
+            test -x /opt/cloudmart/dashboard/venv/bin/python
+            test -x /opt/cloudmart/dashboard/venv/bin/pip
+
+            # Do not allow a pip requirement to replace Amazon Linux's RPM-managed pip.
             grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
               /opt/cloudmart/dashboard/requirements.txt \
               > /opt/cloudmart/dashboard/requirements-runtime.txt
 
-            /opt/cloudmart/dashboard/venv/bin/python -m pip install --no-cache-dir --disable-pip-version-check \
+            echo "Installing dashboard dependencies in the virtual environment..."
+            /opt/cloudmart/dashboard/venv/bin/python -m pip install \
+              --no-cache-dir \
+              --disable-pip-version-check \
               -r /opt/cloudmart/dashboard/requirements-runtime.txt
 
-            cat > /opt/cloudmart/dashboard/run_dashboard.py <<'PY'
-            from app import app
+            echo "Testing dashboard application import..."
+            cd /opt/cloudmart/dashboard
+            /opt/cloudmart/dashboard/venv/bin/python -c \
+              "from app import app; print('CloudMart Flask application imported successfully')"
 
-            if __name__ == "__main__":
-                app.run(host="0.0.0.0", port=80, debug=False)
-            PY
+            echo "Creating CloudMart dashboard systemd service..."
 
             cat > /etc/systemd/system/cloudmart-dashboard.service <<'SERVICE'
             [Unit]
@@ -159,8 +172,11 @@ Resources:
 
             [Service]
             Type=simple
+            User=root
+            Group=root
             WorkingDirectory=/opt/cloudmart/dashboard
             Environment="PYTHONUNBUFFERED=1"
+            Environment="PYTHONPATH=/opt/cloudmart/dashboard"
             Environment="DB_HOST_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/host"
             Environment="DB_PORT_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/port"
             Environment="DB_NAME_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/database/name"
@@ -169,7 +185,15 @@ Resources:
             Environment="AUTH_TOKEN_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/auth/token"
             Environment="REPORT_BUCKET_NAME=${REPORT_BUCKET}"
             Environment="REPORT_PREFIX=reports"
-            ExecStart=/opt/cloudmart/dashboard/venv/bin/python /opt/cloudmart/dashboard/run_dashboard.py
+
+            ExecStart=/opt/cloudmart/dashboard/venv/bin/gunicorn \
+              --bind 0.0.0.0:80 \
+              --workers 2 \
+              --timeout 120 \
+              --access-logfile - \
+              --error-logfile - \
+              app:app
+
             Restart=always
             RestartSec=5
 
@@ -181,18 +205,57 @@ Resources:
             systemctl enable cloudmart-dashboard
             systemctl restart cloudmart-dashboard
 
-            sleep 5
-            systemctl is-active --quiet cloudmart-dashboard || {
-              echo "Dashboard service failed to start."
-              systemctl status cloudmart-dashboard --no-pager || true
-              journalctl -u cloudmart-dashboard -n 100 --no-pager || true
-              exit 1
-            }
-            ss -lntp | grep -q ':80 ' || {
-              echo "Dashboard service is active but port 80 is not listening."
-              ss -lntp || true
-              exit 1
-            }
+            echo "Waiting for Gunicorn to listen on TCP/80..."
+
+            for attempt in $(seq 1 30); do
+              if ss -lnt | grep -q ':80 '; then
+                echo "Dashboard is listening on TCP/80."
+                break
+              fi
+
+              if [ "$attempt" -eq 30 ]; then
+                echo "ERROR: Dashboard did not start listening on TCP/80."
+                systemctl status cloudmart-dashboard --no-pager || true
+                journalctl -u cloudmart-dashboard -n 150 --no-pager || true
+                exit 1
+              fi
+
+              sleep 2
+            done
+
+            echo "Testing local dashboard HTTP endpoint..."
+
+            for attempt in $(seq 1 15); do
+              HTTP_CODE="$(curl -sS -o /tmp/cloudmart-dashboard-response.txt \
+                -w '%{http_code}' \
+                --connect-timeout 3 \
+                --max-time 10 \
+                http://127.0.0.1/dashboard || true)"
+
+              echo "Local dashboard attempt ${attempt}/15: HTTP ${HTTP_CODE}"
+
+              case "$HTTP_CODE" in
+                200|301|302|303|307|308)
+                  echo "Dashboard HTTP endpoint is responding."
+                  break
+                  ;;
+              esac
+
+              if [ "$attempt" -eq 15 ]; then
+                echo "ERROR: Dashboard is listening, but /dashboard did not return a successful HTTP response."
+                echo "Response:"
+                cat /tmp/cloudmart-dashboard-response.txt || true
+                echo "Service status:"
+                systemctl status cloudmart-dashboard --no-pager || true
+                echo "Service logs:"
+                journalctl -u cloudmart-dashboard -n 150 --no-pager || true
+                exit 1
+              fi
+
+              sleep 2
+            done
+
+            echo "===== CloudMart dashboard bootstrap completed successfully ====="
           - REPORT_BUCKET:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
             SOURCE_PREFIX: !Ref DashboardSourcePrefix
@@ -400,11 +463,11 @@ Resources:
 Outputs:
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
-    Value: !Ref OperationsEC2InstanceV2
+    Value: !Ref OperationsEC2InstanceV3
 
   OperationsEC2PublicIp:
     Description: Operations dashboard EC2 public IP address.
-    Value: !GetAtt OperationsEC2InstanceV2.PublicIp
+    Value: !GetAtt OperationsEC2InstanceV3.PublicIp
 
   DashboardUrl:
     Description: Live CloudMart Operations Dashboard URL.
