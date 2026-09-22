@@ -3,83 +3,283 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>CloudMart | Dashboard</title>
+  <title>CloudMart | Operations</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
-<body>
-  <header class="topbar">
-    <div>
-      <h1>CloudMart Admin Dashboard</h1>
-      <p>Operations visibility</p>
-    </div>
-    <a class="logout" href="{{ url_for('logout') }}">Logout</a>
-  </header>
+<body class="app-shell">
 
-  <main class="container">
-    <section class="summary-grid">
-      <div class="card"><span>Products</span><strong>{{ products|length }}</strong></div>
-      <div class="card"><span>Recent Orders</span><strong>{{ orders|length }}</strong></div>
-      <div class="card"><span>Low Stock</span><strong>{{ low_stock_count }}</strong></div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-title">
-        <h2>Current Product Inventory</h2>
-      </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>ID</th><th>Product</th><th>Price</th><th>Stock</th><th>Threshold</th><th>Status</th></tr></thead>
-          <tbody>
-          {% for product in products %}
-            <tr class="{% if product.stock_quantity <= product.low_stock_threshold %}low-stock{% endif %}">
-              <td>{{ product.product_id }}</td>
-              <td>{{ product.name }}</td>
-              <td>₹{{ '%.2f'|format(product.price) }}</td>
-              <td>{{ product.stock_quantity }}</td>
-              <td>{{ product.low_stock_threshold }}</td>
-              <td>{{ product.status }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="6">No active products found.</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel">
-      <div class="panel-title"><h2>Recent Orders</h2></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Order ID</th><th>Customer</th><th>Status</th><th>Total</th><th>Created</th></tr></thead>
-          <tbody>
-          {% for order in orders %}
-            <tr>
-              <td>{{ order.order_id }}</td>
-              <td>{{ order.customer_name }}</td>
-              <td>{{ order.status }}</td>
-              <td>₹{{ '%.2f'|format(order.total_amount) }}</td>
-              <td>{{ order.created_at }}</td>
-            </tr>
-          {% else %}
-            <tr><td colspan="5">No orders found.</td></tr>
-          {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="panel report-panel">
+  <aside class="sidebar">
+    <div class="sidebar-brand">
+      <div class="logo">C</div>
       <div>
-        <h2>Latest Daily Report</h2>
-        {% if report %}
-          <p>{{ report.key }}</p>
-          <a class="button" href="{{ report.url }}">Download Latest CSV Report</a>
-        {% else %}
-          <p>No report has been generated yet.</p>
-        {% endif %}
+        <strong>CloudMart</strong>
+        <span>Admin Console</span>
       </div>
-    </section>
-  </main>
+    </div>
+
+    <nav class="sidebar-nav">
+      <a class="nav-item active" href="{{ url_for('dashboard') }}">
+        <span class="nav-icon">▦</span>
+        <span>Overview</span>
+      </a>
+      <a class="nav-item" href="#inventory">
+        <span class="nav-icon">▤</span>
+        <span>Inventory</span>
+      </a>
+      <a class="nav-item" href="#orders">
+        <span class="nav-icon">◷</span>
+        <span>Orders</span>
+      </a>
+      <a class="nav-item" href="#reports">
+        <span class="nav-icon">▥</span>
+        <span>Reports</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-bottom">
+      <div class="environment">
+        <span class="online-dot"></span>
+        <div>
+          <strong>System Online</strong>
+          <span>CloudMart Operations</span>
+        </div>
+      </div>
+      <a class="signout" href="{{ url_for('logout') }}">Sign out</a>
+    </div>
+  </aside>
+
+  <div class="main-area">
+    <header class="topbar">
+      <div>
+        <div class="breadcrumb">ADMIN / OVERVIEW</div>
+        <h1>Operations Dashboard</h1>
+      </div>
+      <div class="topbar-right">
+        <span class="live-status"><i></i> Live</span>
+        <div class="user-chip">
+          <span class="user-avatar">A</span>
+          <span>Administrator</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="content">
+      <section class="intro-row">
+        <div>
+          <h2>Good day, Administrator</h2>
+          <p>Monitor your CloudMart products, inventory and order activity.</p>
+        </div>
+      </section>
+
+      <section class="kpi-grid">
+        <article class="kpi-card">
+          <div class="kpi-label">ACTIVE PRODUCTS</div>
+          <div class="kpi-value">{{ metrics.total_products }}</div>
+          <div class="kpi-meta">Products currently available</div>
+        </article>
+
+        <article class="kpi-card">
+          <div class="kpi-label">TOTAL ORDERS</div>
+          <div class="kpi-value">{{ metrics.total_orders or 0 }}</div>
+          <div class="kpi-meta">Orders recorded in the system</div>
+        </article>
+
+        <article class="kpi-card">
+          <div class="kpi-label">TOTAL CUSTOMERS</div>
+          <div class="kpi-value">{{ metrics.total_customers or 0 }}</div>
+          <div class="kpi-meta">Customers with orders</div>
+        </article>
+
+        <article class="kpi-card alert-kpi">
+          <div class="kpi-label">LOW STOCK</div>
+          <div class="kpi-value">{{ low_stock_count }}</div>
+          <div class="kpi-meta">
+            {% if low_stock_count %}
+              <span class="text-warning">Attention required</span>
+            {% else %}
+              Inventory levels are healthy
+            {% endif %}
+          </div>
+        </article>
+      </section>
+
+      <section class="overview-grid">
+        <article class="surface">
+          <div class="surface-header">
+            <div>
+              <span class="section-label">FINANCIAL OVERVIEW</span>
+              <h3>Order Performance</h3>
+            </div>
+          </div>
+          <div class="financial-grid">
+            <div>
+              <span>Total Revenue</span>
+              <strong>₹{{ '%.2f'|format(metrics.total_revenue or 0) }}</strong>
+            </div>
+            <div>
+              <span>Orders</span>
+              <strong>{{ metrics.total_orders or 0 }}</strong>
+            </div>
+            <div>
+              <span>Customers</span>
+              <strong>{{ metrics.total_customers or 0 }}</strong>
+            </div>
+          </div>
+
+          <div class="status-breakdown">
+            <div class="mini-title">Order Status</div>
+            {% for item in order_statuses %}
+            <div class="status-line">
+              <span>
+                <i class="status-dot status-{{ item.status|lower|replace('_','-') }}"></i>
+                {{ item.status }}
+              </span>
+              <strong>{{ item.count }}</strong>
+            </div>
+            {% else %}
+            <div class="empty-inline">No order data available.</div>
+            {% endfor %}
+          </div>
+        </article>
+
+        <article class="surface">
+          <div class="surface-header">
+            <div>
+              <span class="section-label">INVENTORY MONITORING</span>
+              <h3>Stock Alerts</h3>
+            </div>
+            <span class="counter">{{ low_stock_count }}</span>
+          </div>
+
+          {% if low_stock_products %}
+          <div class="alert-list">
+            {% for product in low_stock_products %}
+            <div class="stock-alert">
+              <div class="alert-main">
+                <strong>{{ product.name }}</strong>
+                <span>{{ product.stock_quantity }} units remaining · threshold {{ product.low_stock_threshold }}</span>
+              </div>
+              <span class="pill pill-warning">LOW</span>
+            </div>
+            {% endfor %}
+          </div>
+          {% else %}
+          <div class="healthy-state">
+            <div class="checkmark">✓</div>
+            <div>
+              <strong>All inventory levels are healthy</strong>
+              <span>No active products are below their configured threshold.</span>
+            </div>
+          </div>
+          {% endif %}
+        </article>
+      </section>
+
+      <section class="surface table-surface" id="inventory">
+        <div class="surface-header">
+          <div>
+            <span class="section-label">INVENTORY</span>
+            <h3>Product Inventory</h3>
+          </div>
+          <span class="counter neutral">{{ products|length }} active</span>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>PRODUCT ID</th>
+                <th>PRODUCT</th>
+                <th>PRICE</th>
+                <th>STOCK</th>
+                <th>THRESHOLD</th>
+                <th>STATUS</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for product in products %}
+              <tr class="{% if product.stock_quantity <= product.low_stock_threshold %}row-warning{% endif %}">
+                <td class="muted-cell">#{{ product.product_id }}</td>
+                <td><strong>{{ product.name }}</strong></td>
+                <td>₹{{ '%.2f'|format(product.price) }}</td>
+                <td>
+                  {% if product.stock_quantity <= product.low_stock_threshold %}
+                    <strong class="stock-danger">{{ product.stock_quantity }}</strong>
+                  {% else %}
+                    <strong class="stock-good">{{ product.stock_quantity }}</strong>
+                  {% endif %}
+                </td>
+                <td>{{ product.low_stock_threshold }}</td>
+                <td><span class="pill pill-success">{{ product.status }}</span></td>
+              </tr>
+            {% else %}
+              <tr><td colspan="6" class="empty-table">No active products found.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="surface table-surface" id="orders">
+        <div class="surface-header">
+          <div>
+            <span class="section-label">ORDER MANAGEMENT</span>
+            <h3>Recent Orders</h3>
+          </div>
+          <span class="counter neutral">Latest {{ orders|length }}</span>
+        </div>
+
+        <div class="table-container">
+          <table>
+            <thead>
+              <tr>
+                <th>ORDER ID</th>
+                <th>CUSTOMER</th>
+                <th>STATUS</th>
+                <th>TOTAL</th>
+                <th>CREATED</th>
+              </tr>
+            </thead>
+            <tbody>
+            {% for order in orders %}
+              <tr>
+                <td class="muted-cell">#{{ order.order_id }}</td>
+                <td><strong>{{ order.customer_name }}</strong></td>
+                <td>
+                  <span class="pill pill-{{ order.status|lower|replace('_','-') }}">
+                    {{ order.status }}
+                  </span>
+                </td>
+                <td>₹{{ '%.2f'|format(order.total_amount) }}</td>
+                <td class="date-cell">{{ order.created_at }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="5" class="empty-table">No orders found.</td></tr>
+            {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="surface report-surface" id="reports">
+        <div>
+          <span class="section-label">REPORTING</span>
+          <h3>Daily Operations Report</h3>
+          {% if report %}
+            <p>{{ report.key }}</p>
+          {% else %}
+            <p>No report has been generated yet.</p>
+          {% endif %}
+        </div>
+        {% if report %}
+          <a class="primary-button" href="{{ report.url }}">Download CSV</a>
+        {% endif %}
+      </section>
+    </main>
+
+    <footer class="footer">
+      CloudMart Admin Console · Operations
+    </footer>
+  </div>
 </body>
 </html>
