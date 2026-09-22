@@ -98,13 +98,38 @@ def dashboard():
                 """
             )
             orders = cursor.fetchall()
+
+            cursor.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_orders,
+                    COALESCE(SUM(total_amount), 0) AS total_revenue,
+                    COUNT(DISTINCT customer_id) AS total_customers
+                FROM orders
+                """
+            )
+            metrics = cursor.fetchone() or {}
+
+            cursor.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM orders
+                GROUP BY status
+                ORDER BY count DESC, status
+                """
+            )
+            order_statuses = cursor.fetchall()
     finally:
         connection.close()
 
-    low_stock_count = sum(
-        1 for product in products
+    low_stock_products = [
+        product
+        for product in products
         if int(product["stock_quantity"]) <= int(product["low_stock_threshold"])
-    )
+    ]
+
+    metrics["total_products"] = len(products)
+    metrics["low_stock_count"] = len(low_stock_products)
 
     report = latest_report()
 
@@ -112,7 +137,10 @@ def dashboard():
         "dashboard.html",
         products=products,
         orders=orders,
-        low_stock_count=low_stock_count,
+        low_stock_count=len(low_stock_products),
+        low_stock_products=low_stock_products,
+        metrics=metrics,
+        order_statuses=order_statuses,
         report=report,
     )
 

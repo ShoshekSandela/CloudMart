@@ -3,33 +3,46 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>CloudMart | Admin Login</title>
+  <title>CloudMart | Admin Sign In</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body class="login-page">
-  <div class="login-shell">
+  <div class="login-card">
     <div class="login-brand">
-      <div class="brand-mark large">CM</div>
-      <h1>CloudMart</h1>
-      <p>Operations Management</p>
+      <div class="login-logo">C</div>
+      <div>
+        <strong>CloudMart</strong>
+        <span>Operations Console</span>
+      </div>
     </div>
 
-    <div class="login-card">
-      <p class="eyebrow">SECURE ACCESS</p>
-      <h2>Admin Dashboard</h2>
-      <p class="login-description">Sign in with your administrator token to continue.</p>
+    <div class="login-heading">
+      <span class="eyebrow">SECURE ADMINISTRATION</span>
+      <h1>Sign in to continue</h1>
+      <p>Use your administrator token to access the CloudMart operations dashboard.</p>
+    </div>
 
-      {% if error %}
-        <div class="error">{{ error }}</div>
-      {% endif %}
+    {% if error %}
+      <div class="login-error">{{ error }}</div>
+    {% endif %}
 
-      <form method="post">
-        <label for="token">Admin Token</label>
-        <input id="token" name="token" type="password" placeholder="Enter admin token" required autofocus>
-        <button type="submit" class="login-button">Sign In</button>
-      </form>
+    <form method="post">
+      <label for="token">Administrator token</label>
+      <input
+        id="token"
+        name="token"
+        type="password"
+        placeholder="Enter administrator token"
+        autocomplete="current-password"
+        required
+        autofocus
+      >
+      <button type="submit">Sign in</button>
+    </form>
 
-      <p class="security-note">Authorized CloudMart administrators only.</p>
+    <div class="login-footer">
+      <span class="secure-dot"></span>
+      Authorized CloudMart administrators only
     </div>
   </div>
 </body>
