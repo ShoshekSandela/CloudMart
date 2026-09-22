@@ -605,14 +605,7 @@ Resources:
                       [ "AWS/ApiGateway", "4XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
                     ]
                   }
-                },
-                {
-                  "type": "metric",
-                  "x": 12,
-                  "y": 18,
-                  "width": 12,
-                  "height": 6,
-                  "properties": }
+                }
               ]
             }
           - DB_INSTANCE_ID:
