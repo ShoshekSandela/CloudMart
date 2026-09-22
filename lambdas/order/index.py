@@ -4,10 +4,33 @@ import os
 import re
 from decimal import Decimal
 from datetime import date, datetime
-
 import boto3
 import pymysql
 
+cloudwatch = boto3.client(
+    "cloudwatch",
+    region_name=os.environ.get("AWS_REGION", "us-east-1")
+)
+def publish_operation_metric(metric_name, value=1):
+    try:
+        cloudwatch.put_metric_data(
+            Namespace="CloudMart/Operations",
+            MetricData=[
+                {
+                    "MetricName": metric_name,
+                    "Dimensions": [
+                        {
+                            "Name": "Environment",
+                            "Value": os.environ.get("ENVIRONMENT", "dev")
+                        }
+                    ],
+                    "Value": value,
+                    "Unit": "Count"
+                }
+            ]
+        )
+    except Exception as exc:
+        print(f"Failed to publish CloudWatch metric {metric_name}: {exc}")
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -552,6 +575,10 @@ def process_order_placed_event(connection, order_id):
 
     for change in inventory_events:
         publish_inventory_event_from_order(**change)
+
+    # Publish custom CloudWatch metric when an order fails.
+    if new_status == "FAILED":
+        publish_operation_metric("OrdersFailed")
 
     order = get_order_by_id(connection, order_id)
     if order:
@@ -1448,6 +1475,7 @@ def lambda_handler(event, context):
                 customer,
                 items,
             )
+            publish_operation_metric("OrdersPlaced")
 
             # Publish the PENDING lifecycle event first so the customer
             # receives the Order Placed notification before the final
