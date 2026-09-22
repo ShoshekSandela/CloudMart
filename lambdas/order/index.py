@@ -1,88 +1,19 @@
 import json
 import logging
 import os
+import re
 from decimal import Decimal
 from datetime import date, datetime
-
 import boto3
 import pymysql
-from botocore.config import Config
 
-
-# ============================================================
-# AWS CLIENT CONFIGURATION
-# ============================================================
-# Order Lambda runs inside the VPC. AWS API calls such as SSM,
-# EventBridge and CloudWatch must therefore be able to fail fast
-# instead of waiting for the default boto3 retry/connection timeout.
-#
-# This does NOT replace the required VPC endpoints. The endpoints
-# are still required for a private-subnet Lambda to reach these
-# AWS services without a NAT Gateway.
-# ============================================================
-
-AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
-
-AWS_CLIENT_CONFIG = Config(
-    connect_timeout=3,
-    read_timeout=5,
-    retries={
-        "max_attempts": 1,
-        "mode": "standard",
-    },
+cloudwatch = boto3.client(
+    "cloudwatch",
+    region_name=os.environ.get("AWS_REGION", "us-east-1")
 )
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
-
-_ssm_client = None
-_events_client = None
-_cloudwatch_client = None
-_parameter_cache = {}
-
-
-def get_ssm_client():
-    global _ssm_client
-
-    if _ssm_client is None:
-        _ssm_client = boto3.client(
-            "ssm",
-            region_name=AWS_REGION,
-            config=AWS_CLIENT_CONFIG,
-        )
-
-    return _ssm_client
-
-
-def get_events_client():
-    global _events_client
-
-    if _events_client is None:
-        _events_client = boto3.client(
-            "events",
-            region_name=AWS_REGION,
-            config=AWS_CLIENT_CONFIG,
-        )
-
-    return _events_client
-
-
-def get_cloudwatch_client():
-    global _cloudwatch_client
-
-    if _cloudwatch_client is None:
-        _cloudwatch_client = boto3.client(
-            "cloudwatch",
-            region_name=AWS_REGION,
-            config=AWS_CLIENT_CONFIG,
-        )
-
-    return _cloudwatch_client
-
-
 def publish_operation_metric(metric_name, value=1):
     try:
-        get_cloudwatch_client().put_metric_data(
+        cloudwatch.put_metric_data(
             Namespace="CloudMart/Operations",
             MetricData=[
                 {
@@ -90,24 +21,22 @@ def publish_operation_metric(metric_name, value=1):
                     "Dimensions": [
                         {
                             "Name": "Environment",
-                            "Value": os.environ.get("ENVIRONMENT", "dev"),
+                            "Value": os.environ.get("ENVIRONMENT", "dev")
                         }
                     ],
                     "Value": value,
-                    "Unit": "Count",
+                    "Unit": "Count"
                 }
-            ],
+            ]
         )
     except Exception as exc:
-        # Metrics must never block or fail the order operation.
-        logger.warning(
-            "Failed to publish CloudWatch metric %s: %s",
-            metric_name,
-            exc,
-        )
+        print(f"Failed to publish CloudWatch metric {metric_name}: {exc}")
 
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
-logger.info("CloudMart Order Lambda module initialized successfully")
+ssm = boto3.client("ssm")
+events = boto3.client("events")
 
 
 
@@ -205,132 +134,57 @@ def resolve_customer_identity(
 # ============================================================
 
 def get_parameter(name, decrypt=False):
-    """Get one SSM parameter with a small in-memory cache.
-
-    The cache survives warm Lambda invocations, reducing repeated
-    SSM network calls. A missing/failed parameter is allowed to
-    raise an exception so the caller receives a clear error.
-    """
-    cache_key = (name, bool(decrypt))
-
-    if cache_key in _parameter_cache:
-        return _parameter_cache[cache_key]
-
-    logger.info("Reading SSM parameter: %s", name)
-
-    result = get_ssm_client().get_parameter(
+    result = ssm.get_parameter(
         Name=name,
         WithDecryption=decrypt,
     )
-
-    value = result["Parameter"]["Value"]
-    _parameter_cache[cache_key] = value
-
-    return value
+    return result["Parameter"]["Value"]
 
 
 def get_db_connection():
-    """Create a MySQL connection using the five configured SSM parameters.
-
-    The five parameters are fetched in one GetParameters request instead
-    of five separate network calls. This is important because the Lambda
-    is in a private subnet and reaches SSM through the configured VPC
-    endpoint.
-    """
-    parameter_names = {
-        "host": os.environ["DB_HOST_PARAMETER_NAME"],
-        "port": os.environ["DB_PORT_PARAMETER_NAME"],
-        "database": os.environ["DB_NAME_PARAMETER_NAME"],
-        "username": os.environ["DB_USERNAME_PARAMETER_NAME"],
-        "password": os.environ["DB_PASSWORD_PARAMETER_NAME"],
-    }
-
-    missing_from_cache = [
-        name
-        for name in parameter_names.values()
-        if (name, name in {
-            parameter_names["username"],
-            parameter_names["password"],
-        }) not in _parameter_cache
+    parameter_names = [
+        os.environ["DB_HOST_PARAMETER_NAME"],
+        os.environ["DB_PORT_PARAMETER_NAME"],
+        os.environ["DB_NAME_PARAMETER_NAME"],
+        os.environ["DB_USERNAME_PARAMETER_NAME"],
+        os.environ["DB_PASSWORD_PARAMETER_NAME"],
     ]
 
-    if missing_from_cache:
-        logger.info(
-            "Loading %d database parameters from SSM",
-            len(missing_from_cache),
-        )
+    logger.info("Loading %d database parameters from SSM", len(parameter_names))
 
-        result = get_ssm_client().get_parameters(
-            Names=missing_from_cache,
-            WithDecryption=True,
-        )
+    result = ssm.get_parameters(
+        Names=parameter_names,
+        WithDecryption=True,
+    )
 
-        returned = {
-            item["Name"]: item["Value"]
-            for item in result.get("Parameters", [])
-        }
+    values = {item["Name"]: item["Value"] for item in result.get("Parameters", [])}
+    missing = [name for name in parameter_names if name not in values]
+    if missing:
+        raise RuntimeError(f"Missing database SSM parameters: {missing}")
 
-        invalid = result.get("InvalidParameters", [])
-
-        if invalid:
-            raise RuntimeError(
-                "SSM parameters were not found: "
-                + ", ".join(invalid)
-            )
-
-        for name, value in returned.items():
-            decrypt_flag = name in {
-                parameter_names["username"],
-                parameter_names["password"],
-            }
-            _parameter_cache[(name, decrypt_flag)] = value
-
-    try:
-        host = _parameter_cache[
-            (parameter_names["host"], False)
-        ]
-        port = int(
-            _parameter_cache[
-                (parameter_names["port"], False)
-            ]
-        )
-        database = _parameter_cache[
-            (parameter_names["database"], False)
-        ]
-        username = _parameter_cache[
-            (parameter_names["username"], True)
-        ]
-        password = _parameter_cache[
-            (parameter_names["password"], True)
-        ]
-    except KeyError as exc:
-        raise RuntimeError(
-            f"Required database parameter was not loaded from SSM: {exc}"
-        ) from exc
+    host = values[os.environ["DB_HOST_PARAMETER_NAME"]]
+    port = int(values[os.environ["DB_PORT_PARAMETER_NAME"]])
+    database = values[os.environ["DB_NAME_PARAMETER_NAME"]]
+    username = values[os.environ["DB_USERNAME_PARAMETER_NAME"]]
+    password = values[os.environ["DB_PASSWORD_PARAMETER_NAME"]]
 
     logger.info(
         "Connecting to RDS host=%s port=%s database=%s",
-        host,
-        port,
-        database,
+        host, port, database,
     )
 
-    connection = pymysql.connect(
+    return pymysql.connect(
         host=host,
         port=port,
         user=username,
         password=password,
         database=database,
         cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=5,
-        read_timeout=5,
-        write_timeout=5,
+        connect_timeout=10,
+        read_timeout=10,
+        write_timeout=10,
         autocommit=False,
     )
-
-    logger.info("RDS MySQL connection established successfully")
-
-    return connection
 
 
 # ============================================================
@@ -757,11 +611,7 @@ def publish_inventory_event_from_order(product_id, product_name, old_stock, new_
               "low_stock_threshold": int(threshold),
               "low_stock": int(new_stock) <= int(threshold)}
     try:
-        logger.info(
-            "Publishing Inventory Changed event for product_id=%s",
-            product_id,
-        )
-        result = get_events_client().put_events(Entries=[{
+        result = events.put_events(Entries=[{
             "Source": "cloudmart.product", "DetailType": "Inventory Changed",
             "EventBusName": os.environ["EVENT_BUS_NAME"], "Detail": json.dumps(detail)
         }])
@@ -813,11 +663,7 @@ def publish_order_placed_event(order):
     }
 
     try:
-        logger.info(
-            "Publishing OrderPlaced event for order_id=%s",
-            order["order_id"],
-        )
-        result = get_events_client().put_events(
+        result = events.put_events(
             Entries=[
                 {
                     "Source": "cloudmart.order",
@@ -892,12 +738,7 @@ def publish_order_event(detail_type, order, failure_reason=None):
     }
 
     try:
-        logger.info(
-            "Publishing %s event for order_id=%s",
-            detail_type,
-            order["order_id"],
-        )
-        result = get_events_client().put_events(
+        result = events.put_events(
             Entries=[
                 {
                     "Source": "cloudmart.order",
@@ -1430,12 +1271,6 @@ def authorize_order_access(connection, auth, order):
 
 
 def lambda_handler(event, context):
-    logger.info(
-        "Order Lambda handler started. request_id=%s event_source=%s",
-        getattr(context, "aws_request_id", "unknown"),
-        event.get("source") if isinstance(event, dict) else None,
-    )
-
     # ------------------------------------------------------------
     # EventBridge: process OrderPlaced asynchronously.
     # This path is intentionally separate from API Gateway requests.
@@ -1578,8 +1413,8 @@ def lambda_handler(event, context):
         # ----------------------------------------------------
         # POST /orders
         #
-        # Creates PENDING, publishes OrderPlaced, then immediately checks
-        # inventory and moves the order to CONFIRMED or FAILED.
+        # Creates PENDING and publishes OrderPlaced. Inventory is processed
+        # asynchronously by the EventBridge OrderPlaced rule.
         # PATCH /orders/{id}/status remains for ADMIN status changes.
         # ----------------------------------------------------
         if method == "POST":
@@ -1618,12 +1453,14 @@ def lambda_handler(event, context):
             logger.info("POST /orders: database connection ready")
 
             if auth["role"] == "CUSTOMER":
+                logger.info("POST /orders: resolving customer from authenticated token customer_id=%s", auth.get("customer_id"))
                 # CUSTOMER identity comes exclusively from the Authorization
                 # token. The request body cannot override it.
                 customer = resolve_customer_identity(
                     connection,
                     auth,
                 )
+                logger.info("POST /orders: authenticated customer resolved customer_id=%s", customer["customer_id"])
             else:
                 # ADMIN can create an order for an existing customer by ID.
                 # Email still comes from RDS, never from the request body.
@@ -1644,68 +1481,38 @@ def lambda_handler(event, context):
                         f"Customer {admin_customer_id} not found"
                     )
 
+            logger.info("POST /orders: creating PENDING order for customer_id=%s items=%s", customer["customer_id"], len(items))
             order = create_order(
                 connection,
                 customer,
                 items,
             )
+            logger.info("POST /orders: PENDING order created order_id=%s", order["order_id"])
             publish_operation_metric("OrdersPlaced")
 
             # Publish the PENDING lifecycle event first so the customer
             # receives the Order Placed notification before the final
             # CONFIRMED/FAILED notification.
-            logger.info(
-                "POST /orders: publishing OrderPlaced for order_id=%s",
-                order["order_id"],
-            )
+            logger.info("POST /orders: publishing OrderPlaced event order_id=%s", order["order_id"])
             if not publish_order_placed_event(order):
                 logger.error(
                     "Order %s created but OrderPlaced could not be published",
                     order["order_id"],
                 )
 
-            # Perform the inventory decision immediately. EventBridge still
-            # receives the OrderPlaced event and acts as a retry/safety path;
-            # because this function locks the order row, a duplicate
-            # EventBridge invocation will simply see the final status and skip.
+            # Do NOT process inventory synchronously here. API Gateway has a
+            # hard integration timeout of about 29 seconds. The OrderPlaced
+            # event above is handled asynchronously by the EventBridge rule,
+            # which invokes this Lambda and calls process_order_placed_event().
+            # Returning immediately prevents a successful order from becoming
+            # a 504 in Postman while the background processing continues.
             logger.info(
-                "POST /orders: starting inventory/status processing for order_id=%s",
-                order["order_id"],
-            )
-            processed, final_status, failure_reason = process_order_placed_event(
-                connection,
+                "POST /orders: returning PENDING response; EventBridge will "
+                "process inventory for order_id=%s",
                 order["order_id"],
             )
 
-            logger.info(
-                "POST /orders: inventory/status processing completed with status=%s",
-                final_status,
-            )
-            final_order = get_order_by_id(connection, order["order_id"])
-            if not final_order:
-                raise LookupError(
-                    f"Order {order['order_id']} was not found after processing"
-                )
-
-            if final_status == "FAILED":
-                return error_response(
-                    409,
-                    "INSUFFICIENT_STOCK",
-                    (
-                        failure_reason
-                        or "Order could not be confirmed because stock is unavailable"
-                    ),
-                )
-
-            if final_status == "CONFIRMED":
-                return response(201, final_order)
-
-            logger.warning(
-                "Order %s was not moved to a final status during synchronous processing: %s",
-                order["order_id"],
-                final_status,
-            )
-            return response(201, final_order)
+            return response(201, order)
 
         # ----------------------------------------------------
         # PATCH /orders
