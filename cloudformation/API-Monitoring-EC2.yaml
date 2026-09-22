@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, four alarms, and SNS notifications.
+  CloudWatch dashboard, eight alarms, and SNS notifications.
 
 Parameters:
   Environment:
@@ -278,7 +278,7 @@ Resources:
             BOOTSTRAP_VERSION: !Ref DashboardBootstrapVersion
 
   # ------------------------------------------------------------
-  # SNS topic used by all four operational alarms
+  # SNS topic used by all operational alarms
   # ------------------------------------------------------------
   MonitoringTopic:
     Type: AWS::SNS::Topic
@@ -384,6 +384,91 @@ Resources:
         - !Ref MonitoringTopic
 
   # ------------------------------------------------------------
+  # Additional application and API alarms
+  # ------------------------------------------------------------
+  OrderLambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-order-lambda-errors"
+      AlarmDescription: Order Lambda execution errors occurred in five minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub "${ProjectName}-${Environment}-order"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  ProductLambdaErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-product-lambda-errors"
+      AlarmDescription: Product Lambda execution errors occurred in five minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub "${ProjectName}-${Environment}-product"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  ReportGenerationFailureAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-report-generation-failure"
+      AlarmDescription: Daily report Lambda execution errors occurred in five minutes.
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Sub "${ProjectName}-${Environment}-daily-report"
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  API4XXAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${ProjectName}-${Environment}-api-4xx"
+      AlarmDescription: API Gateway returned one or more 4XX responses in five minutes.
+      Namespace: AWS/ApiGateway
+      MetricName: 4XXError
+      Dimensions:
+        - Name: ApiName
+          Value: !Sub "${ProjectName}-${Environment}-api"
+        - Name: Stage
+          Value: !Ref Environment
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref MonitoringTopic
+
+  # ------------------------------------------------------------
   # CloudWatch operations dashboard
   # ------------------------------------------------------------
   OperationsDashboard:
@@ -469,6 +554,74 @@ Resources:
                       [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-${Environment}-order" ]
                     ]
                   }
+                },
+                {
+                  "type": "metric",
+                  "x": 0,
+                  "y": 12,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "Product Lambda Errors",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-${Environment}-product" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 12,
+                  "y": 12,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "Report Generation Errors",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-${Environment}-daily-report" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 0,
+                  "y": 18,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "API Gateway 4XX Errors",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/ApiGateway", "4XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 12,
+                  "y": 18,
+                  "width": 12,
+                  "height": 6,
+                  "properties": {
+                    "title": "API Gateway 5XX Errors",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/ApiGateway", "5XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
+                    ]
+                  }
                 }
               ]
             }
@@ -498,7 +651,7 @@ Outputs:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
 
   MonitoringTopicArn:
-    Description: SNS topic used by the four monitoring alarms.
+    Description: SNS topic used by all monitoring alarms.
     Value: !Ref MonitoringTopic
 
   OperationsDashboardName:
