@@ -954,56 +954,21 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
-          # A previous monitoring deployment may still be rolling back.
-          # Wait for CloudFormation to finish before deciding whether the
-          # failed stack can be deleted and recreated.
-          if [ "$STACK_STATUS" = "ROLLBACK_IN_PROGRESS" ] || \
-             [ "$STACK_STATUS" = "UPDATE_ROLLBACK_IN_PROGRESS" ]; then
-            echo "Monitoring stack is currently $STACK_STATUS. Waiting for rollback to finish."
-
-            for i in {1..30}; do
-              sleep 20
-
-              STACK_STATUS=$(aws cloudformation describe-stacks \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION" \
-                --query 'Stacks[0].StackStatus' \
-                --output text 2>/dev/null || true)
-
-              echo "Monitoring stack status: $STACK_STATUS"
-
-              case "$STACK_STATUS" in
-                ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS)
-                  ;;
-                *)
-                  break
-                  ;;
-              esac
-            done
-          fi
-
+          # Do not automatically delete the monitoring stack.
+          # If CloudFormation reports a failed/rollback state, stop here so
+          # no DELETE_IN_PROGRESS operation is started by this workflow.
           case "$STACK_STATUS" in
             ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS|ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|DELETE_FAILED)
-              echo "Monitoring stack is in $STACK_STATUS. Removing the failed/incomplete stack."
-
-              aws cloudformation delete-stack \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION"
-
-              aws cloudformation wait stack-delete-complete \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION"
-
-              STACK_STATUS=""
+              echo "ERROR: Monitoring stack is in $STACK_STATUS."
+              echo "Recover the stack in CloudFormation before retrying deployment."
+              exit 1
+              ;;
+            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
+              echo "ERROR: Monitoring stack is currently $STACK_STATUS."
+              echo "Wait for CloudFormation to finish before retrying deployment."
+              exit 1
               ;;
           esac
-
-          if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-            STACK_STATUS=""
-          fi
 
           CFN_EXECUTION_ROLE_ARN=$(aws iam get-role \
             --role-name "cloudmart-${ENVIRONMENT}-cloudformation-execution-role" \
@@ -1082,15 +1047,6 @@ jobs:
 
           echo "Dashboard URL:"
           echo "$DASHBOARD_URL"
-
-          DASHBOARD_REFRESH_ASSOCIATION_ID=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DashboardRefreshAssociationId`].OutputValue'             --output text)
-
-          test -n "$DASHBOARD_REFRESH_ASSOCIATION_ID" &&             test "$DASHBOARD_REFRESH_ASSOCIATION_ID" != "None" || {
-              echo "ERROR: Dashboard refresh association was not returned by CloudFormation."
-              exit 1
-            }
-
-          echo "Dashboard refresh association: $DASHBOARD_REFRESH_ASSOCIATION_ID"
 
           {
             echo "## CloudMart Operations Dashboard"

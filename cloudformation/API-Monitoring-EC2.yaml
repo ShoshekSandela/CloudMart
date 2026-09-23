@@ -307,113 +307,6 @@ Resources:
 
 
   # ------------------------------------------------------------
-  # Automatically refresh the dashboard on the existing EC2 instance
-  # whenever DashboardSourcePrefix changes.
-  # ------------------------------------------------------------
-  DashboardRefreshAssociation:
-    Type: AWS::SSM::Association
-    DependsOn:
-      - OperationsEC2InstanceV4
-    Properties:
-      AssociationName: !Sub "${ProjectName}-${Environment}-dashboard-refresh"
-      Name: AWS-RunShellScript
-      ApplyOnlyAtCronInterval: false
-      WaitForSuccessTimeoutSeconds: 900
-      Targets:
-        - Key: InstanceIds
-          Values:
-            - !Ref OperationsEC2InstanceV4
-      Parameters:
-        commands:
-          - Fn::Sub:
-              - |
-                  #!/bin/bash
-                  set -Eeuo pipefail
-
-                  exec > >(tee -a /var/log/cloudmart-dashboard-refresh.log) 2>&1
-
-                  echo "===== CloudMart dashboard refresh started ====="
-                  echo "Source prefix: ${SOURCE_PREFIX}"
-                  echo "Bootstrap version: ${BOOTSTRAP_VERSION}"
-                  echo "AWS region: ${AWS_REGION}"
-
-                  export AWS_DEFAULT_REGION="${AWS_REGION}"
-                  export AWS_REGION="${AWS_REGION}"
-
-                  test -d /opt/cloudmart/dashboard
-                  test -f /opt/cloudmart/dashboard/requirements.txt
-
-                  echo "Syncing latest dashboard source from S3..."
-                  aws s3 sync "s3://${REPORT_BUCKET}/${SOURCE_PREFIX}" \
-                    /opt/cloudmart/dashboard --delete \
-                    --region "${AWS_REGION}"
-
-                  test -f /opt/cloudmart/dashboard/app.py
-                  test -f /opt/cloudmart/dashboard/requirements.txt
-
-                  if [ ! -x /opt/cloudmart/dashboard/venv/bin/python ]; then
-                    echo "Creating dashboard virtual environment..."
-                    python3 -m venv /opt/cloudmart/dashboard/venv
-                  fi
-
-                  grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
-                    /opt/cloudmart/dashboard/requirements.txt \
-                    > /opt/cloudmart/dashboard/requirements-runtime.txt
-
-                  echo "Installing/updating dashboard dependencies..."
-                  /opt/cloudmart/dashboard/venv/bin/python -m pip install \
-                    --no-cache-dir \
-                    --disable-pip-version-check \
-                    -r /opt/cloudmart/dashboard/requirements-runtime.txt
-
-                  /opt/cloudmart/dashboard/venv/bin/python -m pip install \
-                    --no-cache-dir \
-                    --disable-pip-version-check \
-                    "gunicorn==22.0.0"
-
-                  echo "Testing dashboard application import..."
-                  cd /opt/cloudmart/dashboard
-                  /opt/cloudmart/dashboard/venv/bin/python -c \
-                    "from app import app; print('CloudMart Flask application imported successfully')"
-
-                  echo "Refreshing CloudMart dashboard service..."
-                  systemctl daemon-reload
-                  systemctl enable cloudmart-dashboard
-                  systemctl restart cloudmart-dashboard
-
-                  echo "Waiting for dashboard HTTP endpoint..."
-                  for attempt in $(seq 1 30); do
-                    HTTP_CODE="$(curl -sS -o /tmp/cloudmart-dashboard-refresh-response.txt \
-                      -w '%{http_code}' \
-                      --connect-timeout 3 \
-                      --max-time 10 \
-                      http://127.0.0.1/dashboard || true)"
-
-                    echo "Dashboard refresh attempt $attempt/30: HTTP $HTTP_CODE"
-
-                    case "$HTTP_CODE" in
-                      200|301|302|303|307|308)
-                        echo "Dashboard refresh completed successfully."
-                        exit 0
-                        ;;
-                    esac
-
-                    sleep 2
-                  done
-
-                  echo "ERROR: Dashboard did not return a successful HTTP response after refresh."
-                  systemctl status cloudmart-dashboard --no-pager || true
-                  journalctl -u cloudmart-dashboard -n 150 --no-pager || true
-                  cat /tmp/cloudmart-dashboard-refresh-response.txt || true
-                  exit 1
-              - REPORT_BUCKET:
-                  Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
-                SOURCE_PREFIX: !Ref DashboardSourcePrefix
-                ENVIRONMENT: !Ref Environment
-                AWS_REGION: !Ref "AWS::Region"
-                BOOTSTRAP_VERSION: !Ref DashboardBootstrapVersion
-
-  # ------------------------------------------------------------
   # SNS topic used by all operational alarms
   # ------------------------------------------------------------
   MonitoringTopic:
@@ -751,10 +644,6 @@ Outputs:
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
     Value: !Ref OperationsEC2InstanceV4
-
-  DashboardRefreshAssociationId:
-    Description: SSM association that refreshes the dashboard source on the EC2 instance.
-    Value: !Ref DashboardRefreshAssociation
 
   OperationsEC2PublicIp:
     Description: Operations dashboard EC2 public IP address.
