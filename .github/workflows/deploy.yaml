@@ -1055,9 +1055,8 @@ jobs:
             echo ""
             echo "EC2 instance: $DASHBOARD_INSTANCE_ID"
             echo "Dashboard source: dashboard-source/${GITHUB_SHA}"
-            echo "Dashboard refresh association: $DASHBOARD_REFRESH_ASSOCIATION_ID"
             echo ""
-            echo "The dashboard source is refreshed automatically on the CloudMart EC2 instance."
+            echo "The dashboard source is deployed through the EC2 CloudFormation bootstrap."
             echo "No manual SSH, SSM port forwarding, or EC2 commands are required."
           } >> "$GITHUB_STEP_SUMMARY"
 
