@@ -10,7 +10,16 @@ import pymysql
 from flask import Flask, redirect, render_template, request, session, url_for
 
 app = Flask(__name__)
-app.secret_key = secrets.token_hex(32)
+
+# Flask sessions must use the same signing key for every Gunicorn worker.
+# The EC2 bootstrap creates a stable random key and exposes it through
+# FLASK_SECRET_KEY. Do not generate a new key at import time because each
+# Gunicorn worker is a separate process and would otherwise get a different
+# session key.
+FLASK_SECRET_KEY = os.environ.get("FLASK_SECRET_KEY")
+if not FLASK_SECRET_KEY:
+    raise RuntimeError("FLASK_SECRET_KEY environment variable is required")
+app.secret_key = FLASK_SECRET_KEY
 
 AWS_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
 _boto3_kwargs = {"region_name": AWS_REGION} if AWS_REGION else {}
@@ -397,6 +406,7 @@ def dashboard():
 
 
 @app.get("/dashboard/products")
+@login_required
 def products_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -411,6 +421,7 @@ def products_page():
 
 
 @app.get("/dashboard/customers")
+@login_required
 def customers_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -425,6 +436,7 @@ def customers_page():
 
 
 @app.get("/dashboard/inventory")
+@login_required
 def inventory_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -439,6 +451,7 @@ def inventory_page():
 
 
 @app.get("/dashboard/orders")
+@login_required
 def orders_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -456,6 +469,7 @@ def orders_page():
 
 
 @app.get("/dashboard/reports")
+@login_required
 def reports_page():
     requested = query_value("date")
     selected_date = None

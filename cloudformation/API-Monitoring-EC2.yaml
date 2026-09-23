@@ -137,6 +137,18 @@ Resources:
 
             mkdir -p /opt/cloudmart/dashboard
 
+            # Create one stable random Flask session key for this EC2 instance.
+            # It is stored outside the dashboard source so S3 syncs and Gunicorn
+            # worker processes cannot replace it. All Gunicorn workers read the
+            # same key through the systemd EnvironmentFile.
+            install -d -m 700 /etc/cloudmart
+            if [ ! -s /etc/cloudmart/dashboard.env ]; then
+              umask 077
+              printf 'FLASK_SECRET_KEY=%s\n' "$(openssl rand -hex 32)" > /etc/cloudmart/dashboard.env
+              chmod 600 /etc/cloudmart/dashboard.env
+            fi
+            test -s /etc/cloudmart/dashboard.env
+
             echo "Downloading dashboard source from S3..."
             aws s3 sync "s3://${REPORT_BUCKET}/${SOURCE_PREFIX}" \
               /opt/cloudmart/dashboard --delete
@@ -214,6 +226,7 @@ Resources:
             User=root
             Group=root
             WorkingDirectory=/opt/cloudmart/dashboard
+            EnvironmentFile=/etc/cloudmart/dashboard.env
             Environment="PYTHONUNBUFFERED=1"
             Environment="PYTHONPATH=/opt/cloudmart/dashboard"
             Environment="AWS_DEFAULT_REGION=${AWS_REGION}"
