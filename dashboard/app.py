@@ -397,7 +397,6 @@ def dashboard():
 
 
 @app.get("/dashboard/products")
-@login_required
 def products_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -412,7 +411,6 @@ def products_page():
 
 
 @app.get("/dashboard/customers")
-@login_required
 def customers_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -427,7 +425,6 @@ def customers_page():
 
 
 @app.get("/dashboard/inventory")
-@login_required
 def inventory_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -442,7 +439,6 @@ def inventory_page():
 
 
 @app.get("/dashboard/orders")
-@login_required
 def orders_page():
     page = safe_page(request.args.get("page"))
     search = query_value("q")
@@ -460,7 +456,6 @@ def orders_page():
 
 
 @app.get("/dashboard/reports")
-@login_required
 def reports_page():
     requested = query_value("date")
     selected_date = None
