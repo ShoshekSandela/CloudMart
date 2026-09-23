@@ -28,8 +28,9 @@ Parameters:
     Type: String
     Default: dashboard-source
 
-  # Changes on every monitoring deployment so the EC2 UserData is refreshed
-  # and the dashboard instance is recreated from the current bootstrap code.
+  # Changes on every monitoring deployment so the EC2 bootstrap definition
+  # stays aligned with the deployed dashboard configuration. Existing EC2
+  # instances are refreshed by the GitHub Actions SSM deployment step.
   DashboardBootstrapVersion:
     Type: String
     Default: "1"
@@ -95,8 +96,9 @@ Resources:
   # ------------------------------------------------------------
   OperationsEC2InstanceV4:
     Type: AWS::EC2::Instance
-    # DashboardBootstrapVersion is injected into UserData so each monitoring
-    # deployment can intentionally refresh the EC2 dashboard bootstrap.
+    # DashboardBootstrapVersion is injected into UserData so newly created
+    # or replacement EC2 instances use the current dashboard bootstrap.
+    # Existing instances are refreshed by the deployment workflow through SSM.
     Properties:
       InstanceType: !Ref EC2InstanceType
       ImageId: "{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64}}"

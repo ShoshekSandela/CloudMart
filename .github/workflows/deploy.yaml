@@ -957,6 +957,207 @@ jobs:
 
           echo "Operations dashboard EC2 instance: $DASHBOARD_INSTANCE_ID"
 
+          echo "Waiting for the Operations EC2 instance to become available in SSM..."
+          for attempt in $(seq 1 30); do
+            SSM_STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${DASHBOARD_INSTANCE_ID}" \
+              --region "$AWS_REGION" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || true)
+
+            echo "SSM status attempt ${attempt}/30: ${SSM_STATUS:-NOT_FOUND}"
+
+            if [ "$SSM_STATUS" = "Online" ]; then
+              break
+            fi
+
+            if [ "$attempt" -eq 30 ]; then
+              echo "ERROR: Operations EC2 instance did not become Online in SSM."
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          REPORT_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "cloudmart-data-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`ReportBucketName`].OutputValue' \
+            --output text)
+
+          test -n "$REPORT_BUCKET" && test "$REPORT_BUCKET" != "None" || {
+            echo "ERROR: Report bucket was not found for the dashboard refresh."
+            exit 1
+          }
+
+          echo "Refreshing the dashboard source and service on the existing EC2 instance..."
+          REMOTE_COMMANDS=$(cat <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          
+          REPORT_BUCKET='__REPORT_BUCKET__'
+          SOURCE_PREFIX='dashboard-source/__GITHUB_SHA__'
+          ENVIRONMENT='__ENVIRONMENT__'
+          AWS_REGION_VALUE='__AWS_REGION__'
+          
+          export AWS_DEFAULT_REGION="$AWS_REGION_VALUE"
+          export AWS_REGION="$AWS_REGION_VALUE"
+          
+          install -d -m 700 /etc/cloudmart
+          if [ ! -s /etc/cloudmart/dashboard.env ]; then
+          umask 077
+          printf 'FLASK_SECRET_KEY=%s\n' "$(openssl rand -hex 32)" > /etc/cloudmart/dashboard.env
+          chmod 600 /etc/cloudmart/dashboard.env
+          fi
+          
+          # Keep the existing session secret stable across dashboard deployments.
+          test -s /etc/cloudmart/dashboard.env
+          
+          mkdir -p /opt/cloudmart/dashboard
+          aws s3 sync "s3://$REPORT_BUCKET/$SOURCE_PREFIX" /opt/cloudmart/dashboard --delete
+          
+          test -f /opt/cloudmart/dashboard/app.py
+          test -f /opt/cloudmart/dashboard/requirements.txt
+          
+          rm -rf /opt/cloudmart/dashboard/venv
+          python3 -m venv /opt/cloudmart/dashboard/venv
+          
+          grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
+          /opt/cloudmart/dashboard/requirements.txt \
+          > /opt/cloudmart/dashboard/requirements-runtime.txt
+          
+          /opt/cloudmart/dashboard/venv/bin/python -m pip install \
+          --no-cache-dir \
+          --disable-pip-version-check \
+          -r /opt/cloudmart/dashboard/requirements-runtime.txt
+          
+          /opt/cloudmart/dashboard/venv/bin/python -m pip install \
+          --no-cache-dir \
+          --disable-pip-version-check \
+          "gunicorn==22.0.0"
+          
+          # Verify the new application can import with the stable session key.
+          set -a
+          . /etc/cloudmart/dashboard.env
+          set +a
+          cd /opt/cloudmart/dashboard
+          /opt/cloudmart/dashboard/venv/bin/python -c \
+          "from app import app; print('CloudMart Flask application imported successfully')"
+          
+          cat > /etc/systemd/system/cloudmart-dashboard.service <<SERVICE
+          [Unit]
+          Description=CloudMart Operations Dashboard
+          After=network-online.target
+          Wants=network-online.target
+          
+          [Service]
+          Type=simple
+          User=root
+          Group=root
+          WorkingDirectory=/opt/cloudmart/dashboard
+          EnvironmentFile=/etc/cloudmart/dashboard.env
+          Environment=PYTHONUNBUFFERED=1
+          Environment=PYTHONPATH=/opt/cloudmart/dashboard
+          Environment=AWS_DEFAULT_REGION=$AWS_REGION_VALUE
+          Environment=AWS_REGION=$AWS_REGION_VALUE
+          Environment=DB_HOST_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/host
+          Environment=DB_PORT_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/port
+          Environment=DB_NAME_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/name
+          Environment=DB_USERNAME_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/username
+          Environment=DB_PASSWORD_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/password
+          Environment=AUTH_TOKEN_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/auth/token
+          Environment=REPORT_BUCKET_NAME=$REPORT_BUCKET
+          Environment=REPORT_PREFIX=reports
+          Environment=PORT=80
+          
+          ExecStart=/opt/cloudmart/dashboard/venv/bin/gunicorn \\
+          --bind 0.0.0.0:80 \\
+          --workers 2 \\
+          --timeout 120 \\
+          --access-logfile - \\
+          --error-logfile - \\
+          app:app
+          
+          Restart=always
+          RestartSec=5
+          
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+          
+          systemctl daemon-reload
+          systemctl enable cloudmart-dashboard
+          systemctl restart cloudmart-dashboard
+          
+          for attempt in $(seq 1 30); do
+          if ss -lnt | grep -q ':80 '; then
+          break
+          fi
+          if [ "$attempt" -eq 30 ]; then
+          systemctl status cloudmart-dashboard --no-pager || true
+          journalctl -u cloudmart-dashboard -n 100 --no-pager || true
+          exit 1
+          fi
+          sleep 2
+          done
+          
+          # /dashboard redirects to /login when unauthenticated; any normal 2xx/3xx response proves the service is responding.
+          HTTP_CODE="$(curl -sS -o /tmp/cloudmart-dashboard-response.txt -w '%{http_code}' --connect-timeout 3 --max-time 10 http://127.0.0.1/dashboard || true)"
+          case "$HTTP_CODE" in
+          200|301|302|303|307|308) echo "Dashboard HTTP health check passed: $HTTP_CODE" ;;
+          *)
+          echo "ERROR: Dashboard HTTP health check failed: $HTTP_CODE"
+          cat /tmp/cloudmart-dashboard-response.txt || true
+          journalctl -u cloudmart-dashboard -n 100 --no-pager || true
+          exit 1
+          ;;
+          esac
+          
+          echo "CloudMart dashboard refresh completed successfully."
+          REMOTE_SCRIPT
+          )
+          
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__REPORT_BUCKET__/$REPORT_BUCKET}"
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__GITHUB_SHA__/$GITHUB_SHA}"
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__ENVIRONMENT__/$ENVIRONMENT}"
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__AWS_REGION__/$AWS_REGION}"
+          
+          SSM_COMMAND_ID=$(aws ssm send-command \
+          --document-name "AWS-RunShellScript" \
+          --instance-ids "$DASHBOARD_INSTANCE_ID" \
+          --comment "CloudMart dashboard deployment ${GITHUB_SHA}" \
+          --parameters "commands=$REMOTE_COMMANDS" \
+          --region "$AWS_REGION" \
+          --query 'Command.CommandId' \
+          --output text)
+          
+          test -n "$SSM_COMMAND_ID" && test "$SSM_COMMAND_ID" != "None" || {
+          echo "ERROR: SSM dashboard refresh command was not created."
+          exit 1
+          }
+          
+          echo "SSM dashboard refresh command: $SSM_COMMAND_ID"
+          
+          if ! aws ssm wait command-executed \
+          --command-id "$SSM_COMMAND_ID" \
+          --instance-id "$DASHBOARD_INSTANCE_ID" \
+          --region "$AWS_REGION"; then
+          echo "ERROR: Dashboard refresh command failed."
+          aws ssm get-command-invocation \
+          --command-id "$SSM_COMMAND_ID" \
+          --instance-id "$DASHBOARD_INSTANCE_ID" \
+          --region "$AWS_REGION" \
+          --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
+          --output json || true
+          exit 1
+          fi
+          
+          aws ssm get-command-invocation \
+          --command-id "$SSM_COMMAND_ID" \
+          --instance-id "$DASHBOARD_INSTANCE_ID" \
+          --region "$AWS_REGION" \
+          --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Error:StandardErrorContent}' \
+          --output json
+          
           # CloudFormation has already confirmed the EC2 resource was created.
           # Do not call ec2:DescribeInstanceStatus here because the GitHub
           # Actions role does not require that read permission just to publish
@@ -982,9 +1183,9 @@ jobs:
             echo "EC2 instance: $DASHBOARD_INSTANCE_ID"
             echo "Dashboard source: dashboard-source/${GITHUB_SHA}"
             echo ""
-            echo "The dashboard source is deployed through the EC2 CloudFormation bootstrap."
-            echo "No manual SSH, SSM port forwarding, or EC2 commands are required."
+            echo "The dashboard source was uploaded to S3 and refreshed on the running EC2 instance through SSM."
+            echo "The Flask session secret is preserved on the EC2 instance and shared by both Gunicorn workers."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "Dashboard deployment and automatic source refresh were configured successfully."
+          echo "Dashboard deployment and automatic source refresh completed successfully."
 
