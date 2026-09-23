@@ -808,7 +808,7 @@ jobs:
   deploy-monitoring:
     name: Deploy API Monitoring and EC2 Dashboard
     runs-on: ubuntu-latest
-    needs: deploy-application
+    needs: initialize
     steps:
       - uses: actions/checkout@v5
       - uses: aws-actions/setup-sam@v2
