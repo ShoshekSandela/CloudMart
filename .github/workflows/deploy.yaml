@@ -1083,17 +1083,27 @@ jobs:
           echo "Dashboard URL:"
           echo "$DASHBOARD_URL"
 
+          DASHBOARD_REFRESH_ASSOCIATION_ID=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DashboardRefreshAssociationId`].OutputValue'             --output text)
+
+          test -n "$DASHBOARD_REFRESH_ASSOCIATION_ID" &&             test "$DASHBOARD_REFRESH_ASSOCIATION_ID" != "None" || {
+              echo "ERROR: Dashboard refresh association was not returned by CloudFormation."
+              exit 1
+            }
+
+          echo "Dashboard refresh association: $DASHBOARD_REFRESH_ASSOCIATION_ID"
+
           {
             echo "## CloudMart Operations Dashboard"
             echo ""
             echo "Dashboard URL: $DASHBOARD_URL"
             echo ""
-            echo "The dashboard is deployed on the CloudMart EC2 instance inside the VPC."
-            echo "It connects to the private RDS database through the EC2-to-RDS security-group path."
+            echo "EC2 instance: $DASHBOARD_INSTANCE_ID"
+            echo "Dashboard source: dashboard-source/${GITHUB_SHA}"
+            echo "Dashboard refresh association: $DASHBOARD_REFRESH_ASSOCIATION_ID"
+            echo ""
+            echo "The dashboard source is refreshed automatically on the CloudMart EC2 instance."
+            echo "No manual SSH, SSM port forwarding, or EC2 commands are required."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # Dashboard HTTP health checks are intentionally not performed here.
-          # CloudFormation creates the EC2 instance and the URL is published
-          # without making GitHub Actions fail on dashboard startup timing.
-          echo "Dashboard URL published successfully: $DASHBOARD_URL"
+          echo "Dashboard deployment and automatic source refresh were configured successfully."
 
