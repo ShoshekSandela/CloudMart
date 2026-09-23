@@ -76,46 +76,36 @@ jobs:
                 --parameter-overrides Environment="$ENVIRONMENT" \
                 --capabilities CAPABILITY_NAMED_IAM \
                 --no-fail-on-empty-changeset
-
-              echo "Network stack update completed."
               ;;
-            UPDATE_ROLLBACK_COMPLETE)
-              echo "Network stack is UPDATE_ROLLBACK_COMPLETE."
-              echo "Recovering the stack with the current network template."
 
-              aws cloudformation deploy \
-                --template-file cloudformation/network-stack.yaml \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION" \
-                --parameter-overrides Environment="$ENVIRONMENT" \
-                --capabilities CAPABILITY_NAMED_IAM \
-                --no-fail-on-empty-changeset
+            ROLLBACK_*|UPDATE_ROLLBACK_*)
+              echo "============================================================"
+              echo "ERROR: Network stack is in rollback state: $STATUS"
+              echo "Stack: $STACK_NAME"
+              echo "No automatic recovery or deletion will be performed."
+              echo "Please manually inspect and recover/delete the stack."
+              echo "After resolving the stack, run the workflow again."
+              echo "============================================================"
+              exit 1
               ;;
-            CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
+
+            CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|DELETE_IN_PROGRESS)
               echo "ERROR: Network stack is busy: $STATUS"
+              echo "Wait for the current CloudFormation operation to finish."
               exit 1
               ;;
-            CREATE_FAILED|UPDATE_ROLLBACK_FAILED|DELETE_FAILED)
+
+            CREATE_FAILED|DELETE_FAILED)
               echo "ERROR: Network stack is in failed state: $STATUS"
+              echo "Please manually inspect the stack before retrying."
               exit 1
               ;;
-            DELETE_COMPLETE)
-              echo "Network stack is deleted. Recreating it."
-              aws cloudformation deploy \
-                --template-file cloudformation/network-stack.yaml \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION" \
-                --parameter-overrides Environment="$ENVIRONMENT" \
-                --capabilities CAPABILITY_NAMED_IAM \
-                --no-fail-on-empty-changeset
-              ;;
+
             *)
               echo "ERROR: Unexpected Network stack state: $STATUS"
               exit 1
               ;;
           esac
-
-          echo "Network stack deployment completed."
 
   deploy-iam:
     name: Deploy IAM Stack
@@ -132,37 +122,7 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Recover failed IAM stack
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
-
-          STACK_STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text 2>/dev/null || true)
-
-          echo "IAM stack status: ${STACK_STATUS:-NOT_FOUND}"
-
-          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ] || \
-             [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "Removing failed/incomplete IAM stack: $STACK_NAME"
-
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "IAM stack removed."
-            STACK_STATUS=""
-          fi
-
+    
       - name: Deploy IAM stack
         shell: bash
         run: |
@@ -177,6 +137,17 @@ jobs:
             --output text 2>/dev/null || true)
 
           echo "IAM stack status: ${STACK_STATUS:-NOT_FOUND}"
+
+          if [[ "$STACK_STATUS" == ROLLBACK_* || "$STACK_STATUS" == UPDATE_ROLLBACK_* ]]; then
+            echo "============================================================"
+            echo "ERROR: IAM stack is in rollback state: $STACK_STATUS"
+            echo "Stack: $STACK_NAME"
+            echo "No automatic deletion or recovery will be performed."
+            echo "Please manually inspect and recover/delete the stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
+            exit 1
+          fi
 
           # The GitHub Actions role is pre-existing and is only updated by
           # this stack. EC2 lifecycle permissions are defined without a
@@ -246,69 +217,6 @@ jobs:
               --capabilities CAPABILITY_NAMED_IAM \
               --no-fail-on-empty-changeset
 
-          elif [ "$STACK_STATUS" = "UPDATE_ROLLBACK_FAILED" ]; then
-
-            echo "IAM stack is UPDATE_ROLLBACK_FAILED. Continuing the rollback before retrying the update."
-
-            aws cloudformation continue-update-rollback \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-update-rollback-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "IAM stack rollback completed. Retrying the IAM update."
-
-            aws cloudformation deploy \
-              --template-file cloudformation/iam-stack.yaml \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION" \
-              --parameter-overrides "${IAM_DEPLOY_PARAMETERS[@]}" \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --no-fail-on-empty-changeset
-
-          elif [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ] || \
-               [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-
-            echo "IAM stack is $STACK_STATUS. Removing the unfinished stack."
-
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Recreating IAM stack with resource adoption."
-
-            CHANGE_SET_NAME="cloudmart-iam-${ENVIRONMENT}-$(date +%s)"
-
-            aws cloudformation create-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$CHANGE_SET_NAME" \
-              --change-set-type CREATE \
-              --template-body file://cloudformation/iam-stack.yaml \
-              --parameters "${IAM_CREATE_PARAMETERS[@]}" \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --import-existing-resources \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait change-set-create-complete \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$CHANGE_SET_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation execute-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$CHANGE_SET_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-create-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
           else
             echo "ERROR: IAM stack is in unsupported/busy state: $STACK_STATUS"
             exit 1
@@ -361,17 +269,23 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
+          if [[ "$STACK_STATUS" == ROLLBACK_* || "$STACK_STATUS" == UPDATE_ROLLBACK_* ]]; then
+            echo "============================================================"
+            echo "ERROR: Data stack is in rollback state: $STACK_STATUS"
+            echo "Stack: $STACK_NAME"
+            echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+            echo "This stack contains CloudMart data resources."
+            echo "Please manually inspect and recover/delete the stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
+            exit 1
+          fi
+
           if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "Removing unfinished Data stack: $STACK_NAME"
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Unfinished Data stack removed."
+            echo "WARNING: Data stack is REVIEW_IN_PROGRESS."
+            echo "No automatic deletion will be performed."
+            echo "Please manually inspect/delete the unfinished stack."
+            exit 1
           fi
 
           # Authentication token lifecycle is owned exclusively by Token Manager.
@@ -570,23 +484,29 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
-          # A previous failed CREATE can leave the stack in REVIEW_IN_PROGRESS.
-          # Remove that unfinished stack before starting SNS recovery.
-          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "Application stack is REVIEW_IN_PROGRESS: $STACK_NAME"
-            echo "Deleting the unfinished stack..."
 
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Unfinished Application stack removed."
-            STACK_STATUS=""
+          if [[ "$STACK_STATUS" == ROLLBACK_* || "$STACK_STATUS" == UPDATE_ROLLBACK_* ]]; then
+            echo "============================================================"
+            echo "ERROR: Application stack is in rollback state: $STACK_STATUS"
+            echo "Stack: $STACK_NAME"
+            echo "No automatic recovery or deletion will be performed."
+            echo "Please manually inspect and recover/delete the stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
+            exit 1
           fi
+
+          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "============================================================"
+            echo "ERROR: Application stack is in REVIEW_IN_PROGRESS."
+            echo "Stack: $STACK_NAME"
+            echo "No automatic deletion will be performed."
+            echo "Please manually inspect/delete the unfinished stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
+            exit 1
+          fi
+
 
           if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
             echo "Application stack is currently being deleted: $STACK_NAME"
@@ -597,26 +517,6 @@ jobs:
               --region "$AWS_REGION"
 
             echo "Application stack deletion completed."
-            STACK_STATUS=""
-          fi
-
-          # A ROLLBACK_COMPLETE stack cannot be updated.
-          # Delete only the failed application stack so it can be recreated.
-          # SNS topics/subscriptions use Retain, so they are preserved and
-          # automatically re-adopted below before the full SAM deployment.
-          if [ "$STACK_STATUS" = "ROLLBACK_COMPLETE" ]; then
-            echo "Application stack is ROLLBACK_COMPLETE: $STACK_NAME"
-            echo "Deleting the failed stack..."
-
-            aws cloudformation delete-stack \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            aws cloudformation wait stack-delete-complete \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION"
-
-            echo "Failed Application stack removed."
             STACK_STATUS=""
           fi
 
@@ -958,14 +858,40 @@ jobs:
           # If CloudFormation reports a failed/rollback state, stop here so
           # no DELETE_IN_PROGRESS operation is started by this workflow.
           case "$STACK_STATUS" in
-            ROLLBACK_COMPLETE|REVIEW_IN_PROGRESS|ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED|DELETE_FAILED)
-              echo "ERROR: Monitoring stack is in $STACK_STATUS."
-              echo "Recover the stack in CloudFormation before retrying deployment."
+            ROLLBACK_*|UPDATE_ROLLBACK_*)
+              echo "============================================================"
+              echo "ERROR: Monitoring stack is in rollback state: $STACK_STATUS"
+              echo "Stack: $STACK_NAME"
+              echo "No automatic recovery or deletion will be performed."
+              echo "Please manually inspect and recover/delete the stack."
+              echo "After resolving the stack, run the workflow again."
+              echo "============================================================"
               exit 1
               ;;
+
+            REVIEW_IN_PROGRESS)
+              echo "============================================================"
+              echo "ERROR: Monitoring stack is in REVIEW_IN_PROGRESS."
+              echo "Stack: $STACK_NAME"
+              echo "No automatic deletion will be performed."
+              echo "Please manually inspect/delete the unfinished stack."
+              echo "After resolving the stack, run the workflow again."
+              echo "============================================================"
+              exit 1
+              ;;
+
+            DELETE_FAILED)
+              echo "============================================================"
+              echo "ERROR: Monitoring stack is in DELETE_FAILED."
+              echo "Stack: $STACK_NAME"
+              echo "Manual CloudFormation recovery is required."
+              echo "============================================================"
+              exit 1
+              ;;
+
             ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
               echo "ERROR: Monitoring stack is currently $STACK_STATUS."
-              echo "Wait for CloudFormation to finish before retrying deployment."
+              echo "Wait for CloudFormation to finish before retrying."
               exit 1
               ;;
           esac
