@@ -1121,14 +1121,42 @@ jobs:
           REMOTE_COMMANDS="${REMOTE_COMMANDS//__ENVIRONMENT__/$ENVIRONMENT}"
           REMOTE_COMMANDS="${REMOTE_COMMANDS//__AWS_REGION__/$AWS_REGION}"
           
+          # Build the SSM request as JSON instead of passing the multiline
+          # shell script directly through --parameters. This prevents AWS CLI
+          # from parsing quotes, commas, and newlines inside the script as
+          # separate SSM parameters.
+          export REMOTE_COMMANDS
+          export DASHBOARD_INSTANCE_ID
+          export GITHUB_SHA
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          script = os.environ["REMOTE_COMMANDS"]
+          payload = {
+              "DocumentName": "AWS-RunShellScript",
+              "InstanceIds": [os.environ["DASHBOARD_INSTANCE_ID"]],
+              "Comment": f"CloudMart dashboard deployment {os.environ['GITHUB_SHA']}",
+              "Parameters": {
+                  "commands": script.splitlines()
+              }
+          }
+
+          Path("/tmp/cloudmart-ssm-command.json").write_text(
+              json.dumps(payload),
+              encoding="utf-8"
+          )
+          PY
+
           SSM_COMMAND_ID=$(aws ssm send-command \
-          --document-name "AWS-RunShellScript" \
-          --instance-ids "$DASHBOARD_INSTANCE_ID" \
-          --comment "CloudMart dashboard deployment ${GITHUB_SHA}" \
-          --parameters "commands=$REMOTE_COMMANDS" \
-          --region "$AWS_REGION" \
-          --query 'Command.CommandId' \
-          --output text)
+            --cli-input-json file:///tmp/cloudmart-ssm-command.json \
+            --region "$AWS_REGION" \
+            --query 'Command.CommandId' \
+            --output text)
+
+          rm -f /tmp/cloudmart-ssm-command.json
           
           test -n "$SSM_COMMAND_ID" && test "$SSM_COMMAND_ID" != "None" || {
           echo "ERROR: SSM dashboard refresh command was not created."
