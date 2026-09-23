@@ -1013,12 +1013,17 @@ jobs:
           test -s /etc/cloudmart/dashboard.env
           
           mkdir -p /opt/cloudmart/dashboard
+
+          # The virtual environment is local to EC2 and must never be managed by
+          # the dashboard source sync. Remove it BEFORE --delete so AWS CLI does
+          # not inspect stale/broken venv symlinks such as venv/bin/python3.9.
+          rm -rf /opt/cloudmart/dashboard/venv
+
           aws s3 sync "s3://$REPORT_BUCKET/$SOURCE_PREFIX" /opt/cloudmart/dashboard --delete --exclude "venv/*" --exclude "venv"
-          
+
           test -f /opt/cloudmart/dashboard/app.py
           test -f /opt/cloudmart/dashboard/requirements.txt
-          
-          rm -rf /opt/cloudmart/dashboard/venv
+
           python3 -m venv /opt/cloudmart/dashboard/venv
           
           if ! grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
