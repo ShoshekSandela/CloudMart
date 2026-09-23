@@ -830,7 +830,7 @@ jobs:
 
           test -n "$REPORT_BUCKET" || { echo "Report bucket was not found."; exit 1; }
 
-          aws s3 sync dashboard "s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}" --delete
+          aws s3 sync dashboard "s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}" --delete --exclude "venv/*" --exclude "venv"
           echo "Dashboard source uploaded to s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}"
 
       - name: Validate monitoring template
@@ -1013,7 +1013,7 @@ jobs:
           test -s /etc/cloudmart/dashboard.env
           
           mkdir -p /opt/cloudmart/dashboard
-          aws s3 sync "s3://$REPORT_BUCKET/$SOURCE_PREFIX" /opt/cloudmart/dashboard --delete
+          aws s3 sync "s3://$REPORT_BUCKET/$SOURCE_PREFIX" /opt/cloudmart/dashboard --delete --exclude "venv/*" --exclude "venv"
           
           test -f /opt/cloudmart/dashboard/app.py
           test -f /opt/cloudmart/dashboard/requirements.txt
