@@ -71,25 +71,37 @@ Resources:
         Project: CloudMart
         Environment: !Ref Environment
 
-  DailyReportSchedule:
+  # Scheduled daily report trigger.
+  # This remains an EventBridge scheduled rule; no additional scheduling
+  # service is introduced. The event bus is explicitly set to the AWS
+  # default bus so the schedule is unambiguous in the EventBridge console.
+  #
+  # V2 intentionally uses a new logical/physical name so CloudFormation
+  # creates a fresh schedule during this deployment. This recovers cleanly
+  # if the previous scheduled rule was missing or stale in the account.
+  DailyReportScheduleV2:
     Type: AWS::Events::Rule
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-daily-report"
-      Description: Runs the CloudMart daily report once every day.
+      Name: !Sub "${ProjectName}-${Environment}-daily-report-v2"
+      Description: Runs the CloudMart daily report once every 24 hours.
+      EventBusName: default
       ScheduleExpression: rate(1 day)
       State: ENABLED
       Targets:
         - Id: DailyReportLambda
           Arn: !GetAtt DailyReportFunction.Arn
+          RetryPolicy:
+            MaximumEventAgeInSeconds: 86400
+            MaximumRetryAttempts: 3
 
-  DailyReportSchedulePermission:
+  DailyReportSchedulePermissionV2:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref DailyReportFunction
       Principal: events.amazonaws.com
       SourceAccount: !Ref AWS::AccountId
-      SourceArn: !GetAtt DailyReportSchedule.Arn
+      SourceArn: !GetAtt DailyReportScheduleV2.Arn
 
   # ------------------------------------------------------------
   # Operations EC2 dashboard
@@ -659,6 +671,14 @@ Outputs:
   DashboardUrl:
     Description: Live CloudMart Operations Dashboard URL.
     Value: !Sub "http://${OperationsEC2InstanceV4.PublicIp}/dashboard"
+
+  DailyReportScheduleName:
+    Description: EventBridge scheduled rule name for the daily report.
+    Value: !Ref DailyReportScheduleV2
+
+  DailyReportScheduleArn:
+    Description: EventBridge scheduled rule ARN for the daily report.
+    Value: !GetAtt DailyReportScheduleV2.Arn
 
   DailyReportFunctionArn:
     Description: Daily report Lambda ARN.

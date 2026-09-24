@@ -944,6 +944,36 @@ jobs:
               ;;
           esac
 
+          echo "Verifying deployed daily report EventBridge rule..."
+
+          DAILY_REPORT_SCHEDULE_NAME=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DailyReportScheduleName`].OutputValue'             --output text)
+
+          DAILY_REPORT_SCHEDULE_ARN=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DailyReportScheduleArn`].OutputValue'             --output text)
+
+          test -n "$DAILY_REPORT_SCHEDULE_NAME" && test "$DAILY_REPORT_SCHEDULE_NAME" != "None" || {
+            echo "ERROR: Daily report EventBridge schedule name was not returned by CloudFormation."
+            exit 1
+          }
+
+          test -n "$DAILY_REPORT_SCHEDULE_ARN" && test "$DAILY_REPORT_SCHEDULE_ARN" != "None" || {
+            echo "ERROR: Daily report EventBridge schedule ARN was not returned by CloudFormation."
+            exit 1
+          }
+
+          DAILY_REPORT_RESOURCE_STATUS=$(aws cloudformation describe-stack-resources             --stack-name "$STACK_NAME"             --logical-resource-id DailyReportScheduleV2             --region "$AWS_REGION"             --query 'StackResources[0].ResourceStatus'             --output text)
+
+          test "$DAILY_REPORT_RESOURCE_STATUS" = "CREATE_COMPLETE" || {
+            echo "ERROR: Daily report EventBridge rule resource is not CREATE_COMPLETE."
+            echo "Resource status: $DAILY_REPORT_RESOURCE_STATUS"
+            exit 1
+          }
+
+          echo "Daily report EventBridge rule: $DAILY_REPORT_SCHEDULE_NAME"
+          echo "Daily report EventBridge ARN: $DAILY_REPORT_SCHEDULE_ARN"
+          echo "Daily report schedule: rate(1 day)"
+          echo "Daily report schedule resource status: $DAILY_REPORT_RESOURCE_STATUS"
+          echo "Daily report schedule verification passed."
+
           DASHBOARD_INSTANCE_ID=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
