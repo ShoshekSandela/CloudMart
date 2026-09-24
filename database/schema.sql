@@ -13,12 +13,68 @@ USE cloudmart;
 
 CREATE TABLE IF NOT EXISTS customers (
     customer_id BIGINT NOT NULL AUTO_INCREMENT,
-    name VARCHAR(255) NOT NULL,
-    email VARCHAR(255) NOT NULL,
+    customer_name VARCHAR(255) NOT NULL,
+    customer_email VARCHAR(255) NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     PRIMARY KEY (customer_id),
-    UNIQUE KEY uk_customers_email (email)
+    UNIQUE KEY uk_customers_email (customer_email)
+
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================
+-- 2. EMAIL NOTIFICATION SUBSCRIPTIONS
+-- ============================================================
+-- Notification failures never modify this state. Only the explicit
+-- unsubscribe API changes ACTIVE to UNSUBSCRIBED.
+
+CREATE TABLE IF NOT EXISTS email_subscriptions (
+    subscription_id BIGINT NOT NULL AUTO_INCREMENT,
+    customer_id BIGINT NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+    unsubscribed_at DATETIME NULL,
+
+    PRIMARY KEY (subscription_id),
+    UNIQUE KEY uk_email_subscriptions_customer_id (customer_id),
+    INDEX idx_email_subscriptions_status (status),
+
+    CONSTRAINT fk_email_subscriptions_customer
+        FOREIGN KEY (customer_id)
+        REFERENCES customers(customer_id)
+        ON DELETE CASCADE
+
+) ENGINE=InnoDB
+  DEFAULT CHARSET=utf8mb4
+  COLLATE=utf8mb4_unicode_ci;
+
+
+-- ============================================================
+-- 2. CUSTOMER TOKENS
+-- ============================================================
+-- Stores only SHA-256 hashes of customer authentication tokens.
+-- The raw customer tokens are never stored in RDS.
+-- Five customer tokens are provisioned by the deployment pipeline.
+
+CREATE TABLE IF NOT EXISTS customer_tokens (
+    token_id BIGINT NOT NULL AUTO_INCREMENT,
+    customer_id BIGINT NOT NULL,
+    token_hash CHAR(64) NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (token_id),
+    UNIQUE KEY uk_customer_tokens_customer_id (customer_id),
+    UNIQUE KEY uk_customer_tokens_token_hash (token_hash),
+    INDEX idx_customer_tokens_status (status)
 
 ) ENGINE=InnoDB
   DEFAULT CHARSET=utf8mb4
@@ -97,6 +153,9 @@ CREATE TABLE IF NOT EXISTS orders (
     order_id BIGINT NOT NULL AUTO_INCREMENT,
     customer_id BIGINT NOT NULL,
 
+    -- Email captured for this specific order
+    customer_email VARCHAR(255) NULL,
+
     status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
 
     total_amount DECIMAL(10,2) NOT NULL DEFAULT 0.00,
@@ -119,6 +178,34 @@ CREATE TABLE IF NOT EXISTS orders (
   DEFAULT CHARSET=utf8mb4
   COLLATE=utf8mb4_unicode_ci;
 
+
+-- ============================================================
+-- ORDER EMAIL MIGRATION NOTE
+--
+-- The orders table above already defines customer_email.
+-- For an EXISTING RDS database that was created before this column
+-- was added, run the one-time migration in:
+-- database/migrations/001_customer_email.sql
+-- ============================================================
+
+-- ============================================================
+-- EXISTING RDS MIGRATION (RUN ONLY IF YOUR EXISTING customers TABLE
+-- STILL HAS name/email COLUMNS)
+--
+-- DESCRIBE customers;
+--
+-- ALTER TABLE customers
+--     CHANGE COLUMN name customer_name VARCHAR(255) NOT NULL,
+--     CHANGE COLUMN email customer_email VARCHAR(255) NOT NULL;
+--
+-- DESCRIBE orders;
+--
+-- ALTER TABLE orders
+--     ADD COLUMN customer_email VARCHAR(255) NULL AFTER customer_id;
+--
+-- Do NOT run the customer ALTER statement on a database that already
+-- has customer_name/customer_email.
+-- ============================================================
 
 -- ============================================================
 -- 5. ORDER STATUS HISTORY
@@ -225,8 +312,8 @@ WHERE NOT EXISTS (
 -- ============================================================
 
 INSERT INTO customers (
-    name,
-    email
+    customer_name,
+    customer_email
 )
 SELECT
     'CloudMart Test Customer',
@@ -234,8 +321,30 @@ SELECT
 WHERE NOT EXISTS (
     SELECT 1
     FROM customers
-    WHERE email = 'customer@cloudmart.com'
+    WHERE customer_email = 'customer@cloudmart.com'
 );
+
+-- Ensure five customer identities exist for the five provisioned
+-- authentication tokens. Existing customer rows are preserved.
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 2, 'CloudMart Customer 2', 'customer2@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 2)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer2@cloudmart.com');
+
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 3, 'CloudMart Customer 3', 'customer3@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 3)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer3@cloudmart.com');
+
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 4, 'CloudMart Customer 4', 'customer4@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 4)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer4@cloudmart.com');
+
+INSERT INTO customers (customer_id, customer_name, customer_email)
+SELECT 5, 'CloudMart Customer 5', 'customer5@cloudmart.com'
+WHERE NOT EXISTS (SELECT 1 FROM customers WHERE customer_id = 5)
+  AND NOT EXISTS (SELECT 1 FROM customers WHERE customer_email = 'customer5@cloudmart.com');
 
 
 -- ============================================================

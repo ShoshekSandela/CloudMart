@@ -2,18 +2,16 @@ name: Deploy CloudMart Infrastructure
 
 on:
   workflow_dispatch:
-
   push:
     branches:
       - main
+      - feature/order-flow
+      - fix/database-ssm
     paths:
-      - "cloudformation/network-stack.yaml"
-      - "cloudformation/data-stack.yaml"
-      - "cloudformation/iam-stack.yaml"
-      - "cloudformation/application-stack.yaml"
+      - "cloudformation/**"
       - "lambdas/**"
-      - "lambdas/product/requirements.txt"
       - "database/schema.sql"
+      - "dashboard/**"
       - ".github/workflows/deploy.yaml"
 
 permissions:
@@ -21,22 +19,15 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
 
 jobs:
-
-  # =========================================================
-  # NETWORK STACK
-  # =========================================================
-
   deploy-network:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
-
     steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -44,258 +35,86 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
-
-      - name: Validate Network Stack
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://cloudformation/network-stack.yaml \
-            --region "$AWS_REGION"
-
-      - name: Deploy Network Stack
-        run: |
-          aws cloudformation deploy \
-            --template-file cloudformation/network-stack.yaml \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment=dev \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
-
-      - name: Verify Network Stack
-        run: |
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Network Stack Status: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "Network stack is ready."
-              ;;
-            *)
-              echo "ERROR: Network stack is not ready."
-              exit 1
-              ;;
-          esac
-
-
-  # =========================================================
-  # DATA STACK
-  # =========================================================
-
-  deploy-data:
-    name: Deploy Data Stack
-    runs-on: ubuntu-latest
-
-    needs:
-      - deploy-network
-
-    steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v5
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
-
-      - name: Verify Network Stack
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text
-
-      - name: Validate Data Stack
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://cloudformation/data-stack.yaml \
-            --region "$AWS_REGION"
-
-      - name: Deploy Data Stack
-        env:
-          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-
-        shell: bash
-        run: |
-
-          echo "Checking database credentials..."
-
-          if [ -z "$DB_USERNAME" ]; then
-            echo "ERROR: CLOUDMART_DB_USERNAME is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
-            exit 1
-          fi
-
-          echo "Database credentials are available."
-
-          aws cloudformation deploy \
-            --template-file cloudformation/data-stack.yaml \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment=dev \
-              DBInstanceClass=db.t3.micro \
-              DBName=cloudmart \
-              AllocatedStorage=20 \
-              DBUsername="$DB_USERNAME" \
-              DBPassword="$DB_PASSWORD" \
-              ExistingReportBucketName=cloudmart-dev-reports \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
-
-      - name: Verify Data Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Data Stack Status: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "Data stack is ready."
-              ;;
-            *)
-              echo "ERROR: Data stack is not ready."
-              exit 1
-              ;;
-          esac
-
-
-      # =====================================================
-      # CREATE DATABASE SSM PARAMETERS
-      # =====================================================
-
-      - name: Create or Update Database SSM Parameters
-        env:
-          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
+      - name: Deploy network stack
         shell: bash
         run: |
           set -euo pipefail
 
-          echo "Reading RDS outputs from Data Stack..."
+          STACK_NAME="cloudmart-network-${ENVIRONMENT}"
 
-          DB_HOST=$(aws cloudformation describe-stacks             --stack-name cloudmart-data-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue | [0]"             --output text)
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-          DB_PORT=$(aws cloudformation describe-stacks             --stack-name cloudmart-data-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='DBPort'].OutputValue | [0]"             --output text)
+          echo "Network stack status: ${STATUS:-NOT_FOUND}"
 
-          DB_NAME=$(aws cloudformation describe-stacks             --stack-name cloudmart-data-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]"             --output text)
+          if [ -z "$STATUS" ] || [ "$STATUS" = "None" ]; then
+            echo "Network stack does not exist. Creating it with the existing GitHub Actions role."
 
-          if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
-            echo "ERROR: DBEndpoint output is missing."
-            exit 1
+            aws cloudformation deploy \
+              --template-file cloudformation/network-stack.yaml \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --parameter-overrides Environment="$ENVIRONMENT" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset
+
+            echo "Network stack created."
+            exit 0
           fi
 
-          if [ -z "$DB_PORT" ] || [ "$DB_PORT" = "None" ]; then
-            echo "ERROR: DBPort output is missing."
-            exit 1
-          fi
+          case "$STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Network stack exists. Deploying the current network template."
 
-          if [ -z "$DB_NAME" ] || [ "$DB_NAME" = "None" ]; then
-            echo "ERROR: DBName output is missing."
-            exit 1
-          fi
+              aws cloudformation deploy \
+                --template-file cloudformation/network-stack.yaml \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --parameter-overrides Environment="$ENVIRONMENT" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --no-fail-on-empty-changeset
+              ;;
 
-          if [ -z "$DB_USERNAME" ]; then
-            echo "ERROR: CLOUDMART_DB_USERNAME secret is missing."
-            exit 1
-          fi
+            ROLLBACK_*|UPDATE_ROLLBACK_*)
+              echo "============================================================"
+              echo "ERROR: Network stack is in rollback state: $STATUS"
+              echo "Stack: $STACK_NAME"
+              echo "No automatic recovery or deletion will be performed."
+              echo "Please manually inspect and recover/delete the stack."
+              echo "After resolving the stack, run the workflow again."
+              echo "============================================================"
+              exit 1
+              ;;
 
-          if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD secret is missing."
-            exit 1
-          fi
+            CREATE_IN_PROGRESS|UPDATE_IN_PROGRESS|DELETE_IN_PROGRESS)
+              echo "ERROR: Network stack is busy: $STATUS"
+              echo "Wait for the current CloudFormation operation to finish."
+              exit 1
+              ;;
 
-          echo "RDS endpoint: $DB_HOST"
-          echo "RDS port: $DB_PORT"
-          echo "Database: $DB_NAME"
+            CREATE_FAILED|DELETE_FAILED)
+              echo "ERROR: Network stack is in failed state: $STATUS"
+              echo "Please manually inspect the stack before retrying."
+              exit 1
+              ;;
 
-          aws ssm put-parameter             --name "/cloudmart/dev/database/host"             --type "String"             --value "$DB_HOST"             --overwrite             --region "$AWS_REGION"
-
-          aws ssm put-parameter             --name "/cloudmart/dev/database/port"             --type "String"             --value "$DB_PORT"             --overwrite             --region "$AWS_REGION"
-
-          aws ssm put-parameter             --name "/cloudmart/dev/database/name"             --type "String"             --value "$DB_NAME"             --overwrite             --region "$AWS_REGION"
-
-          aws ssm put-parameter             --name "/cloudmart/dev/database/username"             --type "SecureString"             --value "$DB_USERNAME"             --overwrite             --region "$AWS_REGION"
-
-          aws ssm put-parameter             --name "/cloudmart/dev/database/password"             --type "SecureString"             --value "$DB_PASSWORD"             --overwrite             --region "$AWS_REGION"
-
-          echo "Database SSM parameters created/updated."
-
-
-      # =====================================================
-      # VERIFY DATABASE SSM PARAMETERS
-      # =====================================================
-
-      - name: Verify Database SSM Parameters
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Verifying database SSM parameters..."
-
-          aws ssm get-parameter             --name "/cloudmart/dev/database/host"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
-
-          aws ssm get-parameter             --name "/cloudmart/dev/database/port"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
-
-          aws ssm get-parameter             --name "/cloudmart/dev/database/name"             --region "$AWS_REGION"             --query "Parameter.Name"             --output text
-
-          USERNAME_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/username"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
-
-          if [ "$USERNAME_TYPE" != "SecureString" ]; then
-            echo "ERROR: Database username is not SecureString."
-            exit 1
-          fi
-
-          PASSWORD_TYPE=$(aws ssm get-parameter             --name "/cloudmart/dev/database/password"             --region "$AWS_REGION"             --query "Parameter.Type"             --output text)
-
-          if [ "$PASSWORD_TYPE" != "SecureString" ]; then
-            echo "ERROR: Database password is not SecureString."
-            exit 1
-          fi
-
-          echo "Database SSM parameter verification passed."
-
-
-  # =========================================================
-  # IAM STACK
-  # =========================================================
+            *)
+              echo "ERROR: Unexpected Network stack state: $STATUS"
+              exit 1
+              ;;
+          esac
 
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
-
-    needs:
-      - deploy-data
-
+    needs: deploy-network
+    env:
+      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -303,1482 +122,1155 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
-
-      - name: Verify Data Stack
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text
-
-      - name: Validate IAM Stack
-        run: |
-          aws cloudformation validate-template \
-            --template-body file://cloudformation/iam-stack.yaml \
-            --region "$AWS_REGION"
-
-      - name: Check Existing IAM Stack
-        id: iam_status
-        continue-on-error: true
+    
+      - name: Deploy IAM stack
         shell: bash
         run: |
+          set -euo pipefail
 
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
+          STACK_NAME="cloudmart-iam-${ENVIRONMENT}"
+
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text 2>/dev/null || echo "DOES_NOT_EXIST")
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "IAM stack status: ${STACK_STATUS:-NOT_FOUND}"
 
-          echo "IAM Stack Status: $STATUS"
+          if [[ "$STACK_STATUS" == ROLLBACK_* || "$STACK_STATUS" == UPDATE_ROLLBACK_* ]]; then
+            echo "============================================================"
+            echo "ERROR: IAM stack is in rollback state: $STACK_STATUS"
+            echo "Stack: $STACK_NAME"
+            echo "No automatic deletion or recovery will be performed."
+            echo "Please manually inspect and recover/delete the stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
+            exit 1
+          fi
 
-      - name: Delete IAM Stack in ROLLBACK_COMPLETE
-        if: steps.iam_status.outputs.status == 'ROLLBACK_COMPLETE'
-        shell: bash
-        run: |
+          # The GitHub Actions role is pre-existing and is only updated by
+          # this stack. EC2 lifecycle permissions are defined without a
+          # hard-coded instance ARN because CloudFormation may replace the
+          # Operations EC2 instance during a later monitoring deployment.
+          IAM_CREATE_PARAMETERS=(
+            "ParameterKey=Environment,ParameterValue=$ENVIRONMENT"
+            "ParameterKey=GitHubActionsRoleName,ParameterValue=${AWS_ROLE_ARN##*/}"
+          )
+          IAM_DEPLOY_PARAMETERS=(
+            "Environment=$ENVIRONMENT"
+            "GitHubActionsRoleName=${AWS_ROLE_ARN##*/}"
+          )
 
-          echo "IAM stack is in ROLLBACK_COMPLETE."
-          echo "Deleting failed IAM stack..."
+          # No Bootstrap resources are created here.
+          # The existing GitHub Actions OIDC role remains external to CloudMart.
+          #
+          # CREATE:
+          #   Use a CREATE change set with --import-existing-resources so that
+          #   pre-existing CloudMart IAM resources can be adopted.
+          #
+          # EXISTING STACK:
+          #   Use "cloudformation deploy" for a normal update. This is important
+          #   because create-change-set returns FAILED when there are no changes.
+          #   --no-fail-on-empty-changeset makes an already-up-to-date IAM stack
+          #   succeed instead of failing the GitHub Actions job.
 
-          aws cloudformation delete-stack \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION"
+          if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
+            echo "IAM stack does not exist. Creating and adopting existing IAM resources."
 
-          aws cloudformation wait stack-delete-complete \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION"
+            CHANGE_SET_NAME="cloudmart-iam-${ENVIRONMENT}-$(date +%s)"
 
-          echo "IAM stack deleted."
+            aws cloudformation create-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$CHANGE_SET_NAME" \
+              --change-set-type CREATE \
+              --template-body file://cloudformation/iam-stack.yaml \
+              --parameters "${IAM_CREATE_PARAMETERS[@]}" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --import-existing-resources \
+              --region "$AWS_REGION"
 
-      - name: Deploy IAM Stack
-        run: |
+            aws cloudformation wait change-set-create-complete \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$CHANGE_SET_NAME" \
+              --region "$AWS_REGION"
 
-          aws cloudformation deploy \
-            --template-file cloudformation/iam-stack.yaml \
-            --stack-name cloudmart-iam-dev \
+            aws cloudformation execute-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$CHANGE_SET_NAME" \
+              --region "$AWS_REGION"
+
+            aws cloudformation wait stack-create-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+          elif [ "$STACK_STATUS" = "CREATE_COMPLETE" ] || \
+               [ "$STACK_STATUS" = "UPDATE_COMPLETE" ]; then
+
+            echo "IAM stack already exists. Performing normal CloudFormation update."
+
+            aws cloudformation deploy \
+              --template-file cloudformation/iam-stack.yaml \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --parameter-overrides "${IAM_DEPLOY_PARAMETERS[@]}" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset
+
+          else
+            echo "ERROR: IAM stack is in unsupported/busy state: $STACK_STATUS"
+            exit 1
+          fi
+
+          IAM_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --parameter-overrides \
-              Environment=dev \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
-
-      - name: Verify IAM Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
+            --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "IAM Stack Status: $STATUS"
-
-          case "$STATUS" in
+          case "$IAM_STATUS" in
             CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "IAM stack is ready."
+              echo "IAM stack is healthy: $IAM_STATUS"
               ;;
             *)
-              echo "ERROR: IAM stack is not ready."
+              echo "ERROR: IAM stack ended in unexpected state: $IAM_STATUS"
               exit 1
               ;;
           esac
 
 
-      # =====================================================
-      # SSM SECURESTRING AUTH TOKEN
-      # =====================================================
-
-      - name: Verify Auth Token
+  deploy-data:
+    name: Deploy Data Stack
+    runs-on: ubuntu-latest
+    needs: deploy-iam
+    steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Deploy data stack
         env:
-          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
-
-        shell: bash
+          DB_USERNAME: ${{ secrets.CLOUDMART_DB_USERNAME }}
+          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
         run: |
+          set -euo pipefail
+          test -n "$DB_USERNAME" || { echo "CLOUDMART_DB_USERNAME is missing"; exit 1; }
+          test -n "$DB_PASSWORD" || { echo "CLOUDMART_DB_PASSWORD is missing"; exit 1; }
 
-          if [ -z "$AUTH_TOKEN" ]; then
-            echo "ERROR: CLOUDMART_AUTH_TOKEN is missing."
+          STACK_NAME="cloudmart-data-${ENVIRONMENT}"
+
+          # A failed first deployment can leave an empty REVIEW_IN_PROGRESS
+          # CloudFormation stack. Remove only that unfinished stack automatically.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
+
+          if [[ "$STACK_STATUS" == ROLLBACK_* || "$STACK_STATUS" == UPDATE_ROLLBACK_* ]]; then
+            echo "============================================================"
+            echo "ERROR: Data stack is in rollback state: $STACK_STATUS"
+            echo "Stack: $STACK_NAME"
+            echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+            echo "This stack contains CloudMart data resources."
+            echo "Please manually inspect and recover/delete the stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
             exit 1
           fi
 
-          echo "Auth token is available."
-
-
-      - name: Create or Update SSM Auth Token
-        env:
-          AUTH_TOKEN: ${{ secrets.CLOUDMART_AUTH_TOKEN }}
-
-        shell: bash
-        run: |
-
-          aws ssm put-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --value "$AUTH_TOKEN" \
-            --type SecureString \
-            --overwrite \
-            --region "$AWS_REGION"
-
-          echo "SSM SecureString auth token created/updated."
-
-
-      - name: Verify SSM Auth Token Parameter
-        run: |
-
-          PARAM_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --region "$AWS_REGION" \
-            --query "Parameter.Type" \
-            --output text)
-
-          echo "SSM Auth Token Parameter Type: $PARAM_TYPE"
-
-          if [ "$PARAM_TYPE" != "SecureString" ]; then
-            echo "ERROR: Auth token is not stored as SecureString."
+          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "WARNING: Data stack is REVIEW_IN_PROGRESS."
+            echo "No automatic deletion will be performed."
+            echo "Please manually inspect/delete the unfinished stack."
             exit 1
           fi
 
-          echo "SSM SecureString verification passed."
+          # Authentication token lifecycle is owned exclusively by Token Manager.
+          # Never delete or reset /cloudmart/${ENVIRONMENT}/auth/token during a
+          # Data stack deployment.
+          echo "Authentication token is managed exclusively by Token Manager; preserving it."
 
-
-      # =====================================================
-      # IAM FAILURE DIAGNOSTICS
-      # =====================================================
-
-      - name: Show IAM Stack Failure Events
-        if: failure()
-        run: |
-
-          echo "IAM STACK STATUS"
-
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
+          # One-time migration: if the Data stack still owns the legacy
+          # AuthTokenParameter resource, first apply Retain to the EXISTING
+          # CloudFormation resource without changing any of its properties.
+          #
+          # This is important because the live parameter is SecureString,
+          # while AWS::SSM::Parameter in CloudFormation supports only String
+          # and StringList. The migration must therefore not try to update
+          # the parameter itself; it only changes the CloudFormation
+          # DeletionPolicy to Retain.
+          LEGACY_AUTH_RESOURCE=$(aws cloudformation describe-stack-resources \
+            --stack-name "$STACK_NAME" \
+            --logical-resource-id AuthTokenParameter \
             --region "$AWS_REGION" \
-            --query "Stacks[0].[StackStatus,StackStatusReason]" \
-            --output table || true
+            --query 'StackResources[0].LogicalResourceId' \
+            --output text 2>/dev/null || true)
 
-          echo "IAM STACK FAILURE EVENTS"
+          if [ "$LEGACY_AUTH_RESOURCE" = "AuthTokenParameter" ]; then
+            echo "Legacy AuthTokenParameter is still owned by the Data stack."
+            echo "Applying Retain to the existing resource without changing its properties."
 
-          aws cloudformation describe-stack-events \
-            --stack-name cloudmart-iam-dev \
+            # CloudFormation may return the original template as either
+            # JSON or YAML text. Handle both formats.
+            aws cloudformation get-template \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --template-stage Original \
+              --output json > /tmp/cloudmart-data-current.json
+
+            python - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          outer = json.loads(Path("/tmp/cloudmart-data-current.json").read_text())
+          template = outer["TemplateBody"]
+
+          # If TemplateBody itself is JSON, modify it structurally.
+          try:
+              document = json.loads(template)
+          except (TypeError, json.JSONDecodeError):
+              document = None
+
+          if isinstance(document, dict):
+              resources = document.get("Resources", {})
+              resource = resources.get("AuthTokenParameter")
+
+              if not isinstance(resource, dict):
+                  raise SystemExit(
+                      "AuthTokenParameter was not found in the current Data stack template"
+                  )
+
+              # Change only CloudFormation deletion behavior. Do not change
+              # the existing SSM parameter name, type, value, or properties.
+              resource["DeletionPolicy"] = "Retain"
+              resource["UpdateReplacePolicy"] = "Retain"
+
+              Path("/tmp/cloudmart-data-retain.json").write_text(
+                  json.dumps(document, separators=(",", ":"))
+              )
+          else:
+              # Otherwise the original template is YAML. Add the policies
+              # immediately below AuthTokenParameter, preserving the rest.
+              source = str(template)
+
+              match = re.search(
+                  r"(?m)^(\s*)AuthTokenParameter:\s*$",
+                  source,
+              )
+              if not match:
+                  raise SystemExit(
+                      "AuthTokenParameter was not found in the current Data stack template"
+                  )
+
+              indent = match.group(1)
+              insert_at = match.end()
+
+              # Avoid duplicate policy attributes on a retry.
+              next_resource = re.search(
+                  r"(?m)^\s*[A-Za-z0-9][A-Za-z0-9_-]*:\s*$",
+                  source[insert_at:],
+              )
+              resource_end = (
+                  insert_at + next_resource.start()
+                  if next_resource
+                  else len(source)
+              )
+              resource_block = source[match.start():resource_end]
+
+              additions = []
+              if not re.search(
+                  r"(?m)^\s+DeletionPolicy:\s*Retain\s*$",
+                  resource_block,
+              ):
+                  additions.append(f"{indent}  DeletionPolicy: Retain")
+              if not re.search(
+                  r"(?m)^\s+UpdateReplacePolicy:\s*Retain\s*$",
+                  resource_block,
+              ):
+                  additions.append(f"{indent}  UpdateReplacePolicy: Retain")
+
+              if additions:
+                  source = (
+                      source[:insert_at]
+                      + "\n"
+                      + "\n".join(additions)
+                      + source[insert_at:]
+                  )
+
+              Path("/tmp/cloudmart-data-retain.yaml").write_text(source)
+          PY
+
+            if [ -f /tmp/cloudmart-data-retain.json ]; then
+              RETAIN_TEMPLATE=/tmp/cloudmart-data-retain.json
+            else
+              RETAIN_TEMPLATE=/tmp/cloudmart-data-retain.yaml
+            fi
+
+            aws cloudformation deploy \
+              --template-file "$RETAIN_TEMPLATE" \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --parameter-overrides \
+                Environment="$ENVIRONMENT" \
+                DBName=cloudmart \
+                DBInstanceClass=db.t3.micro \
+                AllocatedStorage=20 \
+                DBUsername="$DB_USERNAME" \
+                DBPassword="$DB_PASSWORD" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --no-fail-on-empty-changeset
+
+            echo "Retain policy applied. The next Data stack update will remove AuthTokenParameter from CloudFormation while preserving the SSM parameter."
+          fi
+
+          aws cloudformation deploy \
+            --template-file cloudformation/data-stack.yaml \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-            --output table || true
-
-
-  # =========================================================
-  # APPLICATION STACK
-  # =========================================================
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              DBName=cloudmart \
+              DBInstanceClass=db.t3.micro \
+              AllocatedStorage=20 \
+              DBUsername="$DB_USERNAME" \
+              DBPassword="$DB_PASSWORD" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
 
   deploy-application:
     name: Deploy Application Stack
     runs-on: ubuntu-latest
-
-    needs:
-      - deploy-iam
-
+    needs: deploy-data
     steps:
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-
-      # =====================================================
-      # SETUP SAM
-      # =====================================================
-
-      - name: Setup AWS SAM
-        uses: aws-actions/setup-sam@v2
-
-
-      # =====================================================
-      # AWS CREDENTIALS
-      # =====================================================
-
+      - uses: actions/checkout@v5
+      - uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Prepare schema
+        run: cp database/schema.sql lambdas/product/schema.sql
+      - name: Validate application template
+        run: sam validate --template-file cloudformation/application-stack.yaml
+      - name: Clean previous SAM build
+        run: rm -rf .aws-sam
 
-      # =====================================================
-      # VERIFY AWS
-      # =====================================================
-
-      - name: Verify AWS identity
+      - name: Build application
         run: |
-
-          echo "AWS Region: $AWS_REGION"
-
-          aws sts get-caller-identity
-
-
-      # =====================================================
-      # VERIFY PREVIOUS STACKS
-      # =====================================================
-
-      - name: Verify Network Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Network Stack: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              ;;
-            *)
-              echo "ERROR: Network stack is not ready."
-              exit 1
-              ;;
-          esac
-
-
-      - name: Verify Data Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Data Stack: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              ;;
-            *)
-              echo "ERROR: Data stack is not ready."
-              exit 1
-              ;;
-          esac
-
-
-      - name: Verify IAM Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-iam-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "IAM Stack: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              ;;
-            *)
-              echo "ERROR: IAM stack is not ready."
-              exit 1
-              ;;
-          esac
-
-
-      # =====================================================
-      # VERIFY SSM AUTH TOKEN
-      # =====================================================
-
-      - name: Verify SSM Auth Token
-        run: |
-
-          PARAM_TYPE=$(aws ssm get-parameter \
-            --name "/cloudmart/dev/auth/token" \
-            --region "$AWS_REGION" \
-            --query "Parameter.Type" \
-            --output text)
-
-          echo "Auth Token Parameter Type: $PARAM_TYPE"
-
-          if [ "$PARAM_TYPE" != "SecureString" ]; then
-            echo "ERROR: SSM auth token parameter is not SecureString."
-            exit 1
-          fi
-
-          echo "SSM auth token is ready."
-
-
-      # =====================================================
-      # NOTIFICATION EMAIL
-      # =====================================================
-
-      - name: Verify Notification Email
+          set -euo pipefail
+          sam build --template-file cloudformation/application-stack.yaml
+      - name: Deploy application
         env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
-
-        shell: bash
-        run: |
-
-          if [ -z "$NOTIFICATION_EMAIL" ]; then
-            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
-            exit 1
-          fi
-
-          echo "Notification email is available."
-
-
-      # =====================================================
-      # GET NETWORK OUTPUTS
-      # =====================================================
-
-      - name: Get Network Outputs
-        shell: bash
-        run: |
-
-          echo "Getting Network stack outputs..."
-
-          PRIVATE_SUBNET_1=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet1Id'].OutputValue | [0]" \
-            --output text)
-
-          PRIVATE_SUBNET_2=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='PrivateSubnet2Id'].OutputValue | [0]" \
-            --output text)
-
-          LAMBDA_SECURITY_GROUP=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-network-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LambdaSecurityGroupId'].OutputValue | [0]" \
-            --output text)
-
-          echo "Private Subnet 1: $PRIVATE_SUBNET_1"
-          echo "Private Subnet 2: $PRIVATE_SUBNET_2"
-          echo "Lambda Security Group: $LAMBDA_SECURITY_GROUP"
-
-          if [ -z "$PRIVATE_SUBNET_1" ] || [ "$PRIVATE_SUBNET_1" = "None" ]; then
-            echo "ERROR: PrivateSubnet1Id output is missing."
-            exit 1
-          fi
-
-          if [ -z "$PRIVATE_SUBNET_2" ] || [ "$PRIVATE_SUBNET_2" = "None" ]; then
-            echo "ERROR: PrivateSubnet2Id output is missing."
-            exit 1
-          fi
-
-          if [ -z "$LAMBDA_SECURITY_GROUP" ] || [ "$LAMBDA_SECURITY_GROUP" = "None" ]; then
-            echo "ERROR: LambdaSecurityGroupId output is missing."
-            exit 1
-          fi
-
-          echo "PRIVATE_SUBNET_IDS=${PRIVATE_SUBNET_1},${PRIVATE_SUBNET_2}" >> "$GITHUB_ENV"
-
-          echo "LAMBDA_SECURITY_GROUP_ID=$LAMBDA_SECURITY_GROUP" >> "$GITHUB_ENV"
-
-          echo "Network outputs loaded successfully."
-
-
-      # =====================================================
-      # GET IAM LAMBDA ROLE ARNS
-      # =====================================================
-
-      - name: Get Lambda IAM Role ARNs
-        shell: bash
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
         run: |
           set -euo pipefail
+          test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
 
-          echo "Getting Lambda IAM role ARNs..."
 
-          get_role_arn() {
-            local role_name="$1"
-            aws iam get-role               --role-name "$role_name"               --query 'Role.Arn'               --output text
-          }
+          STACK_NAME="cloudmart-application-${ENVIRONMENT}"
 
-          AUTHORIZE_ROLE="cloudmart-dev-lambda-authorizer-role"
-          PRODUCT_ROLE="cloudmart-dev-lambda-product-role"
-          ORDER_ROLE="cloudmart-dev-lambda-order-role"
-          REPORT_ROLE="cloudmart-dev-lambda-report-role"
-
-          AUTHORIZER_ROLE_ARN="$(get_role_arn "$AUTHORIZE_ROLE")"
-          PRODUCT_ROLE_ARN="$(get_role_arn "$PRODUCT_ROLE")"
-          ORDER_ROLE_ARN="$(get_role_arn "$ORDER_ROLE")"
-          REPORT_ROLE_ARN="$(get_role_arn "$REPORT_ROLE")"
-
-          echo "Authorizer Role: $AUTHORIZER_ROLE_ARN"
-          echo "Product Role: $PRODUCT_ROLE_ARN"
-          echo "Order Role: $ORDER_ROLE_ARN"
-          echo "Report Role: $REPORT_ROLE_ARN"
-
-          for role_arn in             "$AUTHORIZER_ROLE_ARN"             "$PRODUCT_ROLE_ARN"             "$ORDER_ROLE_ARN"             "$REPORT_ROLE_ARN"
-          do
-            if [ -z "$role_arn" ] || [ "$role_arn" = "None" ]; then
-              echo "ERROR: A required Lambda IAM role ARN is missing."
-              exit 1
-            fi
-          done
-
-          {
-            echo "AUTHORIZER_ROLE_ARN=$AUTHORIZER_ROLE_ARN"
-            echo "PRODUCT_ROLE_ARN=$PRODUCT_ROLE_ARN"
-            echo "ORDER_ROLE_ARN=$ORDER_ROLE_ARN"
-            echo "REPORT_ROLE_ARN=$REPORT_ROLE_ARN"
-          } >> "$GITHUB_ENV"
-
-      - name: Get Data Stack Outputs
-        shell: bash
-        run: |
-
-          echo "Getting Data stack outputs..."
-
-          REPORT_BUCKET=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
+          # CloudFormation cannot update a stack while it is being deleted.
+          # Wait for an in-progress deletion instead of starting another
+          # deployment against the same stack.
+          STACK_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='ReportBucketName'].OutputValue | [0]" \
-            --output text)
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-          DB_HOST=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBEndpoint'].OutputValue | [0]" \
-            --output text)
 
-          DB_PORT=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBPort'].OutputValue | [0]" \
-            --output text)
-
-          DB_NAME=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-data-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='DBName'].OutputValue | [0]" \
-            --output text)
-
-          echo "Report Bucket: $REPORT_BUCKET"
-          echo "DB Host: $DB_HOST"
-          echo "DB Port: $DB_PORT"
-          echo "DB Name: $DB_NAME"
-
-          if [ -z "$REPORT_BUCKET" ] || [ "$REPORT_BUCKET" = "None" ]; then
-            echo "ERROR: ReportBucketName output is missing."
+          if [[ "$STACK_STATUS" == ROLLBACK_* || "$STACK_STATUS" == UPDATE_ROLLBACK_* ]]; then
+            echo "============================================================"
+            echo "ERROR: Application stack is in rollback state: $STACK_STATUS"
+            echo "Stack: $STACK_NAME"
+            echo "No automatic recovery or deletion will be performed."
+            echo "Please manually inspect and recover/delete the stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
             exit 1
           fi
 
-          if [ -z "$DB_HOST" ] || [ "$DB_HOST" = "None" ]; then
-            echo "ERROR: DBEndpoint output is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_PORT" ] || [ "$DB_PORT" = "None" ]; then
-            echo "ERROR: DBPort output is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_NAME" ] || [ "$DB_NAME" = "None" ]; then
-            echo "ERROR: DBName output is missing."
-            exit 1
-          fi
-
-          echo "REPORT_BUCKET_NAME=$REPORT_BUCKET" >> "$GITHUB_ENV"
-
-          echo "DB_HOST=$DB_HOST" >> "$GITHUB_ENV"
-
-          echo "DB_PORT=$DB_PORT" >> "$GITHUB_ENV"
-
-          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
-
-          echo "Data outputs loaded successfully."
-
-
-      # =====================================================
-      # VERIFY REQUIRED APPLICATION VALUES
-      # =====================================================
-
-      - name: Verify Application Configuration
-        env:
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
-
-        shell: bash
-        run: |
-
-          if [ -z "$PRIVATE_SUBNET_IDS" ]; then
-            echo "ERROR: PRIVATE_SUBNET_IDS is missing."
-            exit 1
-          fi
-
-          if [ -z "$LAMBDA_SECURITY_GROUP_ID" ]; then
-            echo "ERROR: LAMBDA_SECURITY_GROUP_ID is missing."
-            exit 1
-          fi
-
-          if [ -z "$AUTHORIZER_ROLE_ARN" ]; then
-            echo "ERROR: AUTHORIZER_ROLE_ARN is missing."
-            exit 1
-          fi
-
-          if [ -z "$PRODUCT_ROLE_ARN" ]; then
-            echo "ERROR: PRODUCT_ROLE_ARN is missing."
+          if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
+            echo "============================================================"
+            echo "ERROR: Application stack is in REVIEW_IN_PROGRESS."
+            echo "Stack: $STACK_NAME"
+            echo "No automatic deletion will be performed."
+            echo "Please manually inspect/delete the unfinished stack."
+            echo "After resolving the stack, run the workflow again."
+            echo "============================================================"
             exit 1
           fi
 
 
-          if [ -z "$ORDER_ROLE_ARN" ]; then
-            echo "ERROR: ORDER_ROLE_ARN is missing."
-            exit 1
+          if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
+            echo "Application stack is currently being deleted: $STACK_NAME"
+            echo "Waiting for CloudFormation deletion to complete..."
+
+            aws cloudformation wait stack-delete-complete \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION"
+
+            echo "Application stack deletion completed."
+            STACK_STATUS=""
           fi
 
-          if [ -z "$REPORT_ROLE_ARN" ]; then
-            echo "ERROR: REPORT_ROLE_ARN is missing."
-            exit 1
-          fi
-
-          if [ -z "$REPORT_BUCKET_NAME" ]; then
-            echo "ERROR: REPORT_BUCKET_NAME is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_HOST" ]; then
-            echo "ERROR: DB_HOST is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_PORT" ]; then
-            echo "ERROR: DB_PORT is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_NAME" ]; then
-            echo "ERROR: DB_NAME is missing."
-            exit 1
-          fi
-
-          if [ -z "$DB_PASSWORD" ]; then
-            echo "ERROR: CLOUDMART_DB_PASSWORD is missing."
-            exit 1
-          fi
-
-          if [ -z "$NOTIFICATION_EMAIL" ]; then
-            echo "ERROR: CLOUDMART_NOTIFICATION_EMAIL is missing."
-            exit 1
-          fi
-
-          echo "All Application Stack values are available."
-
-
-      # =====================================================
-      # VALIDATE APPLICATION STACK
-      # =====================================================
-
-      - name: Validate Application Stack
-        run: |
-
-          sam validate \
-            --template-file cloudformation/application-stack.yaml
-
-          echo "Application template validation completed."
-
-
-      # =====================================================
-      # SAM BUILD
-      # =====================================================
-
-      - name: Verify Lambda source code
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Checking Lambda source files..."
-
-          if [ ! -f "lambdas/authorizer/index.py" ]; then
-            echo "ERROR: lambdas/authorizer/index.py is missing."
-            exit 1
-          fi
-
-          if [ ! -f "lambdas/product/index.py" ]; then
-            echo "ERROR: lambdas/product/index.py is missing."
-            exit 1
-          fi
-
-          if [ ! -f "lambdas/product/requirements.txt" ]; then
-            echo "ERROR: lambdas/product/requirements.txt is missing."
-            exit 1
-          fi
-
-
-          echo "Product Lambda requirements.txt:"
-          cat lambdas/product/requirements.txt
-
-          if ! grep -qi '^PyMySQL==' lambdas/product/requirements.txt; then
-            echo "ERROR: PyMySQL is not pinned in lambdas/product/requirements.txt."
-            exit 1
-          fi
-
-          echo "All required Lambda source files are present."
-
-      - name: Prepare Product Lambda schema
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if [ ! -f "database/schema.sql" ]; then
-            echo "ERROR: database/schema.sql is missing."
-            exit 1
-          fi
-
-          cp database/schema.sql lambdas/product/schema.sql
-
-          echo "schema.sql copied into Product Lambda build context."
-
-      - name: Build Lambda application
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          echo "Starting SAM build..."
-
-          rm -rf .aws-sam
-
-          sam build \
-            --template-file cloudformation/application-stack.yaml \
-            --build-dir .aws-sam/build
-
-          echo "SAM build completed successfully."
-
-          echo "Checking Product Lambda build output..."
-
-          if [ ! -d ".aws-sam/build/ProductFunction" ]; then
-            echo "ERROR: ProductFunction was not created by SAM build."
-            exit 1
-          fi
-
-          if [ ! -d ".aws-sam/build/ProductFunction/pymysql" ]; then
-            echo "ERROR: PyMySQL was not included in ProductFunction."
-            echo "The Lambda cannot be deployed safely."
-            exit 1
-          fi
-
-          echo "PyMySQL is included in the Product Lambda build."
-
-          if [ ! -f ".aws-sam/build/ProductFunction/schema.sql" ]; then
-            echo "ERROR: schema.sql was not included in ProductFunction."
-            exit 1
-          fi
-
-          echo "schema.sql is included in the Product Lambda build."
-
-      - name: Verify SAM build output
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TEMPLATE=".aws-sam/build/template.yaml"
-
-          echo "Checking generated SAM template..."
-
-          if [ ! -f "$TEMPLATE" ]; then
-            echo "ERROR: SAM build template was not generated."
-            exit 1
-          fi
-
-          echo "Generated template found."
-
-          echo "Checking generated template contains low-stock rule configuration..."
-
-          if ! grep -q "LowStockEventRule" "$TEMPLATE"; then
-            echo "ERROR: LowStockEventRule reference is missing from generated SAM template."
-            grep -n "LowStock" "$TEMPLATE" || true
-            exit 1
-          fi
-
-          if ! grep -q "cloudmart.product" "$TEMPLATE"; then
-            echo "ERROR: cloudmart.product source is missing from generated template."
-            exit 1
-          fi
-
-          if ! grep -q "Inventory Changed" "$TEMPLATE"; then
-            echo "ERROR: Inventory Changed detail-type is missing from generated template."
-            exit 1
-          fi
-
-          if ! grep -q "low_stock" "$TEMPLATE"; then
-            echo "ERROR: low_stock condition is missing from generated template."
-            exit 1
-          fi
-
-          if ! grep -Eq -- "- true|true" "$TEMPLATE"; then
-            echo "ERROR: low_stock=true condition is missing from generated template."
-            exit 1
-          fi
-
-          echo "Low-stock rule configuration exists."
-
-          echo "Checking LowStockRuleArn output..."
-
-          if ! grep -Eq '^[[:space:]]*LowStockRuleArn:' "$TEMPLATE"; then
-            echo "ERROR: LowStockRuleArn output is missing."
-            exit 1
-          fi
-
-          echo "LowStockRuleArn output exists."
-
-          echo "Checking obsolete InventoryEventFunction references..."
-
-          if grep -q "InventoryEventFunction" "$TEMPLATE"; then
-            echo "ERROR: Obsolete InventoryEventFunction is still present in generated template."
-            exit 1
-          fi
-
-          echo "No obsolete InventoryEventFunction found."
-
-          echo "Validating generated template..."
-
-          sam validate \
-            --template-file "$TEMPLATE"
-
-          echo "Generated SAM template verification passed."
-
-      # =====================================================
-      # SAM DEPLOY APPLICATION STACK
-      # =====================================================
-
-      - name: Deploy Application Stack
-        env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
-          DB_PASSWORD: ${{ secrets.CLOUDMART_DB_PASSWORD }}
-
-        shell: bash
-        run: |
-
+          # SAM updates the recovered stack or creates a new stack when no
+          # previous CloudFormation stack exists.
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
-            --stack-name cloudmart-application-dev \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
+            --resolve-s3 \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-confirm-changeset \
             --no-fail-on-empty-changeset \
-            --resolve-s3 \
             --parameter-overrides \
-              Environment=dev \
+              Environment="$ENVIRONMENT" \
               ProjectName=cloudmart \
-              PrivateSubnetIds="$PRIVATE_SUBNET_IDS" \
-              LambdaSecurityGroupId="$LAMBDA_SECURITY_GROUP_ID" \
-              LambdaAuthorizerRoleArn="$AUTHORIZER_ROLE_ARN" \
-              ProductLambdaRoleArn="$PRODUCT_ROLE_ARN" \
-              AuthorizerCacheTTL=300 \
-              TokenParameterName="/cloudmart/dev/auth/token" \
-              DBHostParameterName="/cloudmart/dev/database/host" \
-              DBPortParameterName="/cloudmart/dev/database/port" \
-              DBNameParameterName="/cloudmart/dev/database/name" \
-              DBUsernameParameterName="/cloudmart/dev/database/username" \
-              DBPasswordParameterName="/cloudmart/dev/database/password" \
-              NotificationEmail="$NOTIFICATION_EMAIL" \
-              ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"
-
-          echo "Application Stack deployment completed successfully."
+              AuthorizerCacheTTL=0 \
+              NotificationEmail="$ADMIN_EMAIL" \
+              ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
+              EC2InstanceType=t3.micro
 
-
-      # =====================================================
-      # VERIFY LOW-STOCK TEMPLATE BEFORE STACK VERIFICATION
-      # =====================================================
-
-      - name: Verify Low-Stock EventBridge Template
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TEMPLATE="cloudformation/application-stack.yaml"
-
-          echo "Checking low-stock EventBridge template..."
-
-          if ! grep -qE '^\s+low_stock:' "$TEMPLATE"; then
-            echo "ERROR: low_stock filter is missing from application template."
-            exit 1
-          fi
-
-          if ! grep -qE '^\s+- true\s*$' "$TEMPLATE"; then
-            echo "ERROR: application template must contain low_stock: true."
-            exit 1
-          fi
-
-          if grep -qE 'exists:\s*true' "$TEMPLATE"; then
-            echo "ERROR: application template still contains exists:true."
-            exit 1
-          fi
-
-          echo "Low-stock EventBridge template is correct."
-
-      # =====================================================
-      # VERIFY APPLICATION STACK
-      # =====================================================
-
-      - name: Verify Application Stack
-        run: |
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)
-
-          echo "Application Stack Status: $STATUS"
-
-          case "$STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
-              echo "Application stack is ready."
-              ;;
-            *)
-              echo "ERROR: Application stack is not ready."
-              exit 1
-              ;;
-          esac
-
-
-      # =====================================================
-      # CREATE EVENTBRIDGE / SNS SSM PARAMETERS
-      # =====================================================
-
-      - name: Create Event and Notification SSM Parameters
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          EVENT_BUS_ARN=$(aws cloudformation describe-stacks             --stack-name cloudmart-application-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='EventBusArn'].OutputValue | [0]"             --output text)
-
-          SNS_TOPIC_ARN=$(aws cloudformation describe-stacks             --stack-name cloudmart-application-dev             --region "$AWS_REGION"             --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]"             --output text)
-
-          if [ -z "$EVENT_BUS_ARN" ] || [ "$EVENT_BUS_ARN" = "None" ]; then
-            echo "ERROR: EventBusArn output is missing."
-            exit 1
-          fi
-
-          if [ -z "$SNS_TOPIC_ARN" ] || [ "$SNS_TOPIC_ARN" = "None" ]; then
-            echo "ERROR: LowStockTopicArn output is missing."
-            exit 1
-          fi
-
-          aws ssm put-parameter             --name "/cloudmart/dev/events/event-bus-arn"             --type "String"             --value "$EVENT_BUS_ARN"             --overwrite             --region "$AWS_REGION"
-
-          aws ssm put-parameter             --name "/cloudmart/dev/notifications/sns-topic-arn"             --type "String"             --value "$SNS_TOPIC_ARN"             --overwrite             --region "$AWS_REGION"
-
-          echo "EventBridge and SNS SSM parameters created/updated."
-
-      # =====================================================
-      # VERIFY AUTHORIZER LAMBDA
-      # =====================================================
-
-      - name: Verify Authorizer Lambda
-        run: |
-
-          AUTHORIZE_LAMBDA=$(aws lambda get-function \
-            --function-name cloudmart-dev-authorizer \
-            --region "$AWS_REGION" \
-            --query "Configuration.FunctionArn" \
-            --output text)
-
-          echo "Authorizer Lambda: $AUTHORIZE_LAMBDA"
-
-          if [ -z "$AUTHORIZE_LAMBDA" ] || [ "$AUTHORIZE_LAMBDA" = "None" ]; then
-            echo "ERROR: Authorizer Lambda was not found."
-            exit 1
-          fi
-
-          echo "Authorizer Lambda verified successfully."
-
-
-      # =====================================================
-      # VERIFY PRODUCT LAMBDA
-      # =====================================================
-
-      - name: Verify Product Lambda
-        run: |
-
-          PRODUCT_LAMBDA=$(aws lambda get-function \
-            --function-name cloudmart-dev-product \
-            --region "$AWS_REGION" \
-            --query "Configuration.FunctionArn" \
-            --output text)
-
-          echo "Product Lambda: $PRODUCT_LAMBDA"
-
-          if [ -z "$PRODUCT_LAMBDA" ] || [ "$PRODUCT_LAMBDA" = "None" ]; then
-            echo "ERROR: Product Lambda was not found."
-            exit 1
-          fi
-
-          echo "Product Lambda verified successfully."
-
-
-      # =====================================================
-      # VERIFY EVENTBRIDGE INVENTORY CHANGE SNS TARGET
-      # =====================================================
-
-      - name: Verify Inventory Change EventBridge Rule
-        shell: bash
-        env:
-          NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
-        run: |
-          set -euo pipefail
-
-          STACK_NAME="cloudmart-application-dev"
-          RULE_NAME="cloudmart-dev-low-stock"
-          EVENT_BUS="cloudmart-dev-event-bus"
-
-          echo "Checking Inventory Change EventBridge rule..."
-
-          RULE_JSON=$(aws events describe-rule \
-            --name "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
-            --region "$AWS_REGION" \
-            --output json)
-
-          RULE_STATE=$(printf '%s' "$RULE_JSON" | jq -r '.State')
-          EVENT_PATTERN=$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')
-
-          echo "Rule state: $RULE_STATE"
-          echo "Event pattern: $EVENT_PATTERN"
-
-          if [ "$RULE_STATE" != "ENABLED" ]; then
-            echo "ERROR: Inventory Change EventBridge rule is not enabled."
-            exit 1
-          fi
-
-          RULE_SOURCE=$(printf '%s' "$EVENT_PATTERN" | jq -r '.source[0] // empty')
-          RULE_DETAIL_TYPE=$(printf '%s' "$EVENT_PATTERN" | jq -r '."detail-type"[0] // empty')
-          LOW_STOCK_FILTER=$(printf '%s' "$EVENT_PATTERN" | jq -c '.detail.low_stock // empty')
-
-          if [ "$RULE_SOURCE" != "cloudmart.product" ]; then
-            echo "ERROR: Rule source is incorrect: $RULE_SOURCE"
-            exit 1
-          fi
-
-          if [ "$RULE_DETAIL_TYPE" != "Inventory Changed" ]; then
-            echo "ERROR: Rule detail-type is incorrect: $RULE_DETAIL_TYPE"
-            exit 1
-          fi
-
-          if [ "$LOW_STOCK_FILTER" != '[true]' ]; then
-            echo "ERROR: Low-stock EventBridge rule must filter low_stock=true."
-            echo "Actual low_stock filter: $LOW_STOCK_FILTER"
-            exit 1
-          fi
-
-          echo "EventBridge event pattern is correct."
-
-          NORMAL_STOCK_EVENT="$(jq -nc '{
-            version:"0",
-            id:"00000000-0000-0000-0000-000000000001",
-            source:"cloudmart.product",
-            "detail-type":"Inventory Changed",
-            account:"000000000000",
-            time:"2026-01-01T00:00:00Z",
-            region:"us-east-1",
-            resources:[],
-            detail:{low_stock:false,product_id:"CI-NORMAL-STOCK",product_name:"CI Normal Product",old_stock:11,new_stock:10,low_stock_threshold:5}
-          }')"
-
-          LOW_STOCK_EVENT="$(jq -nc '{
-            version:"0",
-            id:"00000000-0000-0000-0000-000000000002",
-            source:"cloudmart.product",
-            "detail-type":"Inventory Changed",
-            account:"000000000000",
-            time:"2026-01-01T00:00:00Z",
-            region:"us-east-1",
-            resources:[],
-            detail:{low_stock:true,product_id:"CI-LOW-STOCK",product_name:"CI Low Stock Product",old_stock:4,new_stock:1,low_stock_threshold:5}
-          }')"
-
-          NORMAL_MATCH=$(aws events test-event-pattern \
-            --event-pattern "$EVENT_PATTERN" \
-            --event "$NORMAL_STOCK_EVENT" \
-            --region "$AWS_REGION" \
-            --query 'Result' \
-            --output text)
-
-          LOW_MATCH=$(aws events test-event-pattern \
-            --event-pattern "$EVENT_PATTERN" \
-            --event "$LOW_STOCK_EVENT" \
-            --region "$AWS_REGION" \
-            --query 'Result' \
-            --output text)
-
-          echo "Normal stock-change pattern match: $NORMAL_MATCH"
-          echo "Low-stock pattern match: $LOW_MATCH"
-
-          if [ "$NORMAL_MATCH" != "False" ]; then
-            echo "ERROR: Normal stock event incorrectly matches the low-stock rule."
-            exit 1
-          fi
-
-          if [ "$LOW_MATCH" != "True" ]; then
-            echo "ERROR: Low-stock event does not match the low-stock rule."
-            exit 1
-          fi
-
-          TARGET_JSON=$(aws events list-targets-by-rule \
-            --rule "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
-            --region "$AWS_REGION" \
-            --output json)
-
-          TARGET_COUNT=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets | length')
-          TARGET_ARN=$(printf '%s' "$TARGET_JSON" | jq -r '.Targets[0].Arn // empty')
-
-          echo "Target count: $TARGET_COUNT"
-          echo "Target ARN: $TARGET_ARN"
-
-          if [ "$TARGET_COUNT" -lt 1 ] || [ -z "$TARGET_ARN" ]; then
-            echo "ERROR: EventBridge rule has no target."
-            exit 1
-          fi
-
-          EXPECTED_SNS_ARN=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
-            --output text)
-
-          if [ -z "$EXPECTED_SNS_ARN" ] || [ "$EXPECTED_SNS_ARN" = "None" ]; then
-            echo "ERROR: LowStockTopicArn CloudFormation output is missing."
-            exit 1
-          fi
-
-          echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
-
-          if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target does not match SNS topic."
-            echo "Expected: $EXPECTED_SNS_ARN"
-            echo "Actual:   $TARGET_ARN"
-            exit 1
-          fi
-
-          echo "EventBridge target matches CloudMart SNS topic."
-
-          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
-            echo "ERROR: NOTIFICATION_EMAIL is not configured."
-            exit 1
-          fi
-
-          echo "Checking SNS email subscription..."
-          echo "Expected notification email: $NOTIFICATION_EMAIL"
-
-          SUBSCRIPTIONS_JSON=$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$EXPECTED_SNS_ARN" \
-            --region "$AWS_REGION" \
-            --output json)
-
-          EMAIL_SUBSCRIPTION_ARN=$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq -r \
-            --arg email "$NOTIFICATION_EMAIL" '
-              [.Subscriptions[]
-                | select(.Protocol == "email" and .Endpoint == $email)
-                | .SubscriptionArn][0] // empty')
-
-          if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: Email subscription was not found for $NOTIFICATION_EMAIL."
-            exit 1
-          fi
-
-          echo "Email subscription ARN: $EMAIL_SUBSCRIPTION_ARN"
-
-          if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-            echo "ERROR: SNS email subscription is pending confirmation."
-            echo "Confirm the SNS email before rerunning the workflow."
-            exit 1
-          fi
-
-          if [ "$EMAIL_SUBSCRIPTION_ARN" = "Deleted" ]; then
-            echo "ERROR: SNS email subscription is deleted."
-            echo "The application stack must create a new email subscription."
-            exit 1
-          fi
-
-          if [[ "$EMAIL_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
-            echo "ERROR: Invalid SNS subscription ARN returned."
-            echo "Actual value: $EMAIL_SUBSCRIPTION_ARN"
-            exit 1
-          fi
-
-          PENDING_CONFIRMATION=$(aws sns get-subscription-attributes \
-            --subscription-arn "$EMAIL_SUBSCRIPTION_ARN" \
-            --region "$AWS_REGION" \
-            --query "Attributes.PendingConfirmation" \
-            --output text)
-
-          echo "PendingConfirmation: $PENDING_CONFIRMATION"
-
-          if [ "$PENDING_CONFIRMATION" != "false" ]; then
-            echo "ERROR: SNS email subscription is not confirmed."
-            exit 1
-          fi
-
-          echo "SNS email subscription is confirmed."
-          echo "Inventory Change EventBridge SNS rule verified successfully."
-
-
-      # =====================================================
-      # SHOW APPLICATION OUTPUTS
-      # =====================================================
-
-      - name: Show Application Outputs
-        run: |
-
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs" \
-            --output table
-
-
-      # =====================================================
-      # APPLICATION FAILURE DIAGNOSTICS
-      # =====================================================
-
-      - name: Show Application Stack Failure Events
-        if: failure()
-        run: |
-
-          echo "APPLICATION STACK STATUS"
-
-          aws cloudformation describe-stacks \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "Stacks[0].[StackStatus,StackStatusReason]" \
-            --output table || true
-
-          echo "APPLICATION STACK FAILURE EVENTS"
-
-          aws cloudformation describe-stack-events \
-            --stack-name cloudmart-application-dev \
-            --region "$AWS_REGION" \
-            --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='DELETE_FAILED' || ResourceStatus=='ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_IN_PROGRESS' || ResourceStatus=='UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-            --output table || true
-
-  verify-eventbridge-sns:
-    name: Verify EventBridge SNS Target
-    needs: deploy-application
+           APP_STATUS=$(aws cloudformation describe-stacks \
+             --stack-name "$STACK_NAME" \
+             --region "$AWS_REGION" \
+             --query 'Stacks[0].StackStatus' \
+             --output text)
+
+           case "$APP_STATUS" in
+             CREATE_COMPLETE|UPDATE_COMPLETE)
+               echo "Application stack is healthy: $APP_STATUS"
+               ;;
+             *)
+               echo "ERROR: Application stack ended in unexpected state: $APP_STATUS"
+               exit 1
+               ;;
+           esac
+
+           echo "Verifying deployed API Gateway customer-registration method..."
+
+           REST_API_ID=$(aws cloudformation describe-stacks              --stack-name "$STACK_NAME"              --region "$AWS_REGION"              --query 'Stacks[0].Outputs[?OutputKey==`RestApiId`].OutputValue'              --output text)
+
+           CUSTOMERS_RESOURCE_ID=$(aws apigateway get-resources              --rest-api-id "$REST_API_ID"              --region "$AWS_REGION"              --query 'items[?path==`/customers`].id | [0]'              --output text)
+
+           test -n "$CUSTOMERS_RESOURCE_ID" && test "$CUSTOMERS_RESOURCE_ID" != "None" || {
+             echo "ERROR: /customers API Gateway resource was not found."
+             exit 1
+           }
+
+           CUSTOMER_POST_AUTH_TYPE=$(aws apigateway get-method              --rest-api-id "$REST_API_ID"              --resource-id "$CUSTOMERS_RESOURCE_ID"              --http-method POST              --region "$AWS_REGION"              --query 'authorizationType'              --output text)
+
+           echo "POST /customers authorization type: $CUSTOMER_POST_AUTH_TYPE"
+
+           test "$CUSTOMER_POST_AUTH_TYPE" = "NONE" || {
+             echo "ERROR: POST /customers is still protected by API Gateway."
+             echo "Expected authorizationType=NONE but received: $CUSTOMER_POST_AUTH_TYPE"
+             exit 1
+           }
+
+           echo "POST /customers is publicly accessible at API Gateway."
+
+           echo "Verifying deployed Customer Lambda registration version..."
+
+           CUSTOMER_FUNCTION_NAME="cloudmart-${ENVIRONMENT}-customer"
+           CUSTOMER_HANDLER=$(aws lambda get-function-configuration              --function-name "$CUSTOMER_FUNCTION_NAME"              --region "$AWS_REGION"              --query 'Handler'              --output text)
+
+           CUSTOMER_REGISTRATION_VERSION=$(aws lambda get-function-configuration              --function-name "$CUSTOMER_FUNCTION_NAME"              --region "$AWS_REGION"              --query 'Environment.Variables.CUSTOMER_REGISTRATION_VERSION'              --output text)
+
+           echo "Customer Lambda handler: $CUSTOMER_HANDLER"
+           echo "Customer registration version: $CUSTOMER_REGISTRATION_VERSION"
+
+           test "$CUSTOMER_HANDLER" = "index.lambda_handler_v2" || {
+             echo "ERROR: Customer Lambda is still using the old handler."
+             exit 1
+           }
+
+           test "$CUSTOMER_REGISTRATION_VERSION" = "2" || {
+             echo "ERROR: Customer Lambda registration version is not 2."
+             exit 1
+           }
+
+           echo "Customer Lambda registration version is deployed."
+
+           echo "Verifying SNS notification infrastructure..."
+           ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notifications$" | head -n 1 || true)
+           LOW_STOCK_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-low-stock$" | head -n 1 || true)
+
+           test -n "$ORDER_TOPIC_ARN" || { echo "ERROR: Customer order SNS topic was not created."; exit 1; }
+           test -n "$LOW_STOCK_TOPIC_ARN" || { echo "ERROR: Low-stock SNS topic was not created."; exit 1; }
+
+           echo "Customer order SNS topic: $ORDER_TOPIC_ARN"
+           echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"
+
+           echo "Checking admin low-stock email subscription..."
+           LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+             --topic-arn "$LOW_STOCK_TOPIC_ARN" \
+             --region "$AWS_REGION" \
+             --output json)
+
+           # SNS can return lifecycle values such as PendingConfirmation or
+           # Deleted in SubscriptionArn. Only a real ARN may be passed to
+           # GetSubscriptionAttributes.
+           LOW_STOCK_SUB_ARN=$(echo "$LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+             .Subscriptions[]?
+             | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+             | .SubscriptionArn
+             | select(startswith("arn:"))' | head -n 1)
+
+           LOW_STOCK_PENDING_PRESENT=$(echo "$LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+             any(.Subscriptions[]?; ((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase)) and .SubscriptionArn == "PendingConfirmation")')
+
+           LOW_STOCK_DELETED_PRESENT=$(echo "$LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+             any(.Subscriptions[]?; ((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase)) and .SubscriptionArn == "Deleted")')
+
+           if [ -n "$LOW_STOCK_SUB_ARN" ]; then
+             echo "Admin low-stock SNS subscription ARN: $LOW_STOCK_SUB_ARN"
+
+             if LOW_STOCK_SUB_ATTRIBUTES=$(aws sns get-subscription-attributes \
+               --subscription-arn "$LOW_STOCK_SUB_ARN" \
+               --region "$AWS_REGION" \
+               --output json 2>/tmp/low-stock-sub-error.log); then
+               LOW_STOCK_PENDING=$(echo "$LOW_STOCK_SUB_ATTRIBUTES" | jq -r '.Attributes.PendingConfirmation // "false"')
+               if [ "$LOW_STOCK_PENDING" = "true" ]; then
+                 echo "WARNING: Admin low-stock SNS subscription is PendingConfirmation."
+                 echo "The admin must click the SNS confirmation link before low-stock emails can be delivered."
+               else
+                 echo "Admin low-stock SNS subscription is confirmed."
+               fi
+             else
+               echo "WARNING: Existing admin low-stock subscription ARN is no longer available."
+               cat /tmp/low-stock-sub-error.log
+               LOW_STOCK_SUB_ARN=""
+             fi
+           fi
+
+           # Remove the obsolete singular topic created by an older version.
+           # The current CloudFormation-managed topic is plural:
+           # cloudmart-${ENVIRONMENT}-order-notifications.
+           STALE_ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
+
+           if [ -n "$STALE_ORDER_TOPIC_ARN" ]; then
+             echo "Deleting stale SNS topic: $STALE_ORDER_TOPIC_ARN"
+             aws sns delete-topic                --topic-arn "$STALE_ORDER_TOPIC_ARN"                --region "$AWS_REGION"
+             echo "Stale singular order-notification topic deleted."
+           else
+             echo "No stale singular order-notification topic found."
+           fi
+
+           # Verify the obsolete singular topic is gone.
+           STALE_ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
+
+           test -z "$STALE_ORDER_TOPIC_ARN" || {
+             echo "ERROR: stale singular order-notification topic still exists."
+             exit 1
+           }
+
+           # Read-only verification. The email subscription itself is created by
+           # CloudFormation from NotificationEmail. GitHub Actions does not call
+           # sns:Subscribe, ConfirmSubscription, or Unsubscribe.
+           FINAL_LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+             --topic-arn "$LOW_STOCK_TOPIC_ARN" \
+             --region "$AWS_REGION" \
+             --output json)
+
+           FINAL_LOW_STOCK_SUB_STATUS=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+             .Subscriptions[]?
+             | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+             | if .SubscriptionArn == "PendingConfirmation" then "PENDING"
+               elif .SubscriptionArn == "Deleted" then "DELETED"
+               elif (.SubscriptionArn // "" | startswith("arn:")) then "CONFIRMED"
+               else "UNKNOWN" end' | head -n 1)
+
+           case "$FINAL_LOW_STOCK_SUB_STATUS" in
+             CONFIRMED)
+               FINAL_LOW_STOCK_SUB_ARN=$(echo "$FINAL_LOW_STOCK_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+                 .Subscriptions[]?
+                 | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+                 | .SubscriptionArn
+                 | select(startswith("arn:"))' | head -n 1)
+               echo "Confirmed low-stock SNS subscription: $FINAL_LOW_STOCK_SUB_ARN"
+               ;;
+             PENDING)
+               echo "WARNING: CloudFormation created the low-stock email subscription and it is PendingConfirmation."
+               echo "The recipient must confirm the SNS email before delivery can begin."
+               ;;
+             DELETED)
+               echo "WARNING: The low-stock email subscription is Deleted."
+               echo "CloudFormation owns this subscription; no manual subscription command is run by GitHub Actions."
+               ;;
+             *)
+               echo "WARNING: No low-stock email subscription is currently visible."
+               echo "CloudFormation is responsible for creating the subscription from NotificationEmail."
+               ;;
+           esac
+
+           echo "SNS notification infrastructure check completed."
+
+  initialize:
+    name: Initialize CloudMart
     runs-on: ubuntu-latest
-
-    env:
-      NOTIFICATION_EMAIL: ${{ vars.CLOUDMART_NOTIFICATION_EMAIL }}
-
+    needs: deploy-application
     steps:
+      - uses: actions/checkout@v5
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Initialize database
+        run: |
+          set -euo pipefail
+          aws lambda invoke \
+            --function-name "cloudmart-${ENVIRONMENT}-product" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"initialize_database"}' \
+            /tmp/db.json
+          jq -e '.statusCode == 200' /tmp/db.json >/dev/null
+          rm -f /tmp/db.json
+          echo "Database initialization completed successfully."
+      - name: Initialize authentication tokens
+        run: |
+          set -euo pipefail
+          aws lambda invoke \
+            --function-name "cloudmart-${ENVIRONMENT}-token-manager" \
+            --region "$AWS_REGION" \
+            --cli-binary-format raw-in-base64-out \
+            --payload '{"action":"initialize_tokens"}' \
+            /tmp/auth.json
+          jq -e '.statusCode == 200' /tmp/auth.json >/dev/null
+          rm -f /tmp/auth.json
+          echo "Authentication tokens initialized successfully."
 
-      - name: Checkout repository
-        uses: actions/checkout@v5
+      - name: Verify deployed API authentication
+        run: |
+          set -euo pipefail
 
+          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name "cloudmart-application-${ENVIRONMENT}" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`RestApiUrl`].OutputValue' \
+            --output text)
+
+          echo "Verifying POST /customers without an Authorization header..."
+
+          CUSTOMER_PUBLIC_RESPONSE=/tmp/customer-public-response.json
+          CUSTOMER_PUBLIC_HTTP_CODE=$(curl -sS -o "$CUSTOMER_PUBLIC_RESPONSE" -w '%{http_code}'             -X POST             -H "Content-Type: application/json"             --data '{}'             "$API_URL/customers")
+
+          echo "POST /customers without Authorization returned HTTP $CUSTOMER_PUBLIC_HTTP_CODE"
+          cat "$CUSTOMER_PUBLIC_RESPONSE"
+
+          # {} is intentionally invalid, so no customer is created.
+          # HTTP 400 proves the request reached Customer Lambda.
+          # HTTP 403 means an old protected route is still deployed.
+          if [ "$CUSTOMER_PUBLIC_HTTP_CODE" != "400" ]; then
+            echo "ERROR: POST /customers public-registration check failed."
+            echo "Expected HTTP 400 from Lambda validation, but received HTTP $CUSTOMER_PUBLIC_HTTP_CODE."
+            exit 1
+          fi
+
+          echo "POST /customers public-registration smoke test passed."
+          rm -f "$CUSTOMER_PUBLIC_RESPONSE"
+
+          ADMIN_TOKEN=$(aws ssm get-parameter \
+            --name "$AUTH_PARAMETER" \
+            --region "$AWS_REGION" \
+            --with-decryption \
+            --query 'Parameter.Value' \
+            --output text | jq -r '.admin_token')
+
+          test -n "$ADMIN_TOKEN" && test "$ADMIN_TOKEN" != "null" || { echo "ERROR: admin_token is missing from $AUTH_PARAMETER"; exit 1; }
+
+          RESPONSE_FILE=/tmp/products-response.json
+          HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
+            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            "$API_URL/products")
+
+          echo "API authentication smoke-test HTTP status: $HTTP_CODE"
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ERROR: GET /products did not authenticate successfully."
+            cat "$RESPONSE_FILE"
+            exit 1
+          fi
+
+          echo "API authentication smoke test passed: GET /products returned HTTP 200."
+          rm -f "$RESPONSE_FILE"
+
+  deploy-monitoring:
+    name: Deploy API Monitoring and EC2 Dashboard
+    runs-on: ubuntu-latest
+    needs: initialize
+    steps:
+      - uses: actions/checkout@v5
+      - uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Ensure SNS email subscription exists
-        shell: bash
+      - name: Upload dashboard source
         run: |
           set -euo pipefail
 
-          STACK_NAME="cloudmart-application-dev"
-
-          if [ -z "${NOTIFICATION_EMAIL:-}" ]; then
-            echo "ERROR: NOTIFICATION_EMAIL is not configured."
-            exit 1
-          fi
-
-          TOPIC_ARN="$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
+          REPORT_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "cloudmart-data-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
-            --output text)"
+            --query 'Stacks[0].Outputs[?OutputKey==`ReportBucketName`].OutputValue' \
+            --output text)
 
-          if [ -z "$TOPIC_ARN" ] || [ "$TOPIC_ARN" = "None" ]; then
-            echo "ERROR: LowStockTopicArn output is missing."
-            exit 1
-          fi
+          test -n "$REPORT_BUCKET" || { echo "Report bucket was not found."; exit 1; }
 
-          echo "SNS topic: $TOPIC_ARN"
-          echo "Configured email: $NOTIFICATION_EMAIL"
+          aws s3 sync dashboard "s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}" --delete --exclude "venv/*" --exclude "venv"
+          echo "Dashboard source uploaded to s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}"
 
-          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$TOPIC_ARN" \
-            --region "$AWS_REGION" \
-            --output json)"
+      - name: Validate monitoring template
+        run: sam validate --template-file cloudformation/API-Monitoring-EC2.yaml
 
-          EMAIL_SUBSCRIPTION_ARN="$(
-            printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$NOTIFICATION_EMAIL" '
-                [.Subscriptions[]
-                  | select(.Protocol == "email" and .Endpoint == $email)
-                  | .SubscriptionArn][0] // empty
-              '
-          )"
+      - name: Build monitoring stack
+        run: sam build --template-file cloudformation/API-Monitoring-EC2.yaml
 
-          if [ -z "$EMAIL_SUBSCRIPTION_ARN" ] || [ "$EMAIL_SUBSCRIPTION_ARN" = "None" ]; then
-            echo "ERROR: SNS email subscription is missing."
-            echo "The application stack must create the email subscription."
-            echo "Do not create it manually in Cloud Shell."
-            exit 1
-          fi
-
-          echo "SNS email subscription: $EMAIL_SUBSCRIPTION_ARN"
-
-          if [ "$EMAIL_SUBSCRIPTION_ARN" = "PendingConfirmation" ]; then
-            echo "ERROR: SNS email subscription is pending confirmation."
-            echo "Confirm the SNS email before continuing."
-            exit 1
-          fi
-
-          if [ "$EMAIL_SUBSCRIPTION_ARN" = "Deleted" ]; then
-            echo "ERROR: SNS email subscription is deleted."
-            echo "The application stack must create a new subscription."
-            exit 1
-          fi
-
-          if [[ "$EMAIL_SUBSCRIPTION_ARN" != arn:aws:sns:* ]]; then
-            echo "ERROR: Invalid SNS subscription ARN returned."
-            echo "Actual value: $EMAIL_SUBSCRIPTION_ARN"
-            exit 1
-          fi
-
-          PENDING_CONFIRMATION=$(aws sns get-subscription-attributes             --subscription-arn "$EMAIL_SUBSCRIPTION_ARN"             --region "$AWS_REGION"             --query "Attributes.PendingConfirmation"             --output text)
-
-          echo "PendingConfirmation: $PENDING_CONFIRMATION"
-
-          if [ "$PENDING_CONFIRMATION" != "false" ]; then
-            echo "ERROR: SNS email subscription is not confirmed."
-            exit 1
-          fi
-
-          echo "Confirmed SNS email subscription exists: $EMAIL_SUBSCRIPTION_ARN"
-
-      - name: Verify EventBridge inventory change SNS target
-        shell: bash
+      - name: Deploy API-Monitoring-EC2 stack
+        env:
+          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
         run: |
           set -euo pipefail
+          test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
 
-          STACK_NAME="cloudmart-application-dev"
-          RULE_NAME="cloudmart-dev-low-stock"
-          EVENT_BUS="cloudmart-dev-event-bus"
+          STACK_NAME="API-Monitoring-EC2-${ENVIRONMENT}"
 
-          echo "=========================================="
-          echo "VERIFY EVENTBRIDGE -> SNS"
-          echo "=========================================="
-
-          echo "Checking CloudFormation stack..."
-
-          STACK_STATUS="$(aws cloudformation describe-stacks \
+          STACK_STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "Stacks[0].StackStatus" \
-            --output text)"
+            --query 'Stacks[0].StackStatus' \
+            --output text 2>/dev/null || true)
 
-          echo "Application stack status: $STACK_STATUS"
-
+          # Do not automatically delete the monitoring stack.
+          # If CloudFormation reports a failed/rollback state, stop here so
+          # no DELETE_IN_PROGRESS operation is started by this workflow.
           case "$STACK_STATUS" in
-            CREATE_COMPLETE|UPDATE_COMPLETE)
+            ROLLBACK_*|UPDATE_ROLLBACK_*)
+              echo "============================================================"
+              echo "ERROR: Monitoring stack is in rollback state: $STACK_STATUS"
+              echo "Stack: $STACK_NAME"
+              echo "No automatic recovery or deletion will be performed."
+              echo "Please manually inspect and recover/delete the stack."
+              echo "After resolving the stack, run the workflow again."
+              echo "============================================================"
+              exit 1
               ;;
-            *)
-              echo "ERROR: Application stack is not ready."
+
+            REVIEW_IN_PROGRESS)
+              echo "============================================================"
+              echo "ERROR: Monitoring stack is in REVIEW_IN_PROGRESS."
+              echo "Stack: $STACK_NAME"
+              echo "No automatic deletion will be performed."
+              echo "Please manually inspect/delete the unfinished stack."
+              echo "After resolving the stack, run the workflow again."
+              echo "============================================================"
+              exit 1
+              ;;
+
+            DELETE_FAILED)
+              echo "============================================================"
+              echo "ERROR: Monitoring stack is in DELETE_FAILED."
+              echo "Stack: $STACK_NAME"
+              echo "Manual CloudFormation recovery is required."
+              echo "============================================================"
+              exit 1
+              ;;
+
+            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
+              echo "ERROR: Monitoring stack is currently $STACK_STATUS."
+              echo "Wait for CloudFormation to finish before retrying."
               exit 1
               ;;
           esac
 
-          EXPECTED_SNS_ARN="$(aws cloudformation describe-stacks \
+          CFN_EXECUTION_ROLE_ARN=$(aws iam get-role \
+            --role-name "cloudmart-${ENVIRONMENT}-cloudformation-execution-role" \
+            --region "$AWS_REGION" \
+            --query 'Role.Arn' \
+            --output text)
+
+          test -n "$CFN_EXECUTION_ROLE_ARN" && test "$CFN_EXECUTION_ROLE_ARN" != "None" || {
+            echo "ERROR: CloudFormation execution role was not found."
+            exit 1
+          }
+
+          echo "Using CloudFormation execution role: $CFN_EXECUTION_ROLE_ARN"
+          echo "Dashboard bootstrap version: ${GITHUB_RUN_NUMBER}"
+          echo "Dashboard source prefix: dashboard-source/${GITHUB_SHA}"
+
+          sam deploy \
+            --template-file .aws-sam/build/template.yaml \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "Stacks[0].Outputs[?OutputKey=='LowStockTopicArn'].OutputValue | [0]" \
-            --output text)"
+            --role-arn "$CFN_EXECUTION_ROLE_ARN" \
+            --resolve-s3 \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-confirm-changeset \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              Environment="$ENVIRONMENT" \
+              ProjectName=cloudmart \
+              NotificationEmail="$ADMIN_EMAIL" \
+              EC2InstanceType=t3.micro \
+              DashboardSourcePrefix="dashboard-source/${GITHUB_SHA}" \
+              DashboardBootstrapVersion="${GITHUB_RUN_NUMBER}"
 
-          if [ -z "$EXPECTED_SNS_ARN" ] || [ "$EXPECTED_SNS_ARN" = "None" ]; then
-            echo "ERROR: LowStockTopicArn CloudFormation output is missing."
-            exit 1
-          fi
-
-          echo "Expected SNS ARN: $EXPECTED_SNS_ARN"
-
-          echo ""
-          echo "Checking EventBridge rule..."
-
-          RULE_JSON="$(aws events describe-rule \
-            --name "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
+          MONITORING_STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --output json)"
+            --query 'Stacks[0].StackStatus' \
+            --output text)
 
-          RULE_STATE="$(printf '%s' "$RULE_JSON" | jq -r '.State')"
-          EVENT_PATTERN="$(printf '%s' "$RULE_JSON" | jq -r '.EventPattern')"
+          case "$MONITORING_STATUS" in
+            CREATE_COMPLETE|UPDATE_COMPLETE)
+              echo "Monitoring stack is healthy: $MONITORING_STATUS"
+              ;;
+            *)
+              echo "ERROR: Monitoring stack ended in unexpected state: $MONITORING_STATUS"
+              exit 1
+              ;;
+          esac
 
-          echo "Rule state: $RULE_STATE"
-          echo "Event pattern: $EVENT_PATTERN"
+          echo "Verifying deployed daily report EventBridge rule..."
 
-          if [ "$RULE_STATE" != "ENABLED" ]; then
-            echo "ERROR: EventBridge rule is not ENABLED."
+          DAILY_REPORT_SCHEDULE_NAME=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DailyReportScheduleName`].OutputValue'             --output text)
+
+          DAILY_REPORT_SCHEDULE_ARN=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DailyReportScheduleArn`].OutputValue'             --output text)
+
+          test -n "$DAILY_REPORT_SCHEDULE_NAME" && test "$DAILY_REPORT_SCHEDULE_NAME" != "None" || {
+            echo "ERROR: Daily report EventBridge schedule name was not returned by CloudFormation."
             exit 1
-          fi
+          }
 
-          if [[ "$EVENT_PATTERN" != *'"cloudmart.product"'* ]]; then
-            echo "ERROR: EventBridge rule does not contain source cloudmart.product."
+          test -n "$DAILY_REPORT_SCHEDULE_ARN" && test "$DAILY_REPORT_SCHEDULE_ARN" != "None" || {
+            echo "ERROR: Daily report EventBridge schedule ARN was not returned by CloudFormation."
             exit 1
-          fi
+          }
 
-          if [[ "$EVENT_PATTERN" != *'"Inventory Changed"'* ]]; then
-            echo "ERROR: EventBridge rule does not contain detail-type Inventory Changed."
+          DAILY_REPORT_RESOURCE_STATUS=$(aws cloudformation describe-stack-resources             --stack-name "$STACK_NAME"             --logical-resource-id DailyReportScheduleV2             --region "$AWS_REGION"             --query 'StackResources[0].ResourceStatus'             --output text)
+
+          test "$DAILY_REPORT_RESOURCE_STATUS" = "CREATE_COMPLETE" || {
+            echo "ERROR: Daily report EventBridge rule resource is not CREATE_COMPLETE."
+            echo "Resource status: $DAILY_REPORT_RESOURCE_STATUS"
             exit 1
-          fi
+          }
 
-          # This is the low-stock alert rule, so the event pattern
-          # MUST contain the low_stock condition.
-          if [[ "$EVENT_PATTERN" != *'"low_stock"'* ]]; then
-            echo "ERROR: Low-stock EventBridge rule does not contain low_stock condition."
-            exit 1
-          fi
+          echo "Daily report EventBridge rule: $DAILY_REPORT_SCHEDULE_NAME"
+          echo "Daily report EventBridge ARN: $DAILY_REPORT_SCHEDULE_ARN"
+          echo "Daily report schedule: rate(1 day)"
+          echo "Daily report schedule resource status: $DAILY_REPORT_RESOURCE_STATUS"
+          echo "Daily report schedule verification passed."
 
-          echo "EventBridge event pattern is correct."
-
-          echo ""
-          echo "Testing normal inventory-change event..."
-
-          NORMAL_EVENT="$(jq -nc '{
-            version:"0",
-            id:"00000000-0000-0000-0000-000000000001",
-            source:"cloudmart.product",
-            "detail-type":"Inventory Changed",
-            account:"000000000000",
-            time:"2026-01-01T00:00:00Z",
-            region:"us-east-1",
-            resources:[],
-            detail:{
-              low_stock:false,
-              product_id:"CI-NORMAL-STOCK",
-              quantity:10
-            }
-          }')"
-
-          NORMAL_MATCH="$(aws events test-event-pattern \
-            --event-pattern "$EVENT_PATTERN" \
-            --event "$NORMAL_EVENT" \
+          DASHBOARD_INSTANCE_ID=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query "Result" \
-            --output text)"
+            --query 'Stacks[0].Outputs[?OutputKey==`OperationsEC2InstanceId`].OutputValue' \
+            --output text)
 
-          echo "Normal event match: $NORMAL_MATCH"
-
-          if [ "$NORMAL_MATCH" != "False" ]; then
-            echo "ERROR: Normal inventory-change event incorrectly matches the low-stock rule."
+          test -n "$DASHBOARD_INSTANCE_ID" && test "$DASHBOARD_INSTANCE_ID" != "None" || {
+            echo "ERROR: Operations dashboard EC2 instance ID was not returned."
             exit 1
-          fi
+          }
 
-          echo ""
-          echo "Testing low-stock inventory-change event..."
+          echo "Operations dashboard EC2 instance: $DASHBOARD_INSTANCE_ID"
 
-          LOW_STOCK_EVENT="$(jq -nc '{
-            version:"0",
-            id:"00000000-0000-0000-0000-000000000002",
-            source:"cloudmart.product",
-            "detail-type":"Inventory Changed",
-            account:"000000000000",
-            time:"2026-01-01T00:00:00Z",
-            region:"us-east-1",
-            resources:[],
-            detail:{
-              low_stock:true,
-              product_id:"CI-LOW-STOCK",
-              quantity:3
-            }
-          }')"
+          echo "Waiting for the Operations EC2 instance to become available in SSM..."
+          for attempt in $(seq 1 30); do
+            SSM_STATUS=$(aws ssm describe-instance-information \
+              --filters "Key=InstanceIds,Values=${DASHBOARD_INSTANCE_ID}" \
+              --region "$AWS_REGION" \
+              --query 'InstanceInformationList[0].PingStatus' \
+              --output text 2>/dev/null || true)
 
-          LOW_STOCK_MATCH="$(aws events test-event-pattern \
-            --event-pattern "$EVENT_PATTERN" \
-            --event "$LOW_STOCK_EVENT" \
+            echo "SSM status attempt ${attempt}/30: ${SSM_STATUS:-NOT_FOUND}"
+
+            if [ "$SSM_STATUS" = "Online" ]; then
+              break
+            fi
+
+            if [ "$attempt" -eq 30 ]; then
+              echo "ERROR: Operations EC2 instance did not become Online in SSM."
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          REPORT_BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "cloudmart-data-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
-            --query "Result" \
-            --output text)"
+            --query 'Stacks[0].Outputs[?OutputKey==`ReportBucketName`].OutputValue' \
+            --output text)
 
-          echo "Low-stock event match: $LOW_STOCK_MATCH"
+          test -n "$REPORT_BUCKET" && test "$REPORT_BUCKET" != "None" || {
+            echo "ERROR: Report bucket was not found for the dashboard refresh."
+            exit 1
+          }
 
-          if [ "$LOW_STOCK_MATCH" != "True" ]; then
-            echo "ERROR: Low-stock inventory-change event does not match the rule."
+          echo "Refreshing the dashboard source and service on the existing EC2 instance..."
+          REMOTE_COMMANDS=$(cat <<'REMOTE_SCRIPT'
+          set -Eeuo pipefail
+          
+          REPORT_BUCKET='__REPORT_BUCKET__'
+          SOURCE_PREFIX='dashboard-source/__GITHUB_SHA__'
+          ENVIRONMENT='__ENVIRONMENT__'
+          AWS_REGION_VALUE='__AWS_REGION__'
+          
+          export AWS_DEFAULT_REGION="$AWS_REGION_VALUE"
+          export AWS_REGION="$AWS_REGION_VALUE"
+          
+          install -d -m 700 /etc/cloudmart
+          if [ ! -s /etc/cloudmart/dashboard.env ]; then
+          umask 077
+          printf 'FLASK_SECRET_KEY=%s\n' "$(openssl rand -hex 32)" > /etc/cloudmart/dashboard.env
+          chmod 600 /etc/cloudmart/dashboard.env
+          fi
+          
+          # Keep the existing session secret stable across dashboard deployments.
+          test -s /etc/cloudmart/dashboard.env
+          
+          mkdir -p /opt/cloudmart/dashboard
+
+          # The virtual environment is local to EC2 and must never be managed by
+          # the dashboard source sync. Remove it BEFORE --delete so AWS CLI does
+          # not inspect stale/broken venv symlinks such as venv/bin/python3.9.
+          rm -rf /opt/cloudmart/dashboard/venv
+
+          aws s3 sync "s3://$REPORT_BUCKET/$SOURCE_PREFIX" /opt/cloudmart/dashboard --delete --exclude "venv/*" --exclude "venv"
+
+          test -f /opt/cloudmart/dashboard/app.py
+          test -f /opt/cloudmart/dashboard/requirements.txt
+
+          python3 -m venv /opt/cloudmart/dashboard/venv
+          
+          if ! grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
+          /opt/cloudmart/dashboard/requirements.txt \
+          > /opt/cloudmart/dashboard/requirements-runtime.txt; then
+            echo "ERROR: Failed to prepare requirements-runtime.txt"
+            cat /opt/cloudmart/dashboard/requirements.txt || true
             exit 1
           fi
+          
+          /opt/cloudmart/dashboard/venv/bin/python -m pip install \
+          --no-cache-dir \
+          --disable-pip-version-check \
+          -r /opt/cloudmart/dashboard/requirements-runtime.txt
+          
+          /opt/cloudmart/dashboard/venv/bin/python -m pip install \
+          --no-cache-dir \
+          --disable-pip-version-check \
+          "gunicorn==22.0.0"
+          
+          # Verify the new application can import with the stable session key.
+          set -a
+          . /etc/cloudmart/dashboard.env
+          set +a
+          cd /opt/cloudmart/dashboard
+          /opt/cloudmart/dashboard/venv/bin/python -c \
+          "from app import app; print('CloudMart Flask application imported successfully')"
+          
+          cat > /etc/systemd/system/cloudmart-dashboard.service <<SERVICE
+          [Unit]
+          Description=CloudMart Operations Dashboard
+          After=network-online.target
+          Wants=network-online.target
+          
+          [Service]
+          Type=simple
+          User=root
+          Group=root
+          WorkingDirectory=/opt/cloudmart/dashboard
+          EnvironmentFile=/etc/cloudmart/dashboard.env
+          Environment=PYTHONUNBUFFERED=1
+          Environment=PYTHONPATH=/opt/cloudmart/dashboard
+          Environment=AWS_DEFAULT_REGION=$AWS_REGION_VALUE
+          Environment=AWS_REGION=$AWS_REGION_VALUE
+          Environment=DB_HOST_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/host
+          Environment=DB_PORT_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/port
+          Environment=DB_NAME_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/name
+          Environment=DB_USERNAME_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/username
+          Environment=DB_PASSWORD_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/database/password
+          Environment=AUTH_TOKEN_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/auth/token
+          Environment=REPORT_BUCKET_NAME=$REPORT_BUCKET
+          Environment=REPORT_PREFIX=reports
+          Environment=PORT=80
+          
+          ExecStart=/opt/cloudmart/dashboard/venv/bin/gunicorn \\
+          --bind 0.0.0.0:80 \\
+          --workers 2 \\
+          --timeout 120 \\
+          --access-logfile - \\
+          --error-logfile - \\
+          app:app
+          
+          Restart=always
+          RestartSec=5
+          
+          [Install]
+          WantedBy=multi-user.target
+          SERVICE
+          
+          systemctl daemon-reload
+          systemctl enable cloudmart-dashboard
+          systemctl restart cloudmart-dashboard
+          
+          for attempt in $(seq 1 30); do
+          if ss -lnt | grep -q ':80 '; then
+          break
+          fi
+          if [ "$attempt" -eq 30 ]; then
+          systemctl status cloudmart-dashboard --no-pager || true
+          journalctl -u cloudmart-dashboard -n 100 --no-pager || true
+          exit 1
+          fi
+          sleep 2
+          done
+          
+          # /dashboard redirects to /login when unauthenticated; any normal 2xx/3xx response proves the service is responding.
+          HTTP_CODE="$(curl -sS -o /tmp/cloudmart-dashboard-response.txt -w '%{http_code}' --connect-timeout 3 --max-time 10 http://127.0.0.1/dashboard || true)"
+          case "$HTTP_CODE" in
+          200|301|302|303|307|308) echo "Dashboard HTTP health check passed: $HTTP_CODE" ;;
+          *)
+          echo "ERROR: Dashboard HTTP health check failed: $HTTP_CODE"
+          cat /tmp/cloudmart-dashboard-response.txt || true
+          journalctl -u cloudmart-dashboard -n 100 --no-pager || true
+          exit 1
+          ;;
+          esac
+          
+          echo "CloudMart dashboard refresh completed successfully."
+          REMOTE_SCRIPT
+          )
+          
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__REPORT_BUCKET__/$REPORT_BUCKET}"
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__GITHUB_SHA__/$GITHUB_SHA}"
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__ENVIRONMENT__/$ENVIRONMENT}"
+          REMOTE_COMMANDS="${REMOTE_COMMANDS//__AWS_REGION__/$AWS_REGION}"
+          
+          # Build the SSM request as JSON instead of passing the multiline
+          # shell script directly through --parameters. This prevents AWS CLI
+          # from parsing quotes, commas, and newlines inside the script as
+          # separate SSM parameters.
+          export REMOTE_COMMANDS
+          export DASHBOARD_INSTANCE_ID
+          export GITHUB_SHA
 
-          echo ""
-          echo "Checking EventBridge target..."
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
 
-          TARGET_COUNT="$(aws events list-targets-by-rule \
-            --rule "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
+          script = os.environ["REMOTE_COMMANDS"]
+          payload = {
+              "DocumentName": "AWS-RunShellScript",
+              "InstanceIds": [os.environ["DASHBOARD_INSTANCE_ID"]],
+              "Comment": f"CloudMart dashboard deployment {os.environ['GITHUB_SHA']}",
+              "Parameters": {
+                  "commands": script.splitlines()
+              }
+          }
+
+          Path("/tmp/cloudmart-ssm-command.json").write_text(
+              json.dumps(payload),
+              encoding="utf-8"
+          )
+          PY
+
+          SSM_COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json file:///tmp/cloudmart-ssm-command.json \
             --region "$AWS_REGION" \
-            --query "length(Targets)" \
-            --output text)"
+            --query 'Command.CommandId' \
+            --output text)
 
-          echo "Target count: $TARGET_COUNT"
+          rm -f /tmp/cloudmart-ssm-command.json
+          
+          test -n "$SSM_COMMAND_ID" && test "$SSM_COMMAND_ID" != "None" || {
+          echo "ERROR: SSM dashboard refresh command was not created."
+          exit 1
+          }
+          
+          echo "SSM dashboard refresh command: $SSM_COMMAND_ID"
+          
+          if ! aws ssm wait command-executed \
+          --command-id "$SSM_COMMAND_ID" \
+          --instance-id "$DASHBOARD_INSTANCE_ID" \
+          --region "$AWS_REGION"; then
+          echo "============================================================"
+          echo "ERROR: Dashboard refresh command failed."
+          echo "SSM command ID: $SSM_COMMAND_ID"
+          echo "EC2 instance ID: $DASHBOARD_INSTANCE_ID"
+          echo "============================================================"
 
-          if ! [[ "$TARGET_COUNT" =~ ^[0-9]+$ ]] || [ "$TARGET_COUNT" -lt 1 ]; then
-            echo "ERROR: EventBridge rule has no target."
-            exit 1
-          fi
-
-          TARGET_ARN="$(aws events list-targets-by-rule \
-            --rule "$RULE_NAME" \
-            --event-bus-name "$EVENT_BUS" \
+          INVOCATION_JSON=$(aws ssm get-command-invocation \
+            --command-id "$SSM_COMMAND_ID" \
+            --instance-id "$DASHBOARD_INSTANCE_ID" \
             --region "$AWS_REGION" \
-            --query "Targets[0].Arn" \
-            --output text)"
+            --output json)
 
-          echo "Actual target ARN: $TARGET_ARN"
+          echo "SSM invocation status:"
+          echo "$INVOCATION_JSON" | jq -r '
+            "Status: " + (.Status // "UNKNOWN"),
+            "ResponseCode: " + ((.ResponseCode // "UNKNOWN") | tostring),
+            "StatusDetails: " + (.StatusDetails // "UNKNOWN")
+          '
 
-          # IMPORTANT:
-          # Compare the complete ARN directly. Do not use the previous
-          # shell wildcard case expression, which incorrectly rejected
-          # the valid SNS ARN.
-          if [ "$TARGET_ARN" != "$EXPECTED_SNS_ARN" ]; then
-            echo "ERROR: EventBridge target does not match the CloudMart SNS topic."
-            echo "Expected: $EXPECTED_SNS_ARN"
-            echo "Actual:   $TARGET_ARN"
-            exit 1
+          echo "-------------------- REMOTE STDOUT --------------------"
+          echo "$INVOCATION_JSON" | jq -r '.StandardOutputContent // ""'
+          echo "-------------------- REMOTE STDERR --------------------"
+          echo "$INVOCATION_JSON" | jq -r '.StandardErrorContent // ""'
+          echo "--------------------------------------------------------"
+
+          exit 1
           fi
-
-          echo "EventBridge target matches CloudMart SNS topic."
-
-          echo ""
-          echo "Checking SNS subscription..."
-
-          SUBSCRIPTIONS_JSON="$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$EXPECTED_SNS_ARN" \
+          
+          aws ssm get-command-invocation \
+          --command-id "$SSM_COMMAND_ID" \
+          --instance-id "$DASHBOARD_INSTANCE_ID" \
+          --region "$AWS_REGION" \
+          --query '{Status:Status,ResponseCode:ResponseCode,StatusDetails:StatusDetails,Output:StandardOutputContent,Error:StandardErrorContent}' \
+          --output json
+          
+          # CloudFormation has already confirmed the EC2 resource was created.
+          # Do not call ec2:DescribeInstanceStatus here because the GitHub
+          # Actions role does not require that read permission just to publish
+          # the dashboard URL.
+          DASHBOARD_IP=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --output json)"
+            --query 'Stacks[0].Outputs[?OutputKey==`OperationsEC2PublicIp`].OutputValue' \
+            --output text)
 
-          SUBSCRIPTION_COUNT="$(printf '%s' "$SUBSCRIPTIONS_JSON" | jq '.Subscriptions | length')"
+          echo "Operations dashboard public IP: $DASHBOARD_IP"
 
-          echo "SNS subscription count: $SUBSCRIPTION_COUNT"
+          DASHBOARD_URL="http://${DASHBOARD_IP}/dashboard"
 
-          if [ "$SUBSCRIPTION_COUNT" -lt 1 ]; then
-            echo "ERROR: SNS topic has no subscription."
-            exit 1
-          fi
+          echo "Dashboard URL:"
+          echo "$DASHBOARD_URL"
 
-          EMAIL_SUBSCRIPTION_FOUND="$(
-            printf '%s' "$SUBSCRIPTIONS_JSON" |
-              jq -r --arg email "$NOTIFICATION_EMAIL" '
-                [.Subscriptions[]
-                  | select(.Protocol == "email")
-                  | select(.Endpoint == $email)]
-                | length
-              '
-          )"
+          {
+            echo "## CloudMart Operations Dashboard"
+            echo ""
+            echo "Dashboard URL: $DASHBOARD_URL"
+            echo ""
+            echo "EC2 instance: $DASHBOARD_INSTANCE_ID"
+            echo "Dashboard source: dashboard-source/${GITHUB_SHA}"
+            echo ""
+            echo "The dashboard source was uploaded to S3 and refreshed on the running EC2 instance through SSM."
+            echo "The Flask session secret is preserved on the EC2 instance and shared by both Gunicorn workers."
+          } >> "$GITHUB_STEP_SUMMARY"
 
-          if [ "$EMAIL_SUBSCRIPTION_FOUND" -lt 1 ]; then
-            echo "ERROR: Expected email SNS subscription was not found."
-            echo "Check the SNS subscription and confirm the email address."
-            exit 1
-          fi
-
-          echo "Email SNS subscription exists."
-
-          echo ""
-          echo "=========================================="
-          echo "EVENTBRIDGE -> SNS VERIFICATION PASSED"
-          echo "=========================================="
+          echo "Dashboard deployment and automatic source refresh completed successfully."
 

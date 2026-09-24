@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0b1220">
+  <title>CloudMart | Operations Console</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="app-shell">
+  <div class="sidebar-backdrop" data-sidebar-backdrop aria-hidden="true"></div>
+
+  <aside class="sidebar" id="app-sidebar" aria-label="Primary navigation">
+    <div class="sidebar-brand">
+      <a class="brand" href="{{ url_for('dashboard') }}" aria-label="CloudMart overview">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none"><path d="M7.2 18.2 4.8 15a2.2 2.2 0 0 1 0-2.64L7.2 9.2a2.2 2.2 0 0 1 1.76-.88h5.98c.7 0 1.35.33 1.76.88l2.5 3.16a2.2 2.2 0 0 1 0 2.64l-2.5 3.2a2.2 2.2 0 0 1-1.76.88H8.96a2.2 2.2 0 0 1-1.76-.88Z" stroke="currentColor" stroke-width="1.7"/><path d="M8.8 12.1h6.4M8.2 15h7.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>
+        </span>
+        <span class="brand-copy"><strong>CloudMart</strong><span>Operations Console</span></span>
+      </a>
+      <button class="icon-button sidebar-close" type="button" data-sidebar-close aria-label="Close navigation">
+        <svg viewBox="0 0 24 24" fill="none"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+      </button>
+    </div>
+
+    <div class="nav-title">WORKSPACE</div>
+    <nav class="sidebar-nav">
+      <a class="nav-item {% if page == 'overview' %}active{% endif %}" href="{{ url_for('dashboard') }}">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none"><rect x="4" y="4" width="6" height="6" rx="1.2" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="4" width="6" height="6" rx="1.2" stroke="currentColor" stroke-width="1.7"/><rect x="4" y="14" width="6" height="6" rx="1.2" stroke="currentColor" stroke-width="1.7"/><rect x="14" y="14" width="6" height="6" rx="1.2" stroke="currentColor" stroke-width="1.7"/></svg></span><span>Overview</span>
+      </a>
+      <a class="nav-item {% if page == 'products' %}active{% endif %}" href="{{ url_for('products_page') }}">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M5 7.5 12 4l7 3.5v9L12 20l-7-3.5v-9Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m5.3 7.7 6.7 3.4 6.7-3.4M12 11.1V20" stroke="currentColor" stroke-width="1.7"/></svg></span><span>Products</span>
+      </a>
+      <a class="nav-item {% if page == 'customers' %}active{% endif %}" href="{{ url_for('customers_page') }}">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="8" r="3" stroke="currentColor" stroke-width="1.7"/><path d="M6.5 19c.6-3.1 2.5-4.8 5.5-4.8s4.9 1.7 5.5 4.8" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span>Customers</span>
+      </a>
+      <a class="nav-item {% if page == 'inventory' %}active{% endif %}" href="{{ url_for('inventory_page') }}">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M5 8.5 12 5l7 3.5v7L12 19l-7-3.5v-7Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="m5.4 8.7 6.6 3.4 6.6-3.4M12 12.1V19" stroke="currentColor" stroke-width="1.7"/></svg></span><span>Inventory</span>
+      </a>
+      <a class="nav-item {% if page == 'orders' %}active{% endif %}" href="{{ url_for('orders_page') }}">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="7.5" stroke="currentColor" stroke-width="1.7"/><path d="M12 8v4l2.8 1.7" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg></span><span>Orders</span>
+      </a>
+      <a class="nav-item {% if page == 'reports' %}active{% endif %}" href="{{ url_for('reports_page') }}">
+        <span class="nav-icon"><svg viewBox="0 0 24 24" fill="none"><path d="M6 19V10M12 19V5M18 19v-7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M4 19.5h16" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></span><span>Reports</span>
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <div class="system-state"><span class="online"></span><div><strong>System operational</strong><span>CloudMart Admin</span></div></div>
+      <a class="signout" href="{{ url_for('logout') }}"><svg viewBox="0 0 24 24" fill="none"><path d="M10 5H6.8A1.8 1.8 0 0 0 5 6.8v10.4A1.8 1.8 0 0 0 6.8 19H10M14 8l4 4-4 4M18 12H9" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg><span>Sign out</span></a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="icon-button menu-toggle" type="button" data-sidebar-open aria-controls="app-sidebar" aria-expanded="false" aria-label="Open navigation"><svg viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h16M4 17h16" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg></button>
+        <div><div class="breadcrumb"><span>ADMINISTRATION</span><span>/</span><span>{{ page|upper }}</span></div><h1>Operations Dashboard</h1></div>
+      </div>
+      <div class="top-actions">
+        <div class="live"><span></span><strong>Live</strong><span class="live-time" data-live-time></span></div>
+        <div class="administrator"><div class="avatar">A</div><div class="admin-copy"><strong>Administrator</strong><span>CloudMart Admin</span></div><span class="admin-chevron"><svg viewBox="0 0 24 24" fill="none"><path d="m8 10 4 4 4-4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+      </div>
+    </header>
+
+    <main class="content">
+      {% if page == 'overview' %}
+        <section class="page-intro"><div><span class="eyebrow">OVERVIEW</span><h2>Business at a glance</h2><p>Monitor products, inventory, orders and operational activity from one place.</p></div></section>
+        <section class="kpi-grid" aria-label="Business metrics">
+          <article class="kpi"><div class="kpi-head"><div><span class="kpi-label">ACTIVE PRODUCTS</span><span class="kpi-caption">Catalog</span></div><div class="kpi-icon blue">◈</div></div><strong>{{ metrics.total_products }}</strong><small>Products currently available</small></article>
+          <article class="kpi"><div class="kpi-head"><div><span class="kpi-label">TOTAL ORDERS</span><span class="kpi-caption">RDS records</span></div><div class="kpi-icon purple">◷</div></div><strong>{{ metrics.total_orders or 0 }}</strong><small>Orders recorded in RDS</small></article>
+          <article class="kpi"><div class="kpi-head"><div><span class="kpi-label">CUSTOMERS</span><span class="kpi-caption">Order history</span></div><div class="kpi-icon cyan">♙</div></div><strong>{{ metrics.total_customers or 0 }}</strong><small>Customers with orders</small></article>
+          <article class="kpi {% if low_stock_count > 0 %}attention{% endif %}"><div class="kpi-head"><div><span class="kpi-label">LOW STOCK</span><span class="kpi-caption">Inventory</span></div><div class="kpi-icon amber">△</div></div><strong>{{ low_stock_count }}</strong><small>{% if low_stock_count %}Attention required{% else %}Inventory healthy{% endif %}</small></article>
+        </section>
+
+        <section class="two-column">
+          <article class="panel performance-panel">
+            <div class="panel-header"><div><span class="eyebrow">BUSINESS PERFORMANCE</span><h3>Order Overview</h3></div><span class="panel-status"><span></span> Live data</span></div>
+            <div class="performance"><div class="performance-item"><span>Total Revenue</span><strong>₹{{ '%.2f'|format(metrics.total_revenue or 0) }}</strong><small>Across all recorded orders</small></div><div class="performance-item"><span>Total Orders</span><strong>{{ metrics.total_orders or 0 }}</strong><small>All order statuses</small></div><div class="performance-item"><span>Customers</span><strong>{{ metrics.total_customers or 0 }}</strong><small>Unique customers</small></div></div>
+            <div class="status-section"><div class="subheading">ORDER STATUS</div>{% for item in order_statuses %}<div class="status-row"><span><i class="status-dot {{ item.status|lower|replace('_','-') }}"></i><strong>{{ item.status }}</strong></span><span class="status-count">{{ item.count }}</span></div>{% else %}<div class="empty">No order status data.</div>{% endfor %}</div>
+          </article>
+          <article class="panel stock-panel"><div class="panel-header"><div><span class="eyebrow">INVENTORY MONITORING</span><h3>Stock Alerts</h3></div><span class="counter">{{ low_stock_count }}</span></div>{% if low_stock_products %}<div class="alerts">{% for product in low_stock_products[:6] %}<div class="alert-row"><div class="alert-product"><span class="alert-icon">△</span><div><strong>{{ product.name }}</strong><span>{{ product.stock_quantity }} units left · threshold {{ product.low_stock_threshold }}</span></div></div><span class="low-pill">LOW</span></div>{% endfor %}</div>{% else %}<div class="healthy"><div class="check">✓</div><div><strong>Inventory is healthy</strong><span>No products are below their configured threshold.</span></div></div>{% endif %}</article>
+        </section>
+
+        <section class="panel table-panel">
+          <div class="panel-header table-header"><div><span class="eyebrow">RECENT ACTIVITY</span><h3>Latest Orders</h3></div><a class="text-link" href="{{ url_for('orders_page') }}">View all orders →</a></div>
+          <div class="table-scroll"><table><thead><tr><th>ORDER ID</th><th>CUSTOMER</th><th>STATUS</th><th>TOTAL</th><th>CREATED</th></tr></thead><tbody>{% for order in orders %}<tr><td class="muted">#{{ order.order_id }}</td><td><div class="customer-cell"><span class="customer-avatar">{{ order.customer_name[:1]|upper }}</span><strong>{{ order.customer_name }}</strong></div></td><td><span class="pill {{ order.status|lower|replace('_','-') }}"><i></i>{{ order.status }}</span></td><td class="money">₹{{ '%.2f'|format(order.total_amount) }}</td><td class="date">{{ order.created_at }}</td></tr>{% else %}<tr><td colspan="5" class="empty-table">No orders found.</td></tr>{% endfor %}</tbody></table></div>
+        </section>
+
+      {% elif page == 'products' or page == 'inventory' %}
+        <section class="page-intro"><div><span class="eyebrow">{{ 'PRODUCTS' if page == 'products' else 'INVENTORY' }}</span><h2>{{ 'Products' if page == 'products' else 'Inventory' }}</h2><p>{{ 'Manage product catalog, inventory and product details.' if page == 'products' else 'Track stock levels and inventory status.' }}</p></div></section>
+        <section class="panel table-panel">
+          <div class="toolbar"><form class="search-form" method="get"><span class="search-icon">⌕</span><input name="q" value="{{ search }}" placeholder="Search products by name, category or SKU..." aria-label="Search products"></form><span class="toolbar-total">{{ pager.total }} records</span></div>
+          <div class="table-scroll"><table><thead><tr><th>ID</th><th>PRODUCT</th><th>CATEGORY</th><th>PRICE</th><th>STOCK</th><th>THRESHOLD</th><th>STATUS</th></tr></thead><tbody>{% for product in products %}<tr class="{% if product.stock_quantity <= product.low_stock_threshold %}warning-row{% endif %}"><td class="muted">#{{ product.product_id }}</td><td><div class="product-cell"><span class="product-avatar">{{ product.name[:1]|upper }}</span><strong>{{ product.name }}</strong></div></td><td>{{ product.category_name }}</td><td class="money">₹{{ '%.2f'|format(product.price) }}</td><td>{% if product.stock_quantity <= product.low_stock_threshold %}<strong class="stock-warning">{{ product.stock_quantity }}</strong>{% else %}<strong class="stock-good">{{ product.stock_quantity }}</strong>{% endif %}</td><td>{{ product.low_stock_threshold }}</td><td><span class="pill success">{{ product.status }}</span></td></tr>{% else %}<tr><td colspan="7" class="empty-table">No products found.</td></tr>{% endfor %}</tbody></table></div>
+          {% with base_url=url_for('products_page' if page == 'products' else 'inventory_page') %}<div class="pagination-bar">
+  <span>Showing {{ ((pager.page - 1) * pager.page_size + 1) if pager.total else 0 }} to {{ [pager.page * pager.page_size, pager.total]|min }} of {{ pager.total }}</span>
+  <div class="pagination">
+    {% set params = request.args.to_dict() %}
+    <a class="page-button {% if not pager.has_previous %}disabled{% endif %}" href="{% if pager.has_previous %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page - 1 }}{% else %}#{% endif %}" aria-label="Previous page">‹</a>
+    {% for number in pager.window %}
+      {% if number is none %}<span class="page-ellipsis">…</span>{% else %}<a class="page-button {% if number == pager.page %}current{% endif %}" href="{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ number }}">{{ number }}</a>{% endif %}
+    {% endfor %}
+    <a class="page-button {% if not pager.has_next %}disabled{% endif %}" href="{% if pager.has_next %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page + 1 }}{% else %}#{% endif %}" aria-label="Next page">›</a>
+  </div>
+  <span class="page-size">10 per page</span>
+</div>{% endwith %}
+        </section>
+
+      {% elif page == 'customers' %}
+        <section class="page-intro"><div><span class="eyebrow">CUSTOMERS</span><h2>Customers</h2><p>View customer information and order activity.</p></div></section>
+        <section class="panel table-panel"><div class="toolbar"><form class="search-form" method="get"><span class="search-icon">⌕</span><input name="q" value="{{ search }}" placeholder="Search customers by name or email..." aria-label="Search customers"></form><span class="toolbar-total">{{ pager.total }} customers</span></div><div class="table-scroll"><table><thead><tr><th>ID</th><th>CUSTOMER</th><th>EMAIL</th><th>ORDERS</th><th>REGISTERED ON</th><th>STATUS</th></tr></thead><tbody>{% for customer in customers %}<tr><td class="muted">#{{ customer.customer_id }}</td><td><div class="customer-cell"><span class="customer-avatar">{{ customer.customer_name[:1]|upper }}</span><strong>{{ customer.customer_name }}</strong></div></td><td>{{ customer.customer_email }}</td><td>{{ customer.order_count }}</td><td class="date">{{ customer.created_at }}</td><td><span class="pill success">ACTIVE</span></td></tr>{% else %}<tr><td colspan="6" class="empty-table">No customers found.</td></tr>{% endfor %}</tbody></table></div>{% with base_url=url_for('customers_page') %}<div class="pagination-bar">
+  <span>Showing {{ ((pager.page - 1) * pager.page_size + 1) if pager.total else 0 }} to {{ [pager.page * pager.page_size, pager.total]|min }} of {{ pager.total }}</span>
+  <div class="pagination">
+    {% set params = request.args.to_dict() %}
+    <a class="page-button {% if not pager.has_previous %}disabled{% endif %}" href="{% if pager.has_previous %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page - 1 }}{% else %}#{% endif %}" aria-label="Previous page">‹</a>
+    {% for number in pager.window %}
+      {% if number is none %}<span class="page-ellipsis">…</span>{% else %}<a class="page-button {% if number == pager.page %}current{% endif %}" href="{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ number }}">{{ number }}</a>{% endif %}
+    {% endfor %}
+    <a class="page-button {% if not pager.has_next %}disabled{% endif %}" href="{% if pager.has_next %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page + 1 }}{% else %}#{% endif %}" aria-label="Next page">›</a>
+  </div>
+  <span class="page-size">10 per page</span>
+</div>{% endwith %}</section>
+
+      {% elif page == 'orders' %}
+        <section class="page-intro"><div><span class="eyebrow">ORDERS</span><h2>Orders</h2><p>View and manage customer orders from RDS.</p></div></section>
+        <section class="panel table-panel"><div class="toolbar"><form class="search-form" method="get"><span class="search-icon">⌕</span><input name="q" value="{{ search }}" placeholder="Search orders by ID or customer name..." aria-label="Search orders"><select name="status" aria-label="Filter by status"><option value="">All Status</option>{% for item in statuses %}<option value="{{ item }}" {% if status == item %}selected{% endif %}>{{ item }}</option>{% endfor %}</select><button class="filter-button" type="submit">Apply</button></form><span class="toolbar-total">{{ pager.total }} orders</span></div><div class="table-scroll"><table><thead><tr><th>ORDER ID</th><th>CUSTOMER</th><th>ITEMS</th><th>TOTAL</th><th>STATUS</th><th>ORDER DATE</th></tr></thead><tbody>{% for order in orders %}<tr><td class="muted">#{{ order.order_id }}</td><td><div class="customer-cell"><span class="customer-avatar">{{ order.customer_name[:1]|upper }}</span><strong>{{ order.customer_name }}</strong></div></td><td>{{ order.item_count }}</td><td class="money">₹{{ '%.2f'|format(order.total_amount) }}</td><td><span class="pill {{ order.status|lower|replace('_','-') }}"><i></i>{{ order.status }}</span></td><td class="date">{{ order.created_at }}</td></tr>{% else %}<tr><td colspan="6" class="empty-table">No orders found.</td></tr>{% endfor %}</tbody></table></div>{% with base_url=url_for('orders_page') %}<div class="pagination-bar">
+  <span>Showing {{ ((pager.page - 1) * pager.page_size + 1) if pager.total else 0 }} to {{ [pager.page * pager.page_size, pager.total]|min }} of {{ pager.total }}</span>
+  <div class="pagination">
+    {% set params = request.args.to_dict() %}
+    <a class="page-button {% if not pager.has_previous %}disabled{% endif %}" href="{% if pager.has_previous %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page - 1 }}{% else %}#{% endif %}" aria-label="Previous page">‹</a>
+    {% for number in pager.window %}
+      {% if number is none %}<span class="page-ellipsis">…</span>{% else %}<a class="page-button {% if number == pager.page %}current{% endif %}" href="{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ number }}">{{ number }}</a>{% endif %}
+    {% endfor %}
+    <a class="page-button {% if not pager.has_next %}disabled{% endif %}" href="{% if pager.has_next %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page + 1 }}{% else %}#{% endif %}" aria-label="Next page">›</a>
+  </div>
+  <span class="page-size">10 per page</span>
+</div>{% endwith %}</section>
+
+      {% elif page == 'reports' %}
+        <section class="page-intro"><div><span class="eyebrow">REPORTING</span><h2>Daily Operations Reports</h2><p>Select any available date to view and download the report generated for that day.</p></div></section>
+        <section class="panel report-selector"><form method="get" class="report-date-form"><div><label for="report-date">Select Report Date</label><input id="report-date" type="date" name="date" value="{{ selected_date }}" required></div><button class="download" type="submit">View Report</button>{% if date_error %}<span class="form-error">{{ date_error }}</span>{% endif %}</form>{% if chosen_report %}<div class="selected-report"><div class="report-icon">▤</div><div><span class="eyebrow">SELECTED REPORT</span><h3>{{ chosen_report.date_text }}</h3><p>{{ chosen_report.key }} · {{ chosen_report.size_kb }} KB · {{ chosen_report.generated_text }}</p></div><a class="download" href="{{ chosen_report.url }}">Download CSV</a></div>{% else %}<div class="no-report"><strong>No report found for {{ selected_date or 'the selected date' }}.</strong><span>Choose another date from the date picker.</span></div>{% endif %}</section>
+        <section class="panel table-panel"><div class="panel-header table-header"><div><span class="eyebrow">REPORT HISTORY</span><h3>Previous Reports</h3></div><span class="table-meta">{{ pager.total }} reports</span></div><div class="table-scroll"><table><thead><tr><th>DATE</th><th>FILE NAME</th><th>FILE SIZE</th><th>GENERATED ON</th><th>ACTION</th></tr></thead><tbody>{% for report in reports %}<tr><td class="date">{{ report.date_text }}</td><td class="report-file">{{ report.key }}</td><td>{{ report.size_kb }} KB</td><td class="date">{{ report.generated_text }}</td><td><a class="icon-action" href="{{ report.url }}" title="Download report" aria-label="Download report">↓</a></td></tr>{% else %}<tr><td colspan="5" class="empty-table">No reports have been generated yet.</td></tr>{% endfor %}</tbody></table></div>{% with base_url=url_for('reports_page') %}<div class="pagination-bar">
+  <span>Showing {{ ((pager.page - 1) * pager.page_size + 1) if pager.total else 0 }} to {{ [pager.page * pager.page_size, pager.total]|min }} of {{ pager.total }}</span>
+  <div class="pagination">
+    {% set params = request.args.to_dict() %}
+    <a class="page-button {% if not pager.has_previous %}disabled{% endif %}" href="{% if pager.has_previous %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page - 1 }}{% else %}#{% endif %}" aria-label="Previous page">‹</a>
+    {% for number in pager.window %}
+      {% if number is none %}<span class="page-ellipsis">…</span>{% else %}<a class="page-button {% if number == pager.page %}current{% endif %}" href="{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ number }}">{{ number }}</a>{% endif %}
+    {% endfor %}
+    <a class="page-button {% if not pager.has_next %}disabled{% endif %}" href="{% if pager.has_next %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page + 1 }}{% else %}#{% endif %}" aria-label="Next page">›</a>
+  </div>
+  <span class="page-size">10 per page</span>
+</div>{% endwith %}</section>
+      {% endif %}
+    </main>
+
+    <footer class="footer"><span>CloudMart Admin Console</span><span>·</span><span>Operations Management</span><span>·</span><span>Secure session</span></footer>
+  </div>
+</div>
+
+<script>
+(() => {
+  const body = document.body;
+  const openButton = document.querySelector('[data-sidebar-open]');
+  const closeButton = document.querySelector('[data-sidebar-close]');
+  const backdrop = document.querySelector('[data-sidebar-backdrop]');
+  const liveTime = document.querySelector('[data-live-time]');
+  const setSidebar = (open) => { body.classList.toggle('sidebar-open', open); openButton?.setAttribute('aria-expanded', String(open)); };
+  openButton?.addEventListener('click', () => setSidebar(true));
+  closeButton?.addEventListener('click', () => setSidebar(false));
+  backdrop?.addEventListener('click', () => setSidebar(false));
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') setSidebar(false); });
+  const updateTime = () => { if (liveTime) liveTime.textContent = new Intl.DateTimeFormat(undefined, {hour:'2-digit', minute:'2-digit'}).format(new Date()); };
+  updateTime(); window.setInterval(updateTime, 30000);
+})();
+</script>
+</body>
+</html>

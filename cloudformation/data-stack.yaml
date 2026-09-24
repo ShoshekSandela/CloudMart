@@ -1,22 +1,15 @@
-AWSTemplateFormatVersion: '2010-09-09'
+AWSTemplateFormatVersion: "2010-09-09"
 
 Description: >
-  CloudMart Data-Storage Stack.
-  Creates the private RDS MySQL database and
-  S3 bucket used for generated reports.
+  CloudMart Data Stack.
+  Creates RDS MySQL, database SSM parameters, authentication token parameter,
+  and the S3 report bucket.
 
 Parameters:
-
-
-
   Environment:
     Type: String
     Default: dev
-    AllowedValues:
-      - dev
-      - test
-      - prod
-    Description: Deployment environment
+    AllowedValues: [dev, test, prod]
 
   DBName:
     Type: String
@@ -24,61 +17,38 @@ Parameters:
     MinLength: 1
     MaxLength: 64
     AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
-    ConstraintDescription: DBName must start with a letter and contain only letters, numbers, and underscores.
-    Description: CloudMart database name
 
   DBUsername:
     Type: String
-    Default: cloudmartadmin
     NoEcho: true
     MinLength: 1
     MaxLength: 16
     AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
-    ConstraintDescription: DBUsername must start with a letter and contain only letters, numbers, and underscores.
-    Description: RDS master username
 
   DBPassword:
     Type: String
     NoEcho: true
     MinLength: 12
     MaxLength: 41
-    ConstraintDescription: DBPassword must be between 12 and 41 characters.
-    Description: RDS master password
 
   DBInstanceClass:
     Type: String
     Default: db.t3.micro
-    Description: RDS instance class
 
   AllocatedStorage:
     Type: Number
     Default: 20
     MinValue: 20
-    Description: Initial RDS storage in GB
-
-  ExistingReportBucketName:
-    Type: String
-    Default: ""
-    Description: Existing S3 report bucket name. If provided, CloudMart uses this existing bucket. If empty, CloudFormation creates cloudmart-${Environment}-reports.
-
-Conditions:
-
-  CreateReportBucket:
-    !Equals
-      - !Ref ExistingReportBucketName
-      - ""
 
 Resources:
-
+  # Places RDS in the private database subnets.
   CloudMartDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
-      DBSubnetGroupDescription: !Sub "CloudMart ${Environment} RDS private subnet group"
+      DBSubnetGroupDescription: !Sub CloudMart ${Environment} RDS subnet group
       SubnetIds:
-        - Fn::ImportValue:
-            Fn::Sub: CloudMart-${Environment}-PrivateSubnet1Id
-        - Fn::ImportValue:
-            Fn::Sub: CloudMart-${Environment}-PrivateSubnet2Id
+        - Fn::ImportValue: !Sub CloudMart-${Environment}-PrivateSubnet1Id
+        - Fn::ImportValue: !Sub CloudMart-${Environment}-PrivateSubnet2Id
       Tags:
         - Key: Name
           Value: !Sub cloudmart-${Environment}-rds-subnet-group
@@ -87,6 +57,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Private MySQL database used by CloudMart.
   CloudMartRDS:
     Type: AWS::RDS::DBInstance
     DeletionPolicy: Snapshot
@@ -108,8 +79,7 @@ Resources:
       CopyTagsToSnapshot: true
       DBSubnetGroupName: !Ref CloudMartDBSubnetGroup
       VPCSecurityGroups:
-        - Fn::ImportValue:
-            Fn::Sub: CloudMart-${Environment}-RDSSecurityGroupId
+        - Fn::ImportValue: !Sub CloudMart-${Environment}-RDSSecurityGroupId
       Tags:
         - Key: Name
           Value: !Sub cloudmart-${Environment}-rds
@@ -118,13 +88,93 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Stores the RDS endpoint for Lambda and EC2.
+  DBHostParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/host
+      Type: String
+      Value: !GetAtt CloudMartRDS.Endpoint.Address
+      Description: CloudMart RDS endpoint
+
+  DBPortParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/port
+      Type: String
+      Value: !GetAtt CloudMartRDS.Endpoint.Port
+      Description: CloudMart RDS port
+
+  DBNameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/name
+      Type: String
+      Value: !Ref DBName
+      Description: CloudMart database name
+
+  # Stores the RDS username in the code-managed parameter.
+  DBUsernameParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/username
+      # CloudFormation supports String/StringList here; keep the value simple for a code-managed stack.
+      Type: String
+      Value: !Ref DBUsername
+      Description: CloudMart RDS username
+
+  # Stores the RDS password in the code-managed parameter.
+  DBPasswordParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /cloudmart/${Environment}/database/password
+      # CloudFormation does not support SecureString for AWS::SSM::Parameter.
+      Type: String
+      Value: !Ref DBPassword
+      Description: CloudMart RDS password
+
+  # Allows only the CloudMart Daily Report role to write generated reports.
+  CloudMartReportBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref CloudMartReportBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowDailyReportLambdaWrite
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportLambdaRoleArn"
+            Action: s3:PutObject
+            Resource: !Sub "${CloudMartReportBucket.Arn}/reports/*"
+          - Sid: AllowOperationsEC2ListBucket
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2RoleArn"
+            Action: s3:ListBucket
+            Resource: !GetAtt CloudMartReportBucket.Arn
+          - Sid: AllowOperationsEC2ReadObjects
+            Effect: Allow
+            Principal:
+              AWS:
+                Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2RoleArn"
+            Action: s3:GetObject
+            Resource:
+              - !Sub "${CloudMartReportBucket.Arn}/dashboard-source/*"
+              - !Sub "${CloudMartReportBucket.Arn}/reports/*"
+
+  # Authentication token is managed exclusively by Token Manager.
+  # It is intentionally not an AWS::SSM::Parameter resource in this stack.
+  # This prevents Data stack updates from resetting the admin token.
+
+  # Stores generated CloudMart reports and is private by default.
   CloudMartReportBucket:
     Type: AWS::S3::Bucket
-    Condition: CreateReportBucket
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub cloudmart-${Environment}-reports
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
@@ -145,51 +195,48 @@ Resources:
           Value: !Ref Environment
 
 Outputs:
-
   DBEndpoint:
-    Description: RDS MySQL endpoint
     Value: !GetAtt CloudMartRDS.Endpoint.Address
     Export:
       Name: !Sub CloudMart-${Environment}-DBEndpoint
-
   DBPort:
-    Description: RDS MySQL port
     Value: !GetAtt CloudMartRDS.Endpoint.Port
     Export:
       Name: !Sub CloudMart-${Environment}-DBPort
-
   DBName:
-    Description: CloudMart database name
     Value: !Ref DBName
     Export:
       Name: !Sub CloudMart-${Environment}-DBName
-
-  DBUsername:
-    Description: RDS MySQL master username
-    Value: !Ref DBUsername
-    Export:
-      Name: !Sub CloudMart-${Environment}-DBUsername
-
   DBInstanceIdentifier:
-    Description: CloudMart RDS instance identifier
     Value: !Ref CloudMartRDS
     Export:
       Name: !Sub CloudMart-${Environment}-DBInstanceIdentifier
-
+  DBHostParameterName:
+    Value: !Ref DBHostParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBHostParameterName
+  DBPortParameterName:
+    Value: !Ref DBPortParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBPortParameterName
+  DBNameParameterName:
+    Value: !Ref DBNameParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBNameParameterName
+  DBUsernameParameterName:
+    Value: !Ref DBUsernameParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBUsernameParameterName
+  DBPasswordParameterName:
+    Value: !Ref DBPasswordParameter
+    Export:
+      Name: !Sub CloudMart-${Environment}-DBPasswordParameterName
   ReportBucketName:
-    Description: CloudMart generated reports S3 bucket
-    Value: !If
-      - CreateReportBucket
-      - !Ref CloudMartReportBucket
-      - !Ref ExistingReportBucketName
+    Value: !Ref CloudMartReportBucket
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketName
 
   ReportBucketArn:
-    Description: CloudMart generated reports S3 bucket ARN
-    Value: !If
-      - CreateReportBucket
-      - !GetAtt CloudMartReportBucket.Arn
-      - !Sub arn:${AWS::Partition}:s3:::${ExistingReportBucketName}
+    Value: !GetAtt CloudMartReportBucket.Arn
     Export:
       Name: !Sub CloudMart-${Environment}-ReportBucketArn

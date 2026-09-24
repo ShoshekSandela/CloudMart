@@ -43,7 +43,7 @@ def response(status_code, body):
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS"
+            "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS"
         },
         "body": json.dumps(
             body,
@@ -257,6 +257,27 @@ def validate_inventory(stock, threshold):
 
 
 # ============================================================
+# PRICE VALIDATION
+# ============================================================
+
+def validate_price(price):
+
+    try:
+        price = Decimal(str(price))
+    except (TypeError, ValueError, ArithmeticError):
+        raise ValueError(
+            "price must be a valid number"
+        )
+
+    if price <= 0:
+        raise ValueError(
+            "price must be greater than 0"
+        )
+
+    return price
+
+
+# ============================================================
 # EVENTBRIDGE
 # ============================================================
 
@@ -267,8 +288,8 @@ def publish_inventory_event(
     new_stock,
     threshold
 ):
-
-    low_stock = new_stock <= threshold
+    """Publish one inventory lifecycle event to the CloudMart event bus."""
+    low_stock = int(new_stock) <= int(threshold)
 
     event_detail = {
         "product_id": int(product_id),
@@ -276,11 +297,10 @@ def publish_inventory_event(
         "old_stock": int(old_stock),
         "new_stock": int(new_stock),
         "low_stock_threshold": int(threshold),
-        "low_stock": low_stock
+        "low_stock": bool(low_stock)
     }
 
     try:
-
         result = events.put_events(
             Entries=[
                 {
@@ -292,21 +312,34 @@ def publish_inventory_event(
             ]
         )
 
-        if result.get("FailedEntryCount", 0) > 0:
+        failed_count = int(result.get("FailedEntryCount", 0))
+        if failed_count > 0:
+            log_json(
+                "error",
+                "EventBridge inventory event failed",
+                result=result,
+                **event_detail
+            )
+            raise RuntimeError(
+                f"EventBridge rejected {failed_count} inventory event(s)"
+            )
 
-            log_json("error", "EventBridge failed", result=result)
-
-            return False
-
-        log_json("info", "Inventory event published", **event_detail)
-
+        log_json(
+            "info",
+            "Inventory event published",
+            event_bus=os.environ["EVENT_BUS_NAME"],
+            **event_detail
+        )
         return True
 
     except Exception:
-
-        log_json("error", "Unable to publish inventory event")
-
-        return False
+        log_json(
+            "error",
+            "Unable to publish inventory event",
+            event_bus=os.environ["EVENT_BUS_NAME"],
+            **event_detail
+        )
+        raise
 
 
 # ============================================================
@@ -403,6 +436,10 @@ def create_product(cursor, payload):
         payload["low_stock_threshold"]
     )
 
+    price = validate_price(
+        payload["price"]
+    )
+
     cursor.execute("""
         INSERT INTO products (
             category_id,
@@ -420,7 +457,7 @@ def create_product(cursor, payload):
         payload.get("category_id"),
         payload["name"],
         payload.get("description"),
-        payload["price"],
+        price,
         stock,
         threshold,
         payload.get("status", "ACTIVE")
@@ -473,12 +510,17 @@ def update_product(cursor, product_id, payload):
 
         if field in payload:
 
+            if field == "price":
+                values.append(
+                    validate_price(payload["price"])
+                )
+            else:
+                values.append(
+                    payload[field]
+                )
+
             fields.append(
                 f"{field} = %s"
-            )
-
-            values.append(
-                payload[field]
             )
 
     # --------------------------------------------------------
@@ -571,13 +613,16 @@ def update_product(cursor, product_id, payload):
 
 def delete_product(cursor, product_id, payload):
 
+    # Soft delete: keep the row in RDS, but mark the product INACTIVE.
+    # This preserves the product for audit/history while removing it
+    # from normal product GET/list results (which use deleted_at IS NULL).
     cursor.execute("""
         UPDATE products
         SET
+            status = 'INACTIVE',
             deleted_at = CURRENT_TIMESTAMP,
             deleted_by = %s,
             delete_reason = %s,
-            status = 'DELETED',
             updated_at = CURRENT_TIMESTAMP
         WHERE product_id = %s
           AND deleted_at IS NULL
@@ -594,6 +639,57 @@ def delete_product(cursor, product_id, payload):
 
 
 # ============================================================
+# AUTHORIZATION / RBAC
+#
+# API Gateway already enforces the ADMIN/CUSTOMER route policy
+# through the TOKEN authorizer. This second check protects the
+# Product Lambda itself if it is invoked directly.
+#
+# ADMIN:
+#   GET /products
+#   POST /products
+#   GET /products/{id}
+#   PUT /products/{id}
+#   DELETE /products/{id}
+#
+# CUSTOMER:
+#   GET /products
+#   GET /products/{id}
+#
+# ============================================================
+
+def get_authorization_context(event):
+    request_context = event.get("requestContext") or {}
+    authorizer = request_context.get("authorizer") or {}
+
+    role = (
+        authorizer.get("role")
+        or authorizer.get("Role")
+        or ""
+    ).upper()
+
+    return {
+        "role": role,
+        "email": authorizer.get("email"),
+        "customer_id": authorizer.get("customer_id")
+    }
+
+
+def require_admin(event):
+    auth = get_authorization_context(event)
+
+    if auth["role"] != "ADMIN":
+        raise PermissionError(
+            "ADMIN role is required for this operation"
+        )
+
+    return auth
+
+
+# ============================================================
+# Customer operations are implemented by the dedicated Customer Lambda.
+
+
 # MAIN LAMBDA
 # ============================================================
 
@@ -657,22 +753,12 @@ def lambda_handler(event, context):
         connection = get_db_connection()
 
         # ---------------------------------------------------------
-        # AUTOMATIC DATABASE INITIALIZATION
-        #
-        # If the RDS database has not been initialized yet, apply
-        # the schema.sql bundled into this Lambda package.
-        # No manual database setup is required.
-        #
-        # The explicit action below is retained for CI/CD or
-        # troubleshooting, but normal API requests also self-heal
-        # a missing products table.
-        # ---------------------------------------------------------
-        ensure_database_schema(connection)
-
-        # ---------------------------------------------------------
         # ONE-TIME DATABASE INITIALIZATION
-        # This is intentionally a direct Lambda invocation action,
-        # not a normal HTTP/API operation.
+        #
+        # This is a direct Lambda invocation action only.
+        # It must be handled BEFORE the normal schema check so that
+        # an explicit initialization does not perform an unnecessary
+        # products-table lookup first.
         # ---------------------------------------------------------
 
         if event.get("action") == "initialize_database":
@@ -686,6 +772,15 @@ def lambda_handler(event, context):
             result = initialize_database(connection)
 
             return response(200, result)
+
+        # ---------------------------------------------------------
+        # AUTOMATIC DATABASE INITIALIZATION
+        #
+        # For normal Product API requests, automatically apply the
+        # packaged schema if the products table is missing.
+        # ---------------------------------------------------------
+
+        ensure_database_schema(connection)
 
         with connection.cursor() as cursor:
 
@@ -737,6 +832,8 @@ def lambda_handler(event, context):
 
             if method == "POST":
 
+                require_admin(event)
+
                 product_id = create_product(
                     cursor,
                     payload
@@ -749,7 +846,28 @@ def lambda_handler(event, context):
                     product_id
                 )
 
-                log_json("info", "Product created", product_id=int(product_id))
+                # If a product is created already at/below its threshold,
+                # emit the same Inventory Changed event used by stock updates.
+                if int(payload["stock_quantity"]) <= int(payload["low_stock_threshold"]):
+                    publish_inventory_event(
+                        product_id,
+                        product["name"],
+                        int(payload["stock_quantity"]),
+                        int(payload["stock_quantity"]),
+                        int(payload["low_stock_threshold"])
+                    )
+
+                log_json(
+                    "info",
+                    "Product created",
+                    product_id=int(product_id),
+                    stock_quantity=int(payload["stock_quantity"]),
+                    low_stock_threshold=int(payload["low_stock_threshold"]),
+                    low_stock=(
+                        int(payload["stock_quantity"])
+                        <= int(payload["low_stock_threshold"])
+                    )
+                )
 
                 return response(
                     201,
@@ -761,6 +879,8 @@ def lambda_handler(event, context):
             # =================================================
 
             if method == "PUT" and product_id:
+
+                require_admin(event)
 
                 result = update_product(
                     cursor,
@@ -821,6 +941,8 @@ def lambda_handler(event, context):
 
             if method == "DELETE" and product_id:
 
+                require_admin(event)
+
                 deleted = delete_product(
                     cursor,
                     product_id,
@@ -845,9 +967,11 @@ def lambda_handler(event, context):
                     200,
                     {
                         "message":
-                            "Product deleted",
+                            "Product soft-deleted successfully",
                         "product_id":
-                            product_id
+                            product_id,
+                        "status":
+                            "INACTIVE"
                     }
                 )
 
@@ -871,6 +995,21 @@ def lambda_handler(event, context):
             {
                 "message":
                     "Invalid JSON body"
+            }
+        )
+
+    except PermissionError as exc:
+
+        if connection:
+            connection.rollback()
+
+        log_json("warning", "Authorization denied", error=str(exc))
+
+        return response(
+            403,
+            {
+                "message":
+                    str(exc)
             }
         )
 
