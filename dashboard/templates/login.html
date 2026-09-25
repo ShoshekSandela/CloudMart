@@ -4,62 +4,175 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#0b1220">
-  <title>CloudMart | Sign in</title>
+  <title>CloudMart | Secure Sign In</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
+
 <body class="login-page">
-  <main class="login-shell">
-    <section class="login-card" aria-labelledby="login-title">
-      <div class="login-brand">
-        <div class="login-logo" aria-hidden="true">
+  <main class="professional-login" aria-labelledby="login-title">
+
+    <!-- Brand / security panel -->
+    <section class="login-visual-panel">
+      <div class="login-visual-top">
+        <div class="login-logo login-logo-large" aria-hidden="true">
           <svg viewBox="0 0 24 24" fill="none">
-            <path d="M7.2 18.2 4.8 15a2.2 2.2 0 0 1 0-2.64L7.2 9.2a2.2 2.2 0 0 1 1.76-.88h5.98c.7 0 1.35.33 1.76.88l2.5 3.16a2.2 2.2 0 0 1 0 2.64l-2.5 3.2a2.2 2.2 0 0 1-1.76.88H8.96a2.2 2.2 0 0 1-1.76-.88Z" stroke="currentColor" stroke-width="1.7"/>
-            <path d="M8.8 12.1h6.4M8.2 15h7.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            <path d="M7.2 18.2 4.8 15a2.2 2.2 0 0 1 0-2.64L7.2 9.2a2.2 2.2 0 0 1 1.76-.88h5.98c.7 0 1.35.33 1.76.88l2.5 3.16a2.2 2.2 0 0 1 0 2.64l-2.5 3.2a2.2 2.2 0 0 1-1.76.88H8.96a2.2 2.2 0 0 1-1.76-.88Z"
+                  stroke="currentColor" stroke-width="1.7"/>
+            <path d="M8.8 12.1h6.4M8.2 15h7.6"
+                  stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
           </svg>
         </div>
+
         <div>
-          <strong>CloudMart</strong>
-          <span>Operations Console</span>
+          <div class="login-product-name">CloudMart</div>
+          <div class="login-product-subtitle">OPERATIONS CONSOLE</div>
         </div>
       </div>
 
-      <div class="login-heading">
-        <span class="eyebrow">SECURE ADMINISTRATION</span>
-        <h1 id="login-title">Sign in to continue</h1>
-        <p>Use your administrator token to access the CloudMart operations dashboard.</p>
+      <div class="login-visual-content">
+        <span class="login-visual-eyebrow">ADMINISTRATION PORTAL</span>
+        <h1>Manage your operations with confidence.</h1>
+        <p>
+          Secure access to CloudMart's operational dashboard, inventory,
+          orders, customers and reporting services.
+        </p>
+
+        <div class="login-security-list">
+          <div class="login-security-item">
+            <span class="login-security-icon">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 3.8 19 6.6v5.1c0 4.3-2.8 7.3-7 8.5-4.2-1.2-7-4.2-7-8.5V6.6l7-2.8Z"
+                  stroke="currentColor" stroke-width="1.7"/>
+                <path d="m8.8 12.1 2.1 2.1 4.4-4.4"
+                  stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </span>
+            <div>
+              <strong>Protected access</strong>
+              <span>Administrator authentication required</span>
+            </div>
+          </div>
+
+          <div class="login-security-item">
+            <span class="login-security-icon">
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <rect x="5" y="10" width="14" height="10" rx="2"
+                  stroke="currentColor" stroke-width="1.7"/>
+                <path d="M8 10V7.8a4 4 0 0 1 8 0V10"
+                  stroke="currentColor" stroke-width="1.7"/>
+                <circle cx="12" cy="15" r="1.2" fill="currentColor"/>
+              </svg>
+            </span>
+            <div>
+              <strong>Secure administration</strong>
+              <span>Token-based dashboard access</span>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {% if error %}
-        <div class="login-error" role="alert">
-          <span class="error-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none"><path d="M12 4.8 20 19H4l8-14.2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9v4M12 16.2v.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-          </span>
-          <span>{{ error }}</span>
-        </div>
-      {% endif %}
-
-      <form method="post">
-        <label for="token">Administrator token</label>
-        <div class="password-field">
-          <input id="token" name="token" type="password" placeholder="Enter administrator token" autocomplete="current-password" required autofocus>
-          <button class="password-toggle" type="button" data-password-toggle aria-label="Show administrator token" aria-pressed="false">
-            <svg class="eye-open" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.8 12s2.8-5 8.2-5 8.2 5 8.2 5-2.8 5-8.2 5-8.2-5-8.2-5Z" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="2.2" stroke="currentColor" stroke-width="1.7"/></svg>
-            <svg class="eye-closed" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="m4 4 16 16M10.6 10.7a2 2 0 0 0 2.7 2.7M8.1 6.7A10.6 10.6 0 0 0 3.8 12s2.8 5 8.2 5c1.3 0 2.5-.3 3.5-.7M15.9 17.3A10.6 10.6 0 0 0 20.2 12s-2.8-5-8.2-5c-.8 0-1.5.1-2.2.3" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
-        <button class="login-submit" type="submit">
-          <span>Sign in</span>
-          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        </button>
-      </form>
-
-      <div class="login-footer">
-        <span class="secure-dot"><span class="sr-only">Secure</span></span>
-        <span>Authorized CloudMart administrators only</span>
+      <div class="login-visual-footer">
+        <span class="secure-dot"></span>
+        <span>CloudMart Operations · Secure environment</span>
       </div>
     </section>
 
-    <p class="login-meta">CloudMart Admin Console <span>·</span> Secure access</p>
+    <!-- Sign-in panel -->
+    <section class="login-form-panel">
+      <div class="login-form-inner">
+
+        <div class="login-mobile-brand">
+          <div class="login-logo" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path d="M7.2 18.2 4.8 15a2.2 2.2 0 0 1 0-2.64L7.2 9.2a2.2 2.2 0 0 1 1.76-.88h5.98c.7 0 1.35.33 1.76.88l2.5 3.16a2.2 2.2 0 0 1 0 2.64l-2.5 3.2a2.2 2.2 0 0 1-1.76.88H8.96a2.2 2.2 0 0 1-1.76-.88Z"
+                stroke="currentColor" stroke-width="1.7"/>
+              <path d="M8.8 12.1h6.4M8.2 15h7.6"
+                stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <strong>CloudMart</strong>
+        </div>
+
+        <div class="login-form-heading">
+          <span class="eyebrow">SECURE ADMINISTRATION</span>
+          <h2 id="login-title">Welcome back</h2>
+          <p>Sign in to access the CloudMart Operations Console.</p>
+        </div>
+
+        {% if error %}
+          <div class="login-error" role="alert">
+            <span class="error-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none">
+                <path d="M12 4.8 20 19H4l8-14.2Z"
+                  stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+                <path d="M12 9v4M12 16.2v.2"
+                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              </svg>
+            </span>
+            <span>{{ error }}</span>
+          </div>
+        {% endif %}
+
+        <form method="post" class="professional-login-form">
+          <label for="token">Administrator token</label>
+
+          <div class="password-field">
+            <input
+              id="token"
+              name="token"
+              type="password"
+              placeholder="Enter your administrator token"
+              autocomplete="current-password"
+              required
+              autofocus
+            >
+
+            <button
+              class="password-toggle"
+              type="button"
+              data-password-toggle
+              aria-label="Show administrator token"
+              aria-pressed="false"
+            >
+              <svg class="eye-open" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M3.8 12s2.8-5 8.2-5 8.2 5 8.2 5-2.8 5-8.2 5-8.2-5-8.2-5Z"
+                  stroke="currentColor" stroke-width="1.7"/>
+                <circle cx="12" cy="12" r="2.2"
+                  stroke="currentColor" stroke-width="1.7"/>
+              </svg>
+
+              <svg class="eye-closed" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="m4 4 16 16M10.6 10.7a2 2 0 0 0 2.7 2.7"
+                  stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+                <path d="M8.1 6.7A10.6 10.6 0 0 0 3.8 12s2.8 5 8.2 5c1.3 0 2.5-.3 3.5-.7M15.9 17.3A10.6 10.6 0 0 0 20.2 12s-2.8-5-8.2-5c-.8 0-1.5.1-2.2.3"
+                  stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+
+          <button class="login-submit professional-submit" type="submit">
+            <span>Sign in to Console</span>
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M5 12h13M13 6l6 6-6 6"
+                stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </form>
+
+        <div class="login-access-note">
+          <span class="secure-dot"></span>
+          <div>
+            <strong>Authorized administrators only</strong>
+            <span>Your session is protected by CloudMart authentication.</span>
+          </div>
+        </div>
+
+        <p class="login-meta">
+          CloudMart Admin Console <span>·</span> Secure access
+        </p>
+      </div>
+    </section>
   </main>
 
   <script>
@@ -72,7 +185,10 @@
         const visible = input.type === 'text';
         input.type = visible ? 'password' : 'text';
         toggle.setAttribute('aria-pressed', String(!visible));
-        toggle.setAttribute('aria-label', visible ? 'Show administrator token' : 'Hide administrator token');
+        toggle.setAttribute(
+          'aria-label',
+          visible ? 'Show administrator token' : 'Hide administrator token'
+        );
       });
     })();
   </script>
