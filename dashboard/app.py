@@ -1,3 +1,5 @@
+import csv
+import io
 import json
 import os
 import re
@@ -472,8 +474,11 @@ def orders_page():
 @login_required
 def reports_page():
     requested = query_value("date")
+    view_key = request.args.get("view", "").strip()
+
     selected_date = None
     date_error = None
+    view_error = None
 
     if requested:
         try:
@@ -482,21 +487,75 @@ def reports_page():
             date_error = "Please select a valid report date."
 
     reports = list_report_objects()
+
+    # Default to the newest available report only when no date was selected.
     if selected_date is None and reports:
         selected_date = reports[0]["date"]
 
+    # Find the report belonging to the selected date.
     chosen = selected_report(reports, selected_date)
+
     if chosen:
         chosen = dict(chosen)
         chosen["url"] = report_download(chosen)
 
+    # ---------------------------------------------------------
+    # VIEW REPORT DATA INSIDE THE DASHBOARD
+    # ---------------------------------------------------------
+    view_report = None
+    view_columns = []
+    view_rows = []
+
+    if view_key:
+        # Only allow viewing a report that exists in the S3 report list.
+        matched_report = next(
+            (report for report in reports if report["key"] == view_key),
+            None,
+        )
+
+        if matched_report:
+            try:
+                response = s3.get_object(
+                    Bucket=os.environ["REPORT_BUCKET_NAME"],
+                    Key=matched_report["key"],
+                )
+
+                csv_content = response["Body"].read().decode("utf-8-sig")
+
+                reader = csv.DictReader(io.StringIO(csv_content))
+                view_columns = reader.fieldnames or []
+                view_rows = list(reader)
+
+                view_report = dict(matched_report)
+                view_report["url"] = report_download(view_report)
+
+            except Exception:
+                app.logger.exception(
+                    "Unable to read report %s",
+                    view_key,
+                )
+                view_error = "Unable to load the selected report."
+        else:
+            view_error = "The selected report was not found."
+
+    # ---------------------------------------------------------
+    # REPORT HISTORY PAGINATION
+    # ---------------------------------------------------------
     page = safe_page(request.args.get("page"))
     total = len(reports)
     pager = pagination(page, total)
-    reports_page_rows = reports[pager["offset"] : pager["offset"] + pager["page_size"]]
+
+    reports_page_rows = reports[
+        pager["offset"] : pager["offset"] + pager["page_size"]
+    ]
+
     for report in reports_page_rows:
         report["url"] = report_download(report)
-    pager["window"] = page_window(pager["page"], pager["total_pages"])
+
+    pager["window"] = page_window(
+        pager["page"],
+        pager["total_pages"],
+    )
 
     return render_template(
         "dashboard.html",
@@ -506,7 +565,12 @@ def reports_page():
         selected_date=selected_date.isoformat() if selected_date else "",
         date_error=date_error,
         pager=pager,
+        view_report=view_report,
+        view_columns=view_columns,
+        view_rows=view_rows,
+        view_error=view_error,
     )
+
 
 
 if __name__ == "__main__":

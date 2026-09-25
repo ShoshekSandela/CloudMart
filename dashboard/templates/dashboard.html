@@ -138,20 +138,253 @@
 </div>{% endwith %}</section>
 
       {% elif page == 'reports' %}
-        <section class="page-intro"><div><span class="eyebrow">REPORTING</span><h2>Daily Operations Reports</h2><p>Select any available date to view and download the report generated for that day.</p></div></section>
-        <section class="panel report-selector"><form method="get" class="report-date-form"><div><label for="report-date">Select Report Date</label><input id="report-date" type="date" name="date" value="{{ selected_date }}" required></div><button class="download" type="submit">View Report</button>{% if date_error %}<span class="form-error">{{ date_error }}</span>{% endif %}</form>{% if chosen_report %}<div class="selected-report"><div class="report-icon">▤</div><div><span class="eyebrow">SELECTED REPORT</span><h3>{{ chosen_report.date_text }}</h3><p>{{ chosen_report.key }} · {{ chosen_report.size_kb }} KB · {{ chosen_report.generated_text }}</p></div><a class="download" href="{{ chosen_report.url }}">Download CSV</a></div>{% else %}<div class="no-report"><strong>No report found for {{ selected_date or 'the selected date' }}.</strong><span>Choose another date from the date picker.</span></div>{% endif %}</section>
-        <section class="panel table-panel"><div class="panel-header table-header"><div><span class="eyebrow">REPORT HISTORY</span><h3>Previous Reports</h3></div><span class="table-meta">{{ pager.total }} reports</span></div><div class="table-scroll"><table><thead><tr><th>DATE</th><th>FILE NAME</th><th>FILE SIZE</th><th>GENERATED ON</th><th>ACTION</th></tr></thead><tbody>{% for report in reports %}<tr><td class="date">{{ report.date_text }}</td><td class="report-file">{{ report.key }}</td><td>{{ report.size_kb }} KB</td><td class="date">{{ report.generated_text }}</td><td><a class="icon-action" href="{{ report.url }}" title="Download report" aria-label="Download report">↓</a></td></tr>{% else %}<tr><td colspan="5" class="empty-table">No reports have been generated yet.</td></tr>{% endfor %}</tbody></table></div>{% with base_url=url_for('reports_page') %}<div class="pagination-bar">
-  <span>Showing {{ ((pager.page - 1) * pager.page_size + 1) if pager.total else 0 }} to {{ [pager.page * pager.page_size, pager.total]|min }} of {{ pager.total }}</span>
-  <div class="pagination">
-    {% set params = request.args.to_dict() %}
-    <a class="page-button {% if not pager.has_previous %}disabled{% endif %}" href="{% if pager.has_previous %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page - 1 }}{% else %}#{% endif %}" aria-label="Previous page">‹</a>
-    {% for number in pager.window %}
-      {% if number is none %}<span class="page-ellipsis">…</span>{% else %}<a class="page-button {% if number == pager.page %}current{% endif %}" href="{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ number }}">{{ number }}</a>{% endif %}
-    {% endfor %}
-    <a class="page-button {% if not pager.has_next %}disabled{% endif %}" href="{% if pager.has_next %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page + 1 }}{% else %}#{% endif %}" aria-label="Next page">›</a>
-  </div>
-  <span class="page-size">10 per page</span>
-</div>{% endwith %}</section>
+        <section class="page-intro">
+          <div>
+            <span class="eyebrow">REPORTING</span>
+            <h2>Daily Operations Reports</h2>
+            <p>Select any date to view an available report. If no report exists for that date, it will be clearly shown.</p>
+          </div>
+        </section>
+
+        <section class="panel report-selector">
+          <form method="get" class="report-date-form">
+            <div>
+              <label for="report-date">Select Report Date</label>
+              <input
+                id="report-date"
+                type="date"
+                name="date"
+                value="{{ selected_date }}"
+                required
+              >
+            </div>
+
+            <button class="download" type="submit">View Report</button>
+
+            {% if date_error %}
+              <span class="form-error">{{ date_error }}</span>
+            {% endif %}
+          </form>
+
+          {% if chosen_report %}
+            <div class="selected-report">
+              <div class="report-icon">▤</div>
+
+              <div>
+                <span class="eyebrow">SELECTED REPORT</span>
+                <h3>{{ chosen_report.date_text }}</h3>
+                <p>
+                  {{ chosen_report.key }}
+                  · {{ chosen_report.size_kb }} KB
+                  · {{ chosen_report.generated_text }}
+                </p>
+              </div>
+
+              <div class="report-action-group">
+                <a
+                  class="view-action"
+                  href="{{ url_for('reports_page', date=chosen_report.date_text, view=chosen_report.key) }}"
+                >
+                  View
+                </a>
+
+                <a class="download" href="{{ chosen_report.url }}">
+                  Download CSV
+                </a>
+              </div>
+            </div>
+          {% else %}
+            <div class="no-report">
+              <strong>
+                No data available for {{ selected_date or 'the selected date' }}.
+              </strong>
+              <span>
+                No report was generated for this date. Please select another date.
+              </span>
+            </div>
+          {% endif %}
+        </section>
+
+        {% if view_error %}
+          <section class="panel report-view-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">REPORT DATA</span>
+                <h3>Unable to view report</h3>
+              </div>
+            </div>
+
+            <div class="report-empty-state">
+              {{ view_error }}
+            </div>
+          </section>
+        {% elif view_report %}
+          <section class="panel report-view-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">REPORT DATA</span>
+                <h3>{{ view_report.date_text }}</h3>
+                <p class="report-view-meta">
+                  {{ view_report.key }}
+                  · {{ view_report.generated_text }}
+                </p>
+              </div>
+
+              <div class="report-action-group">
+                <a
+                  class="view-action"
+                  href="{{ url_for('reports_page', date=view_report.date_text) }}"
+                >
+                  Close
+                </a>
+
+                <a class="download" href="{{ view_report.url }}">
+                  Download CSV
+                </a>
+              </div>
+            </div>
+
+            {% if view_rows %}
+              <div class="table-scroll report-data-table">
+                <table>
+                  <thead>
+                    <tr>
+                      {% for column in view_columns %}
+                        <th>{{ column|replace('_', ' ')|upper }}</th>
+                      {% endfor %}
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {% for row in view_rows %}
+                      <tr>
+                        {% for column in view_columns %}
+                          <td>{{ row[column] }}</td>
+                        {% endfor %}
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% else %}
+              <div class="report-empty-state">
+                The report exists, but it contains no data rows.
+              </div>
+            {% endif %}
+          </section>
+        {% endif %}
+
+        <section class="panel table-panel">
+          <div class="panel-header table-header">
+            <div>
+              <span class="eyebrow">REPORT HISTORY</span>
+              <h3>Previous Reports</h3>
+            </div>
+
+            <span class="table-meta">{{ pager.total }} reports</span>
+          </div>
+
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>FILE NAME</th>
+                  <th>FILE SIZE</th>
+                  <th>GENERATED ON</th>
+                  <th>ACTION</th>
+                </tr>
+              </thead>
+
+              <tbody>
+                {% for report in reports %}
+                  <tr>
+                    <td class="date">{{ report.date_text }}</td>
+
+                    <td class="report-file">
+                      {{ report.key }}
+                    </td>
+
+                    <td>{{ report.size_kb }} KB</td>
+
+                    <td class="date">
+                      {{ report.generated_text }}
+                    </td>
+
+                    <td>
+                      <div class="report-action-group">
+                        <a
+                          class="view-action small"
+                          href="{{ url_for('reports_page', date=report.date_text, view=report.key) }}"
+                          title="View report"
+                        >
+                          View
+                        </a>
+
+                        <a
+                          class="icon-action"
+                          href="{{ report.url }}"
+                          title="Download report"
+                          aria-label="Download report"
+                        >
+                          ↓
+                        </a>
+                      </div>
+                    </td>
+                  </tr>
+                {% else %}
+                  <tr>
+                    <td colspan="5" class="empty-table">
+                      No reports have been generated yet.
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+
+          {% with base_url=url_for('reports_page') %}
+          <div class="pagination-bar">
+            <span>
+              Showing
+              {{ ((pager.page - 1) * pager.page_size + 1) if pager.total else 0 }}
+              to
+              {{ [pager.page * pager.page_size, pager.total]|min }}
+              of {{ pager.total }}
+            </span>
+
+            <div class="pagination">
+              {% set params = request.args.to_dict() %}
+
+              <a
+                class="page-button {% if not pager.has_previous %}disabled{% endif %}"
+                href="{% if pager.has_previous %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page - 1 }}{% else %}#{% endif %}"
+                aria-label="Previous page"
+              >‹</a>
+
+              {% for number in pager.window %}
+                {% if number is none %}
+                  <span class="page-ellipsis">…</span>
+                {% else %}
+                  <a
+                    class="page-button {% if number == pager.page %}current{% endif %}"
+                    href="{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ number }}"
+                  >
+                    {{ number }}
+                  </a>
+                {% endif %}
+              {% endfor %}
+
+              <a
+                class="page-button {% if not pager.has_next %}disabled{% endif %}"
+                href="{% if pager.has_next %}{{ base_url }}?{% for key, value in params.items() if key != 'page' %}{{ key }}={{ value|urlencode }}&{% endfor %}page={{ pager.page + 1 }}{% else %}#{% endif %}"
+                aria-label="Next page"
+              >›</a>
+            </div>
+
+            <span class="page-size">10 per page</span>
+          </div>
+          {% endwith %}
       {% endif %}
     </main>
 
