@@ -90,13 +90,22 @@
           </article>
         </section>
 
-        <section class="two-column">
+        <section class="two-column performance-dual">
           <article class="panel performance-panel">
             <div class="panel-header"><div><span class="eyebrow">TODAY'S PERFORMANCE</span><h3>Today's Order Overview</h3></div><span class="panel-status"><span></span> Live data</span></div>
             <div class="performance"><div class="performance-item"><span>Today's Revenue</span><strong>₹{{ '%.2f'|format(metrics.today_revenue or 0) }}</strong><small>Orders recorded today</small></div><div class="performance-item"><span>Today's Orders</span><strong>{{ metrics.today_orders or 0 }}</strong><small>All order statuses today</small></div><div class="performance-item"><span>Today's Customers</span><strong>{{ metrics.today_customers or 0 }}</strong><small>Unique customers today</small></div></div>
-            <div class="status-section"><div class="subheading">ORDER STATUS</div>{% for item in order_statuses %}<div class="status-row"><span><i class="status-dot {{ item.status|lower|replace('_','-') }}"></i><strong>{{ item.status }}</strong></span><span class="status-count">{{ item.count }}</span></div>{% else %}<div class="empty">No order status data.</div>{% endfor %}</div>
+            <div class="status-section"><div class="subheading">TODAY'S ORDER STATUS</div>{% for item in order_statuses %}<div class="status-row"><span><i class="status-dot {{ item.status|lower|replace('_','-') }}"></i><strong>{{ item.status }}</strong></span><span class="status-count">{{ item.count }}</span></div>{% else %}<div class="empty">No orders recorded today.</div>{% endfor %}</div>
           </article>
-          <article class="panel stock-panel"><div class="panel-header"><div><span class="eyebrow">INVENTORY MONITORING</span><h3>Stock Alerts</h3></div><span class="counter">{{ low_stock_count }}</span></div>{% if low_stock_products %}<div class="alerts">{% for product in low_stock_products[:6] %}<div class="alert-row"><div class="alert-product"><span class="alert-icon">△</span><div><strong>{{ product.name }}</strong><span>{{ product.stock_quantity }} units left · threshold {{ product.low_stock_threshold }}</span></div></div><span class="low-pill">LOW</span></div>{% endfor %}</div>{% else %}<div class="healthy"><div class="check">✓</div><div><strong>Inventory is healthy</strong><span>No products are below their configured threshold.</span></div></div>{% endif %}</article>
+
+          <article class="panel performance-panel">
+            <div class="panel-header"><div><span class="eyebrow">BUSINESS PERFORMANCE</span><h3>Overall Order Overview</h3></div><span class="panel-status">All time</span></div>
+            <div class="performance"><div class="performance-item"><span>Total Revenue</span><strong>₹{{ '%.2f'|format(metrics.total_revenue or 0) }}</strong><small>Across all recorded orders</small></div><div class="performance-item"><span>Total Orders</span><strong>{{ metrics.total_orders or 0 }}</strong><small>All order statuses</small></div><div class="performance-item"><span>Total Customers</span><strong>{{ metrics.total_customers or 0 }}</strong><small>Unique customers with orders</small></div></div>
+            <div class="status-section"><div class="subheading">OVERALL ORDER STATUS</div>{% for item in overall_order_statuses %}<div class="status-row"><span><i class="status-dot {{ item.status|lower|replace('_','-') }}"></i><strong>{{ item.status }}</strong></span><span class="status-count">{{ item.count }}</span></div>{% else %}<div class="empty">No order status data.</div>{% endfor %}</div>
+          </article>
+        </section>
+
+        <section class="two-column inventory-row">
+          <article class="panel stock-panel stock-panel-wide"><div class="panel-header"><div><span class="eyebrow">INVENTORY MONITORING</span><h3>Stock Alerts</h3></div><span class="counter">{{ low_stock_count }}</span></div>{% if low_stock_products %}<div class="alerts">{% for product in low_stock_products[:6] %}<div class="alert-row"><div class="alert-product"><span class="alert-icon">△</span><div><strong>{{ product.name }}</strong><span>{{ product.stock_quantity }} units left · threshold {{ product.low_stock_threshold }}</span></div></div><span class="low-pill">LOW</span></div>{% endfor %}</div>{% else %}<div class="healthy"><div class="check">✓</div><div><strong>Inventory is healthy</strong><span>No products are below their configured threshold.</span></div></div>{% endif %}</article>
         </section>
 
         <section class="panel table-panel">

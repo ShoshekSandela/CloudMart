@@ -179,6 +179,16 @@ def load_overview_data():
                 """
             )
             order_statuses = cursor.fetchall()
+
+            cursor.execute(
+                """
+                SELECT status, COUNT(*) AS count
+                FROM orders
+                GROUP BY status
+                ORDER BY count DESC, status
+                """
+            )
+            overall_order_statuses = cursor.fetchall()
     finally:
         connection.close()
 
@@ -190,7 +200,7 @@ def load_overview_data():
 
     metrics["total_products"] = len(products)
     metrics["low_stock_count"] = len(low_stock_products)
-    return products, orders, low_stock_products, metrics, order_statuses
+    return products, orders, low_stock_products, metrics, order_statuses, overall_order_statuses
 
 
 def load_products(page, search=""):
@@ -483,7 +493,7 @@ def logout():
 @app.get("/dashboard")
 @login_required
 def dashboard():
-    products, orders, low_stock_products, metrics, order_statuses = load_overview_data()
+    products, orders, low_stock_products, metrics, order_statuses, overall_order_statuses = load_overview_data()
     return render_template(
         "dashboard.html",
         page="overview",
@@ -493,6 +503,7 @@ def dashboard():
         low_stock_products=low_stock_products,
         metrics=metrics,
         order_statuses=order_statuses,
+        overall_order_statuses=overall_order_statuses,
     )
 
 

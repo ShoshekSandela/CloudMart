@@ -1962,3 +1962,18 @@ tbody tr:hover {
     border-bottom: 0;
   }
 }
+
+/* Overview: show today's live performance and overall business performance together. */
+.performance-dual {
+  grid-template-columns: 1fr 1fr;
+}
+
+.inventory-row .stock-panel-wide {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 1180px) {
+  .performance-dual {
+    grid-template-columns: 1fr;
+  }
+}
