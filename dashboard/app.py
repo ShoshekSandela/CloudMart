@@ -150,11 +150,22 @@ def load_overview_data():
                 SELECT
                     COUNT(*) AS total_orders,
                     COALESCE(SUM(total_amount), 0) AS total_revenue,
+                    COALESCE(SUM(CASE WHEN DATE(created_at) = CURRENT_DATE THEN total_amount ELSE 0 END), 0) AS today_revenue,
                     COUNT(DISTINCT customer_id) AS total_customers
                 FROM orders
                 """
             )
             metrics = cursor.fetchone() or {}
+
+            cursor.execute(
+                """
+                SELECT COALESCE(SUM(stock_quantity), 0) AS total_inventory_units
+                FROM products
+                WHERE status = 'ACTIVE'
+                """
+            )
+            inventory_metrics = cursor.fetchone() or {}
+            metrics["total_inventory_units"] = int(inventory_metrics.get("total_inventory_units") or 0)
 
             cursor.execute(
                 """
@@ -288,7 +299,82 @@ def load_orders(page, search="", status=""):
                 f"""
                 SELECT o.order_id, c.customer_name, o.status,
                        o.total_amount, o.created_at,
-                       COUNT(oi.order_item_id) AS item_count
+                       COUNT(oi.order_item_id) AS item_count,
+                       CASE
+                           WHEN o.status <> 'FAILED' THEN NULL
+                           WHEN NOT EXISTS (
+                               SELECT 1
+                               FROM order_items foi
+                               WHERE foi.order_id = o.order_id
+                           ) THEN 'Order contains no valid items'
+                           WHEN EXISTS (
+                               SELECT 1
+                               FROM order_items foi
+                               JOIN products fp ON fp.product_id = foi.product_id
+                               WHERE foi.order_id = o.order_id
+                                 AND fp.deleted_at IS NOT NULL
+                           ) THEN CONCAT(
+                               'Product ',
+                               (SELECT foi.product_id
+                                FROM order_items foi
+                                JOIN products fp ON fp.product_id = foi.product_id
+                                WHERE foi.order_id = o.order_id
+                                  AND fp.deleted_at IS NOT NULL
+                                ORDER BY foi.order_item_id
+                                LIMIT 1),
+                               ' is deleted and cannot be ordered'
+                           )
+                           WHEN EXISTS (
+                               SELECT 1
+                               FROM order_items foi
+                               JOIN products fp ON fp.product_id = foi.product_id
+                               WHERE foi.order_id = o.order_id
+                                 AND fp.status <> 'ACTIVE'
+                           ) THEN CONCAT(
+                               'Product ',
+                               (SELECT foi.product_id
+                                FROM order_items foi
+                                JOIN products fp ON fp.product_id = foi.product_id
+                                WHERE foi.order_id = o.order_id
+                                  AND fp.status <> 'ACTIVE'
+                                ORDER BY foi.order_item_id
+                                LIMIT 1),
+                               ' is not active and cannot be ordered'
+                           )
+                           WHEN EXISTS (
+                               SELECT 1
+                               FROM order_items foi
+                               JOIN products fp ON fp.product_id = foi.product_id
+                               WHERE foi.order_id = o.order_id
+                                 AND fp.stock_quantity < foi.quantity
+                           ) THEN CONCAT(
+                               'Insufficient stock for product ',
+                               (SELECT foi.product_id
+                                FROM order_items foi
+                                JOIN products fp ON fp.product_id = foi.product_id
+                                WHERE foi.order_id = o.order_id
+                                  AND fp.stock_quantity < foi.quantity
+                                ORDER BY foi.order_item_id
+                                LIMIT 1),
+                               ': requested ',
+                               (SELECT foi.quantity
+                                FROM order_items foi
+                                JOIN products fp ON fp.product_id = foi.product_id
+                                WHERE foi.order_id = o.order_id
+                                  AND fp.stock_quantity < foi.quantity
+                                ORDER BY foi.order_item_id
+                                LIMIT 1),
+                               ', available ',
+                               (SELECT fp.stock_quantity
+                                FROM order_items foi
+                                JOIN products fp ON fp.product_id = foi.product_id
+                                WHERE foi.order_id = o.order_id
+                                  AND fp.stock_quantity < foi.quantity
+                                ORDER BY foi.order_item_id
+                                LIMIT 1)
+                           )
+                           ELSE 'Order failed during processing'
+                       END AS failure_reason
                 FROM orders o
                 JOIN customers c ON c.customer_id = o.customer_id
                 LEFT JOIN order_items oi ON oi.order_id = o.order_id
