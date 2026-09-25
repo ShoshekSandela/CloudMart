@@ -150,8 +150,10 @@ def load_overview_data():
                 SELECT
                     COUNT(*) AS total_orders,
                     COALESCE(SUM(total_amount), 0) AS total_revenue,
+                    COUNT(DISTINCT customer_id) AS total_customers,
                     COALESCE(SUM(CASE WHEN DATE(created_at) = CURRENT_DATE THEN total_amount ELSE 0 END), 0) AS today_revenue,
-                    COUNT(DISTINCT customer_id) AS total_customers
+                    SUM(CASE WHEN DATE(created_at) = CURRENT_DATE THEN 1 ELSE 0 END) AS today_orders,
+                    COUNT(DISTINCT CASE WHEN DATE(created_at) = CURRENT_DATE THEN customer_id END) AS today_customers
                 FROM orders
                 """
             )
@@ -171,6 +173,7 @@ def load_overview_data():
                 """
                 SELECT status, COUNT(*) AS count
                 FROM orders
+                WHERE DATE(created_at) = CURRENT_DATE
                 GROUP BY status
                 ORDER BY count DESC, status
                 """
