@@ -350,17 +350,13 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  MonitoringEmailSubscription:
-    Type: AWS::SNS::Subscription
-    # Never let a stack deletion/replacement remove the confirmed email
-    # subscription. GitHub Actions only verifies this subscription; it does
-    # not subscribe, confirm, or unsubscribe it.
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TopicArn: !Ref MonitoringTopic
-      Protocol: email
-      Endpoint: !Ref NotificationEmail
+  # Email subscriptions are intentionally NOT managed by CloudFormation.
+  # Create the email subscription once in Amazon SNS and confirm it there.
+  # This prevents a later stack update/replacement from deleting or replacing
+  # an already-confirmed email subscription.
+  #
+  # The MonitoringTopic itself is retained so the confirmed subscription keeps
+  # pointing to the same SNS topic ARN.
 
   # ------------------------------------------------------------
   # CloudWatch alarms
@@ -531,7 +527,7 @@ Resources:
   OperationsDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
-      DashboardName: !Sub "${ProjectName}-operations"
+      DashboardName: !Sub "${ProjectName}-${Environment}-operations"
       DashboardBody:
         Fn::Sub:
           - |
@@ -704,4 +700,4 @@ Outputs:
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
-    Value: !Sub "${ProjectName}-operations"
+    Value: !Sub "${ProjectName}-${Environment}-operations"
