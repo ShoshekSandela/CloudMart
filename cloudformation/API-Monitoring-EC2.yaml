@@ -365,7 +365,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu-80"
-      AlarmDescription: '🔥 RDS CPU — 85%'
+      AlarmDescription: "RDS CPU - 80 percent or higher."
       Namespace: AWS/RDS
       MetricName: CPUUtilization
       Dimensions:
@@ -404,7 +404,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-low-stock"
-      AlarmDescription: '⚠️ Low Stock — Product stock below threshold'
+      AlarmDescription: "Low Stock - Product stock below threshold."
       Namespace: CloudMart/Operations
       MetricName: LowStockEvents
       Dimensions:
@@ -447,7 +447,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-order-lambda-errors"
-      AlarmDescription: '❌ Lambda Error — Order Lambda'
+      AlarmDescription: "Lambda Error - Order Lambda."
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -665,6 +665,7 @@ Resources:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-DBInstanceIdentifier"
 
 Outputs:
+
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
     Value: !Ref OperationsEC2InstanceV4
