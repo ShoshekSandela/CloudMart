@@ -854,9 +854,11 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
-          # Do not automatically delete the monitoring stack.
-          # If CloudFormation reports a failed/rollback state, stop here so
-          # no DELETE_IN_PROGRESS operation is started by this workflow.
+          # REVIEW_IN_PROGRESS is an unfinished CREATE/change-set state.
+          # It is safe to remove ONLY this unfinished monitoring stack.
+          # The monitoring SNS topic is intentionally external to this stack,
+          # so deleting this stack does NOT delete the existing confirmed
+          # SNS topic or its email subscription.
           case "$STACK_STATUS" in
             ROLLBACK_*|UPDATE_ROLLBACK_*)
               echo "============================================================"
@@ -871,13 +873,21 @@ jobs:
 
             REVIEW_IN_PROGRESS)
               echo "============================================================"
-              echo "ERROR: Monitoring stack is in REVIEW_IN_PROGRESS."
-              echo "Stack: $STACK_NAME"
-              echo "No automatic deletion will be performed."
-              echo "Please manually inspect/delete the unfinished stack."
-              echo "After resolving the stack, run the workflow again."
+              echo "Monitoring stack is in REVIEW_IN_PROGRESS."
+              echo "This is an unfinished CREATE/change-set state."
+              echo "Deleting ONLY this unfinished monitoring stack..."
+              echo "The existing monitoring SNS topic is external to this stack"
+              echo "and will NOT be deleted."
               echo "============================================================"
-              exit 1
+
+              aws cloudformation delete-stack                 --stack-name "$STACK_NAME"                 --region "$AWS_REGION"
+
+              echo "Waiting for monitoring stack deletion to complete..."
+
+              aws cloudformation wait stack-delete-complete                 --stack-name "$STACK_NAME"                 --region "$AWS_REGION"
+
+              echo "Unfinished monitoring stack deleted successfully."
+              STACK_STATUS=""
               ;;
 
             DELETE_FAILED)
@@ -889,7 +899,17 @@ jobs:
               exit 1
               ;;
 
-            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
+            DELETE_IN_PROGRESS)
+              echo "Monitoring stack is already being deleted."
+              echo "Waiting for CloudFormation deletion to complete..."
+
+              aws cloudformation wait stack-delete-complete                 --stack-name "$STACK_NAME"                 --region "$AWS_REGION"
+
+              echo "Monitoring stack deletion completed."
+              STACK_STATUS=""
+              ;;
+
+            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS)
               echo "ERROR: Monitoring stack is currently $STACK_STATUS."
               echo "Wait for CloudFormation to finish before retrying."
               exit 1
