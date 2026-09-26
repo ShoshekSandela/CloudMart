@@ -365,7 +365,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu-80"
-      AlarmDescription: RDS CPU utilization is 80 percent or higher.
+      AlarmDescription: '🔥 RDS CPU — 85%'
       Namespace: AWS/RDS
       MetricName: CPUUtilization
       Dimensions:
@@ -404,7 +404,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-low-stock"
-      AlarmDescription: One or more low-stock events were recorded in five minutes.
+      AlarmDescription: '⚠️ Low Stock — Product stock below threshold'
       Namespace: CloudMart/Operations
       MetricName: LowStockEvents
       Dimensions:
@@ -447,7 +447,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-order-lambda-errors"
-      AlarmDescription: Order Lambda execution errors occurred in five minutes.
+      AlarmDescription: '❌ Lambda Error — Order Lambda'
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -518,28 +518,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Ref MonitoringTopic
-
-  APILatencyAlarm:
-    Type: AWS::CloudWatch::Alarm
-    Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-api-latency"
-      AlarmDescription: API Gateway average latency reached or exceeded 1 second in five minutes.
-      Namespace: AWS/ApiGateway
-      MetricName: Latency
-      Dimensions:
-        - Name: ApiName
-          Value: !Sub "${ProjectName}-${Environment}-api"
-        - Name: Stage
-          Value: !Ref Environment
-      Statistic: Average
-      Period: 300
-      EvaluationPeriods: 1
-      DatapointsToAlarm: 1
-      Threshold: 1000
-      ComparisonOperator: GreaterThanOrEqualToThreshold
-      TreatMissingData: notBreaching
       AlarmActions:
         - !Ref MonitoringTopic
 
@@ -680,33 +658,6 @@ Resources:
                       [ "AWS/ApiGateway", "4XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
                     ]
                   }
-                },
-                {
-                  "type": "metric",
-                  "x": 12,
-                  "y": 18,
-                  "width": 12,
-                  "height": 6,
-                  "properties": {
-                    "title": "API Gateway Latency",
-                    "view": "timeSeries",
-                    "region": "${AWS::Region}",
-                    "period": 300,
-                    "stat": "Average",
-                    "yAxis": {
-                      "left": {
-                        "label": "Milliseconds"
-                      }
-                    },
-                    "metrics": [
-                      [ "AWS/ApiGateway", "Latency", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
-                    ],
-                    "annotations": {
-                      "horizontal": [
-                        { "label": "Alarm threshold (1000 ms)", "value": 1000 }
-                      ]
-                    }
-                  }
                 }
               ]
             }
@@ -746,10 +697,6 @@ Outputs:
   MonitoringTopicArn:
     Description: SNS topic used by all monitoring alarms.
     Value: !Ref MonitoringTopic
-
-  APILatencyAlarmName:
-    Description: CloudWatch alarm for API Gateway average latency.
-    Value: !Ref APILatencyAlarm
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
