@@ -650,10 +650,6 @@ Resources:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-DBInstanceIdentifier"
 
 Outputs:
-  PrettyAlertTopicArn:
-    Description: SNS topic ARN for formatted CloudMart alert emails.
-    Value: !Ref PrettyAlertTopic
-
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
     Value: !Ref OperationsEC2InstanceV4
