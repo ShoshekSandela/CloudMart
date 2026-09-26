@@ -334,30 +334,15 @@ Resources:
 
 
   # ------------------------------------------------------------
-  # SNS topic used by all operational alarms
+  # Existing SNS topic used by all operational alarms
   # ------------------------------------------------------------
-  MonitoringTopic:
-    Type: AWS::SNS::Topic
-    # Keep the monitoring topic even if the stack is manually deleted or
-    # recreated. This protects the SNS destination used by all alarms.
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-monitoring"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  # Email subscriptions are intentionally NOT managed by CloudFormation.
-  # Create the email subscription once in Amazon SNS and confirm it there.
-  # This prevents a later stack update/replacement from deleting or replacing
-  # an already-confirmed email subscription.
+  # The topic is intentionally NOT created by this stack.
+  # It is retained independently so deleting/recreating this stack
+  # does not delete the confirmed email subscription.
   #
-  # The MonitoringTopic itself is retained so the confirmed subscription keeps
-  # pointing to the same SNS topic ARN.
-
+  # Existing topic name:
+  # cloudmart-${Environment}-monitoring
+  #
   # ------------------------------------------------------------
   # CloudWatch alarms
   # ------------------------------------------------------------
@@ -365,7 +350,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu-80"
-      AlarmDescription: RDS CPU utilization is 80 percent or higher.
+      AlarmDescription: "RDS CPU - 80 percent or higher."
       Namespace: AWS/RDS
       MetricName: CPUUtilization
       Dimensions:
@@ -379,7 +364,7 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   OrdersFailedAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -398,13 +383,13 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   LowStockAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-low-stock"
-      AlarmDescription: One or more low-stock events were recorded in five minutes.
+      AlarmDescription: "Low Stock - Product stock below threshold."
       Namespace: CloudMart/Operations
       MetricName: LowStockEvents
       Dimensions:
@@ -417,7 +402,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   API5XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -438,7 +423,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   # ------------------------------------------------------------
   # Additional application and API alarms
@@ -447,7 +432,7 @@ Resources:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub "${ProjectName}-${Environment}-order-lambda-errors"
-      AlarmDescription: Order Lambda execution errors occurred in five minutes.
+      AlarmDescription: "Lambda Error - Order Lambda."
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
@@ -460,7 +445,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   ProductLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -479,7 +464,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   ReportGenerationFailureAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -498,7 +483,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   API4XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -519,7 +504,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringTopic
+        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard
@@ -665,6 +650,10 @@ Resources:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-DBInstanceIdentifier"
 
 Outputs:
+  PrettyAlertTopicArn:
+    Description: SNS topic ARN for formatted CloudMart alert emails.
+    Value: !Ref PrettyAlertTopic
+
   OperationsEC2InstanceId:
     Description: Operations dashboard EC2 instance ID.
     Value: !Ref OperationsEC2InstanceV4
@@ -695,8 +684,8 @@ Outputs:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
 
   MonitoringTopicArn:
-    Description: SNS topic used by all monitoring alarms.
-    Value: !Ref MonitoringTopic
+    Description: Existing SNS topic used by all monitoring alarms.
+    Value: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring" 
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
