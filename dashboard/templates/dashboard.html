@@ -6,6 +6,49 @@
   <meta name="theme-color" content="#0b1220">
   <title>CloudMart | Operations Console</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+
+  <style>
+    .report-section + .report-section {
+      margin-top: 28px;
+    }
+
+    .report-section {
+      border: 1px solid #e7ebf2;
+      border-radius: 14px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .report-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 18px 20px;
+      border-bottom: 1px solid #e7ebf2;
+      background: #f8fafc;
+    }
+
+    .report-section-header h4 {
+      margin: 4px 0 0;
+      font-size: 16px;
+      font-weight: 700;
+      color: #172033;
+    }
+
+    .report-section .report-data-table {
+      border-radius: 0;
+    }
+
+    .report-section .report-data-table table {
+      margin: 0;
+    }
+
+    .report-section .report-data-table th,
+    .report-section .report-data-table td {
+      white-space: nowrap;
+    }
+  </style>
 </head>
 <body>
 <div class="app-shell">
@@ -269,7 +312,83 @@
               </div>
             </div>
 
-            {% if view_rows %}
+            {% if product_report_rows or order_report_rows %}
+              {% if product_report_rows %}
+                <div class="report-section">
+                  <div class="report-section-header">
+                    <div>
+                      <span class="eyebrow">PRODUCT REPORT</span>
+                      <h4>Products</h4>
+                    </div>
+                    <span class="table-meta">{{ product_report_rows|length }} products</span>
+                  </div>
+
+                  <div class="table-scroll report-data-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>PRODUCT</th>
+                          <th>STATUS</th>
+                          <th>STOCK QUANTITY</th>
+                          <th>LOW STOCK THRESHOLD</th>
+                          <th>CREATED / UPDATED AT</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for row in product_report_rows %}
+                          <tr>
+                            <td class="muted">#{{ row.get('id', '') }}</td>
+                            <td><strong>{{ row.get('name', '') }}</strong></td>
+                            <td><span class="pill {{ row.get('status', '')|lower|replace('_','-') }}"><i></i>{{ row.get('status', '') }}</span></td>
+                            <td>{{ row.get('stock_quantity', '') }}</td>
+                            <td>{{ row.get('low_stock_threshold', '') }}</td>
+                            <td class="date">{{ row.get('created_or_updated_at', '') }}</td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              {% endif %}
+
+              {% if order_report_rows %}
+                <div class="report-section report-section-orders">
+                  <div class="report-section-header">
+                    <div>
+                      <span class="eyebrow">ORDER REPORT</span>
+                      <h4>Orders</h4>
+                    </div>
+                    <span class="table-meta">{{ order_report_rows|length }} orders</span>
+                  </div>
+
+                  <div class="table-scroll report-data-table">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>ID</th>
+                          <th>CUSTOMER</th>
+                          <th>STATUS</th>
+                          <th>TOTAL AMOUNT</th>
+                          <th>CREATED / UPDATED AT</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {% for row in order_report_rows %}
+                          <tr>
+                            <td class="muted">#{{ row.get('id', '') }}</td>
+                            <td><strong>{{ row.get('customer', '') }}</strong></td>
+                            <td><span class="pill {{ row.get('status', '')|lower|replace('_','-') }}"><i></i>{{ row.get('status', '') }}</span></td>
+                            <td class="money">₹{{ row.get('total_amount', '') }}</td>
+                            <td class="date">{{ row.get('created_or_updated_at', '') }}</td>
+                          </tr>
+                        {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              {% endif %}
+            {% elif view_rows %}
               <div class="table-scroll report-data-table">
                 <table>
                   <thead>
@@ -279,7 +398,6 @@
                       {% endfor %}
                     </tr>
                   </thead>
-
                   <tbody>
                     {% for row in view_rows %}
                       <tr>

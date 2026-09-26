@@ -605,6 +605,8 @@ def reports_page():
     view_report = None
     view_columns = []
     view_rows = []
+    product_report_rows = []
+    order_report_rows = []
 
     if view_key:
         # Only allow viewing a report that exists in the S3 report list.
@@ -625,6 +627,16 @@ def reports_page():
                 reader = csv.DictReader(io.StringIO(csv_content))
                 view_columns = reader.fieldnames or []
                 view_rows = list(reader)
+
+                # Split the existing single CSV into separate Product and Order
+                # sections for display in the dashboard. The S3 file itself and
+                # the Download CSV action remain unchanged.
+                for row in view_rows:
+                    record_type = (row.get("record_type") or "").strip().upper()
+                    if record_type == "PRODUCT":
+                        product_report_rows.append(row)
+                    elif record_type == "ORDER":
+                        order_report_rows.append(row)
 
                 view_report = dict(matched_report)
                 view_report["url"] = report_download(view_report)
@@ -668,6 +680,8 @@ def reports_page():
         view_report=view_report,
         view_columns=view_columns,
         view_rows=view_rows,
+        product_report_rows=product_report_rows,
+        order_report_rows=order_report_rows,
         view_error=view_error,
     )
 
