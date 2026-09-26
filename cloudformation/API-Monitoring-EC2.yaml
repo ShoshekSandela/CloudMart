@@ -338,6 +338,10 @@ Resources:
   # ------------------------------------------------------------
   MonitoringTopic:
     Type: AWS::SNS::Topic
+    # Keep the monitoring topic even if the stack is manually deleted or
+    # recreated. This protects the SNS destination used by all alarms.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicName: !Sub "${ProjectName}-${Environment}-monitoring"
       Tags:
@@ -348,6 +352,11 @@ Resources:
 
   MonitoringEmailSubscription:
     Type: AWS::SNS::Subscription
+    # Never let a stack deletion/replacement remove the confirmed email
+    # subscription. GitHub Actions only verifies this subscription; it does
+    # not subscribe, confirm, or unsubscribe it.
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       TopicArn: !Ref MonitoringTopic
       Protocol: email

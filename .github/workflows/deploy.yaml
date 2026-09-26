@@ -944,6 +944,55 @@ jobs:
               ;;
           esac
 
+          # Read-only verification of the monitoring SNS destination.
+          # This workflow intentionally does NOT call sns:Subscribe,
+          # sns:ConfirmSubscription, or sns:Unsubscribe. The subscription is
+          # retained by CloudFormation and remains active after confirmation.
+          MONITORING_TOPIC_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[?OutputKey==`MonitoringTopicArn`].OutputValue' \
+            --output text)
+
+          test -n "$MONITORING_TOPIC_ARN" && test "$MONITORING_TOPIC_ARN" != "None" || {
+            echo "ERROR: Monitoring SNS topic ARN was not returned by CloudFormation."
+            exit 1
+          }
+
+          echo "Monitoring SNS topic: $MONITORING_TOPIC_ARN"
+
+          MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$MONITORING_TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --output json)
+
+          MONITORING_SUB_STATUS=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+            .Subscriptions[]?
+            | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+            | if .SubscriptionArn == "PendingConfirmation" then "PENDING"
+              elif .SubscriptionArn == "Deleted" then "DELETED"
+              elif (.SubscriptionArn // "" | startswith("arn:")) then "CONFIRMED"
+              else "UNKNOWN" end' | head -n 1)
+
+          case "$MONITORING_SUB_STATUS" in
+            CONFIRMED)
+              echo "Monitoring SNS email subscription is CONFIRMED and retained."
+              ;;
+            PENDING)
+              echo "WARNING: Monitoring SNS email subscription is PendingConfirmation."
+              echo "Confirm the AWS SNS subscription email before alarm notifications can be delivered."
+              ;;
+            DELETED)
+              echo "ERROR: Monitoring SNS email subscription is Deleted."
+              echo "No automatic subscription/deletion action will be performed by this workflow."
+              exit 1
+              ;;
+            *)
+              echo "ERROR: Monitoring SNS email subscription was not found for $ADMIN_EMAIL."
+              exit 1
+              ;;
+          esac
+
           echo "Verifying deployed daily report EventBridge rule..."
 
           DAILY_REPORT_SCHEDULE_NAME=$(aws cloudformation describe-stacks             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --query 'Stacks[0].Outputs[?OutputKey==`DailyReportScheduleName`].OutputValue'             --output text)
