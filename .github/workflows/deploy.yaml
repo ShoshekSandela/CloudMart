@@ -1268,10 +1268,42 @@ jobs:
 
           echo "Monitoring SNS topic: $MONITORING_TOPIC_ARN"
 
+          # The monitoring SNS topic is intentionally external to this
+          # CloudFormation stack. Verify that it exists before querying
+          # subscriptions. If it is missing, recreate only the topic.
+          # Existing confirmed subscriptions are never removed.
           MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
             --topic-arn "$MONITORING_TOPIC_ARN" \
             --region "$AWS_REGION" \
-            --output json)
+            --output json 2>/tmp/monitoring-sns-error.log || true)
+
+          if [ -z "$MONITORING_SUBSCRIPTIONS" ] ||              grep -qiE 'NotFound|Topic does not exist|does not exist' /tmp/monitoring-sns-error.log; then
+            echo "Monitoring SNS topic does not currently exist."
+            echo "Creating the existing CloudMart monitoring topic: $MONITORING_TOPIC_ARN"
+
+            MONITORING_TOPIC_ARN=$(aws sns create-topic \
+              --name "${PROJECT_NAME}-${ENVIRONMENT}-monitoring" \
+              --region "$AWS_REGION" \
+              --query 'TopicArn' \
+              --output text)
+
+            test -n "$MONITORING_TOPIC_ARN" && test "$MONITORING_TOPIC_ARN" != "None" || {
+              echo "ERROR: Failed to create the monitoring SNS topic."
+              cat /tmp/monitoring-sns-error.log || true
+              exit 1
+            }
+
+            echo "Monitoring SNS topic created: $MONITORING_TOPIC_ARN"
+
+            MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+              --topic-arn "$MONITORING_TOPIC_ARN" \
+              --region "$AWS_REGION" \
+              --output json)
+          elif grep -q 'An error occurred' /tmp/monitoring-sns-error.log; then
+            echo "ERROR: Unable to query the monitoring SNS topic."
+            cat /tmp/monitoring-sns-error.log
+            exit 1
+          fi
 
           MONITORING_SUB_STATUS=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
             .Subscriptions[]?
