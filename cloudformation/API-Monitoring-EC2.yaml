@@ -358,6 +358,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   OrdersFailedAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -375,6 +378,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   LowStockAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -392,6 +398,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   API5XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -411,6 +420,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   # ------------------------------------------------------------
   # Additional application and API alarms
@@ -431,6 +443,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   ProductLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -448,6 +463,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   ReportGenerationFailureAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -465,6 +483,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
   API4XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -484,6 +505,9 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: []
+      OKActions: []
+      InsufficientDataActions: []
 
 
   # ------------------------------------------------------------
