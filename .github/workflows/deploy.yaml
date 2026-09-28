@@ -20,7 +20,6 @@ permissions:
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
-  ENVIRONMENT: ${{ vars.CLOUDMART_ENVIRONMENT || 'dev' }}
 
 jobs:
   deploy-network:
@@ -28,6 +27,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+
+      - name: Load CloudMart deployment parameters
+        env:
+          CLOUDMART_ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="cloudformation/parameters.json"
+          test -f "$CONFIG_FILE" || { echo "ERROR: $CONFIG_FILE not found."; exit 1; }
+
+          ENVIRONMENT=$(jq -r '.Environment' "$CONFIG_FILE")
+          PROJECT_NAME=$(jq -r '.ProjectName' "$CONFIG_FILE")
+          NOTIFICATION_EMAIL="${CLOUDMART_ADMIN_EMAIL:-}"
+          VPC_CIDR=$(jq -r '.VpcCidr' "$CONFIG_FILE")
+          PUBLIC_SUBNET_CIDR=$(jq -r '.PublicSubnetCidr' "$CONFIG_FILE")
+          MONITORING_PUBLIC_SUBNET_CIDR=$(jq -r '.MonitoringPublicSubnetCidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET1_CIDR=$(jq -r '.PrivateSubnet1Cidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET2_CIDR=$(jq -r '.PrivateSubnet2Cidr' "$CONFIG_FILE")
+          DB_NAME=$(jq -r '.DBName' "$CONFIG_FILE")
+          DB_INSTANCE_CLASS=$(jq -r '.DBInstanceClass' "$CONFIG_FILE")
+          ALLOCATED_STORAGE=$(jq -r '.AllocatedStorage' "$CONFIG_FILE")
+          AUTHORIZER_CACHE_TTL=$(jq -r '.AuthorizerCacheTTL' "$CONFIG_FILE")
+          EC2_INSTANCE_TYPE=$(jq -r '.EC2InstanceType' "$CONFIG_FILE")
+          DASHBOARD_SOURCE_PREFIX=$(jq -r '.DashboardSourcePrefix' "$CONFIG_FILE")
+
+          for value in "$ENVIRONMENT" "$PROJECT_NAME" "$NOTIFICATION_EMAIL" "$VPC_CIDR"                        "$PUBLIC_SUBNET_CIDR" "$MONITORING_PUBLIC_SUBNET_CIDR"                        "$PRIVATE_SUBNET1_CIDR" "$PRIVATE_SUBNET2_CIDR" "$DB_NAME"                        "$DB_INSTANCE_CLASS" "$ALLOCATED_STORAGE" "$AUTHORIZER_CACHE_TTL"                        "$EC2_INSTANCE_TYPE" "$DASHBOARD_SOURCE_PREFIX"; do
+            test -n "$value" || { echo "ERROR: parameters.json contains an empty required value."; exit 1; }
+          done
+
+          echo "ENVIRONMENT=$ENVIRONMENT" >> "$GITHUB_ENV"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "ADMIN_EMAIL=$NOTIFICATION_EMAIL" >> "$GITHUB_ENV"
+          echo "VPC_CIDR=$VPC_CIDR" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_CIDR=$PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "MONITORING_PUBLIC_SUBNET_CIDR=$MONITORING_PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET1_CIDR=$PRIVATE_SUBNET1_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET2_CIDR=$PRIVATE_SUBNET2_CIDR" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_CLASS=$DB_INSTANCE_CLASS" >> "$GITHUB_ENV"
+          echo "ALLOCATED_STORAGE=$ALLOCATED_STORAGE" >> "$GITHUB_ENV"
+          echo "AUTHORIZER_CACHE_TTL=$AUTHORIZER_CACHE_TTL" >> "$GITHUB_ENV"
+          echo "EC2_INSTANCE_TYPE=$EC2_INSTANCE_TYPE" >> "$GITHUB_ENV"
+          echo "DASHBOARD_SOURCE_PREFIX=$DASHBOARD_SOURCE_PREFIX" >> "$GITHUB_ENV"
+
+          echo "Loaded CloudMart configuration for environment: $ENVIRONMENT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -57,7 +102,13 @@ jobs:
               --template-file cloudformation/network-stack.yaml \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
-              --parameter-overrides Environment="$ENVIRONMENT" \
+              --parameter-overrides \
+                Environment="$ENVIRONMENT" \
+                VpcCidr="$VPC_CIDR" \
+                PublicSubnetCidr="$PUBLIC_SUBNET_CIDR" \
+                MonitoringPublicSubnetCidr="$MONITORING_PUBLIC_SUBNET_CIDR" \
+                PrivateSubnet1Cidr="$PRIVATE_SUBNET1_CIDR" \
+                PrivateSubnet2Cidr="$PRIVATE_SUBNET2_CIDR" \
               --capabilities CAPABILITY_NAMED_IAM \
               --no-fail-on-empty-changeset
 
@@ -78,12 +129,31 @@ jobs:
                 --no-fail-on-empty-changeset
               ;;
 
-            ROLLBACK_*|UPDATE_ROLLBACK_*)
+            UPDATE_ROLLBACK_COMPLETE)
+              echo "Network stack previously rolled back successfully."
+              echo "No automatic deletion will be performed."
+              echo "Proceeding with the requested network update."
+              aws cloudformation deploy \
+                --template-file cloudformation/network-stack.yaml \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --parameter-overrides \
+                  Environment="$ENVIRONMENT" \
+                  VpcCidr="$VPC_CIDR" \
+                  PublicSubnetCidr="$PUBLIC_SUBNET_CIDR" \
+                  MonitoringPublicSubnetCidr="$MONITORING_PUBLIC_SUBNET_CIDR" \
+                  PrivateSubnet1Cidr="$PRIVATE_SUBNET1_CIDR" \
+                  PrivateSubnet2Cidr="$PRIVATE_SUBNET2_CIDR" \
+                --capabilities CAPABILITY_NAMED_IAM \
+                --no-fail-on-empty-changeset
+              ;;
+
+            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|ROLLBACK_FAILED|UPDATE_ROLLBACK_FAILED)
               echo "============================================================"
-              echo "ERROR: Network stack is in rollback state: $STATUS"
+              echo "ERROR: Network stack is in an active/failed rollback state: $STATUS"
               echo "Stack: $STACK_NAME"
-              echo "No automatic recovery or deletion will be performed."
-              echo "Please manually inspect and recover/delete the stack."
+              echo "NO AUTOMATIC DELETION OR RECOVERY WILL BE PERFORMED."
+              echo "Inspect CloudFormation and resolve the stack manually."
               echo "After resolving the stack, run the workflow again."
               echo "============================================================"
               exit 1
@@ -115,6 +185,52 @@ jobs:
       AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Load CloudMart deployment parameters
+        env:
+          CLOUDMART_ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="cloudformation/parameters.json"
+          test -f "$CONFIG_FILE" || { echo "ERROR: $CONFIG_FILE not found."; exit 1; }
+
+          ENVIRONMENT=$(jq -r '.Environment' "$CONFIG_FILE")
+          PROJECT_NAME=$(jq -r '.ProjectName' "$CONFIG_FILE")
+          NOTIFICATION_EMAIL="${CLOUDMART_ADMIN_EMAIL:-}"
+          VPC_CIDR=$(jq -r '.VpcCidr' "$CONFIG_FILE")
+          PUBLIC_SUBNET_CIDR=$(jq -r '.PublicSubnetCidr' "$CONFIG_FILE")
+          MONITORING_PUBLIC_SUBNET_CIDR=$(jq -r '.MonitoringPublicSubnetCidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET1_CIDR=$(jq -r '.PrivateSubnet1Cidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET2_CIDR=$(jq -r '.PrivateSubnet2Cidr' "$CONFIG_FILE")
+          DB_NAME=$(jq -r '.DBName' "$CONFIG_FILE")
+          DB_INSTANCE_CLASS=$(jq -r '.DBInstanceClass' "$CONFIG_FILE")
+          ALLOCATED_STORAGE=$(jq -r '.AllocatedStorage' "$CONFIG_FILE")
+          AUTHORIZER_CACHE_TTL=$(jq -r '.AuthorizerCacheTTL' "$CONFIG_FILE")
+          EC2_INSTANCE_TYPE=$(jq -r '.EC2InstanceType' "$CONFIG_FILE")
+          DASHBOARD_SOURCE_PREFIX=$(jq -r '.DashboardSourcePrefix' "$CONFIG_FILE")
+
+          for value in "$ENVIRONMENT" "$PROJECT_NAME" "$NOTIFICATION_EMAIL" "$VPC_CIDR"                        "$PUBLIC_SUBNET_CIDR" "$MONITORING_PUBLIC_SUBNET_CIDR"                        "$PRIVATE_SUBNET1_CIDR" "$PRIVATE_SUBNET2_CIDR" "$DB_NAME"                        "$DB_INSTANCE_CLASS" "$ALLOCATED_STORAGE" "$AUTHORIZER_CACHE_TTL"                        "$EC2_INSTANCE_TYPE" "$DASHBOARD_SOURCE_PREFIX"; do
+            test -n "$value" || { echo "ERROR: parameters.json contains an empty required value."; exit 1; }
+          done
+
+          echo "ENVIRONMENT=$ENVIRONMENT" >> "$GITHUB_ENV"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "ADMIN_EMAIL=$NOTIFICATION_EMAIL" >> "$GITHUB_ENV"
+          echo "VPC_CIDR=$VPC_CIDR" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_CIDR=$PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "MONITORING_PUBLIC_SUBNET_CIDR=$MONITORING_PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET1_CIDR=$PRIVATE_SUBNET1_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET2_CIDR=$PRIVATE_SUBNET2_CIDR" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_CLASS=$DB_INSTANCE_CLASS" >> "$GITHUB_ENV"
+          echo "ALLOCATED_STORAGE=$ALLOCATED_STORAGE" >> "$GITHUB_ENV"
+          echo "AUTHORIZER_CACHE_TTL=$AUTHORIZER_CACHE_TTL" >> "$GITHUB_ENV"
+          echo "EC2_INSTANCE_TYPE=$EC2_INSTANCE_TYPE" >> "$GITHUB_ENV"
+          echo "DASHBOARD_SOURCE_PREFIX=$DASHBOARD_SOURCE_PREFIX" >> "$GITHUB_ENV"
+
+          echo "Loaded CloudMart configuration for environment: $ENVIRONMENT"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -245,6 +361,52 @@ jobs:
     needs: deploy-iam
     steps:
       - uses: actions/checkout@v5
+
+      - name: Load CloudMart deployment parameters
+        env:
+          CLOUDMART_ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="cloudformation/parameters.json"
+          test -f "$CONFIG_FILE" || { echo "ERROR: $CONFIG_FILE not found."; exit 1; }
+
+          ENVIRONMENT=$(jq -r '.Environment' "$CONFIG_FILE")
+          PROJECT_NAME=$(jq -r '.ProjectName' "$CONFIG_FILE")
+          NOTIFICATION_EMAIL="${CLOUDMART_ADMIN_EMAIL:-}"
+          VPC_CIDR=$(jq -r '.VpcCidr' "$CONFIG_FILE")
+          PUBLIC_SUBNET_CIDR=$(jq -r '.PublicSubnetCidr' "$CONFIG_FILE")
+          MONITORING_PUBLIC_SUBNET_CIDR=$(jq -r '.MonitoringPublicSubnetCidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET1_CIDR=$(jq -r '.PrivateSubnet1Cidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET2_CIDR=$(jq -r '.PrivateSubnet2Cidr' "$CONFIG_FILE")
+          DB_NAME=$(jq -r '.DBName' "$CONFIG_FILE")
+          DB_INSTANCE_CLASS=$(jq -r '.DBInstanceClass' "$CONFIG_FILE")
+          ALLOCATED_STORAGE=$(jq -r '.AllocatedStorage' "$CONFIG_FILE")
+          AUTHORIZER_CACHE_TTL=$(jq -r '.AuthorizerCacheTTL' "$CONFIG_FILE")
+          EC2_INSTANCE_TYPE=$(jq -r '.EC2InstanceType' "$CONFIG_FILE")
+          DASHBOARD_SOURCE_PREFIX=$(jq -r '.DashboardSourcePrefix' "$CONFIG_FILE")
+
+          for value in "$ENVIRONMENT" "$PROJECT_NAME" "$NOTIFICATION_EMAIL" "$VPC_CIDR"                        "$PUBLIC_SUBNET_CIDR" "$MONITORING_PUBLIC_SUBNET_CIDR"                        "$PRIVATE_SUBNET1_CIDR" "$PRIVATE_SUBNET2_CIDR" "$DB_NAME"                        "$DB_INSTANCE_CLASS" "$ALLOCATED_STORAGE" "$AUTHORIZER_CACHE_TTL"                        "$EC2_INSTANCE_TYPE" "$DASHBOARD_SOURCE_PREFIX"; do
+            test -n "$value" || { echo "ERROR: parameters.json contains an empty required value."; exit 1; }
+          done
+
+          echo "ENVIRONMENT=$ENVIRONMENT" >> "$GITHUB_ENV"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "ADMIN_EMAIL=$NOTIFICATION_EMAIL" >> "$GITHUB_ENV"
+          echo "VPC_CIDR=$VPC_CIDR" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_CIDR=$PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "MONITORING_PUBLIC_SUBNET_CIDR=$MONITORING_PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET1_CIDR=$PRIVATE_SUBNET1_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET2_CIDR=$PRIVATE_SUBNET2_CIDR" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_CLASS=$DB_INSTANCE_CLASS" >> "$GITHUB_ENV"
+          echo "ALLOCATED_STORAGE=$ALLOCATED_STORAGE" >> "$GITHUB_ENV"
+          echo "AUTHORIZER_CACHE_TTL=$AUTHORIZER_CACHE_TTL" >> "$GITHUB_ENV"
+          echo "EC2_INSTANCE_TYPE=$EC2_INSTANCE_TYPE" >> "$GITHUB_ENV"
+          echo "DASHBOARD_SOURCE_PREFIX=$DASHBOARD_SOURCE_PREFIX" >> "$GITHUB_ENV"
+
+          echo "Loaded CloudMart configuration for environment: $ENVIRONMENT"
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -416,9 +578,9 @@ jobs:
               --region "$AWS_REGION" \
               --parameter-overrides \
                 Environment="$ENVIRONMENT" \
-                DBName=cloudmart \
-                DBInstanceClass=db.t3.micro \
-                AllocatedStorage=20 \
+                DBName="$DB_NAME" \
+                DBInstanceClass="$DB_INSTANCE_CLASS" \
+                AllocatedStorage="$ALLOCATED_STORAGE" \
                 DBUsername="$DB_USERNAME" \
                 DBPassword="$DB_PASSWORD" \
               --capabilities CAPABILITY_NAMED_IAM \
@@ -433,9 +595,9 @@ jobs:
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              DBName=cloudmart \
-              DBInstanceClass=db.t3.micro \
-              AllocatedStorage=20 \
+              DBName="$DB_NAME" \
+              DBInstanceClass="$DB_INSTANCE_CLASS" \
+              AllocatedStorage="$ALLOCATED_STORAGE" \
               DBUsername="$DB_USERNAME" \
               DBPassword="$DB_PASSWORD" \
             --capabilities CAPABILITY_NAMED_IAM \
@@ -447,6 +609,52 @@ jobs:
     needs: deploy-data
     steps:
       - uses: actions/checkout@v5
+
+      - name: Load CloudMart deployment parameters
+        env:
+          CLOUDMART_ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="cloudformation/parameters.json"
+          test -f "$CONFIG_FILE" || { echo "ERROR: $CONFIG_FILE not found."; exit 1; }
+
+          ENVIRONMENT=$(jq -r '.Environment' "$CONFIG_FILE")
+          PROJECT_NAME=$(jq -r '.ProjectName' "$CONFIG_FILE")
+          NOTIFICATION_EMAIL="${CLOUDMART_ADMIN_EMAIL:-}"
+          VPC_CIDR=$(jq -r '.VpcCidr' "$CONFIG_FILE")
+          PUBLIC_SUBNET_CIDR=$(jq -r '.PublicSubnetCidr' "$CONFIG_FILE")
+          MONITORING_PUBLIC_SUBNET_CIDR=$(jq -r '.MonitoringPublicSubnetCidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET1_CIDR=$(jq -r '.PrivateSubnet1Cidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET2_CIDR=$(jq -r '.PrivateSubnet2Cidr' "$CONFIG_FILE")
+          DB_NAME=$(jq -r '.DBName' "$CONFIG_FILE")
+          DB_INSTANCE_CLASS=$(jq -r '.DBInstanceClass' "$CONFIG_FILE")
+          ALLOCATED_STORAGE=$(jq -r '.AllocatedStorage' "$CONFIG_FILE")
+          AUTHORIZER_CACHE_TTL=$(jq -r '.AuthorizerCacheTTL' "$CONFIG_FILE")
+          EC2_INSTANCE_TYPE=$(jq -r '.EC2InstanceType' "$CONFIG_FILE")
+          DASHBOARD_SOURCE_PREFIX=$(jq -r '.DashboardSourcePrefix' "$CONFIG_FILE")
+
+          for value in "$ENVIRONMENT" "$PROJECT_NAME" "$NOTIFICATION_EMAIL" "$VPC_CIDR"                        "$PUBLIC_SUBNET_CIDR" "$MONITORING_PUBLIC_SUBNET_CIDR"                        "$PRIVATE_SUBNET1_CIDR" "$PRIVATE_SUBNET2_CIDR" "$DB_NAME"                        "$DB_INSTANCE_CLASS" "$ALLOCATED_STORAGE" "$AUTHORIZER_CACHE_TTL"                        "$EC2_INSTANCE_TYPE" "$DASHBOARD_SOURCE_PREFIX"; do
+            test -n "$value" || { echo "ERROR: parameters.json contains an empty required value."; exit 1; }
+          done
+
+          echo "ENVIRONMENT=$ENVIRONMENT" >> "$GITHUB_ENV"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "ADMIN_EMAIL=$NOTIFICATION_EMAIL" >> "$GITHUB_ENV"
+          echo "VPC_CIDR=$VPC_CIDR" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_CIDR=$PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "MONITORING_PUBLIC_SUBNET_CIDR=$MONITORING_PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET1_CIDR=$PRIVATE_SUBNET1_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET2_CIDR=$PRIVATE_SUBNET2_CIDR" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_CLASS=$DB_INSTANCE_CLASS" >> "$GITHUB_ENV"
+          echo "ALLOCATED_STORAGE=$ALLOCATED_STORAGE" >> "$GITHUB_ENV"
+          echo "AUTHORIZER_CACHE_TTL=$AUTHORIZER_CACHE_TTL" >> "$GITHUB_ENV"
+          echo "EC2_INSTANCE_TYPE=$EC2_INSTANCE_TYPE" >> "$GITHUB_ENV"
+          echo "DASHBOARD_SOURCE_PREFIX=$DASHBOARD_SOURCE_PREFIX" >> "$GITHUB_ENV"
+
+          echo "Loaded CloudMart configuration for environment: $ENVIRONMENT"
       - uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -466,8 +674,6 @@ jobs:
           set -euo pipefail
           sam build --template-file cloudformation/application-stack.yaml
       - name: Deploy application
-        env:
-          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
         run: |
           set -euo pipefail
           test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
@@ -532,11 +738,11 @@ jobs:
             --no-fail-on-empty-changeset \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              ProjectName=cloudmart \
-              AuthorizerCacheTTL=0 \
+              ProjectName="$PROJECT_NAME" \
+              AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL" \
               NotificationEmail="$ADMIN_EMAIL" \
               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
-              EC2InstanceType=t3.micro
+              EC2InstanceType="$EC2_INSTANCE_TYPE"
 
            APP_STATUS=$(aws cloudformation describe-stacks \
              --stack-name "$STACK_NAME" \
@@ -719,6 +925,52 @@ jobs:
     needs: deploy-application
     steps:
       - uses: actions/checkout@v5
+
+      - name: Load CloudMart deployment parameters
+        env:
+          CLOUDMART_ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="cloudformation/parameters.json"
+          test -f "$CONFIG_FILE" || { echo "ERROR: $CONFIG_FILE not found."; exit 1; }
+
+          ENVIRONMENT=$(jq -r '.Environment' "$CONFIG_FILE")
+          PROJECT_NAME=$(jq -r '.ProjectName' "$CONFIG_FILE")
+          NOTIFICATION_EMAIL="${CLOUDMART_ADMIN_EMAIL:-}"
+          VPC_CIDR=$(jq -r '.VpcCidr' "$CONFIG_FILE")
+          PUBLIC_SUBNET_CIDR=$(jq -r '.PublicSubnetCidr' "$CONFIG_FILE")
+          MONITORING_PUBLIC_SUBNET_CIDR=$(jq -r '.MonitoringPublicSubnetCidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET1_CIDR=$(jq -r '.PrivateSubnet1Cidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET2_CIDR=$(jq -r '.PrivateSubnet2Cidr' "$CONFIG_FILE")
+          DB_NAME=$(jq -r '.DBName' "$CONFIG_FILE")
+          DB_INSTANCE_CLASS=$(jq -r '.DBInstanceClass' "$CONFIG_FILE")
+          ALLOCATED_STORAGE=$(jq -r '.AllocatedStorage' "$CONFIG_FILE")
+          AUTHORIZER_CACHE_TTL=$(jq -r '.AuthorizerCacheTTL' "$CONFIG_FILE")
+          EC2_INSTANCE_TYPE=$(jq -r '.EC2InstanceType' "$CONFIG_FILE")
+          DASHBOARD_SOURCE_PREFIX=$(jq -r '.DashboardSourcePrefix' "$CONFIG_FILE")
+
+          for value in "$ENVIRONMENT" "$PROJECT_NAME" "$NOTIFICATION_EMAIL" "$VPC_CIDR"                        "$PUBLIC_SUBNET_CIDR" "$MONITORING_PUBLIC_SUBNET_CIDR"                        "$PRIVATE_SUBNET1_CIDR" "$PRIVATE_SUBNET2_CIDR" "$DB_NAME"                        "$DB_INSTANCE_CLASS" "$ALLOCATED_STORAGE" "$AUTHORIZER_CACHE_TTL"                        "$EC2_INSTANCE_TYPE" "$DASHBOARD_SOURCE_PREFIX"; do
+            test -n "$value" || { echo "ERROR: parameters.json contains an empty required value."; exit 1; }
+          done
+
+          echo "ENVIRONMENT=$ENVIRONMENT" >> "$GITHUB_ENV"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "ADMIN_EMAIL=$NOTIFICATION_EMAIL" >> "$GITHUB_ENV"
+          echo "VPC_CIDR=$VPC_CIDR" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_CIDR=$PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "MONITORING_PUBLIC_SUBNET_CIDR=$MONITORING_PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET1_CIDR=$PRIVATE_SUBNET1_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET2_CIDR=$PRIVATE_SUBNET2_CIDR" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_CLASS=$DB_INSTANCE_CLASS" >> "$GITHUB_ENV"
+          echo "ALLOCATED_STORAGE=$ALLOCATED_STORAGE" >> "$GITHUB_ENV"
+          echo "AUTHORIZER_CACHE_TTL=$AUTHORIZER_CACHE_TTL" >> "$GITHUB_ENV"
+          echo "EC2_INSTANCE_TYPE=$EC2_INSTANCE_TYPE" >> "$GITHUB_ENV"
+          echo "DASHBOARD_SOURCE_PREFIX=$DASHBOARD_SOURCE_PREFIX" >> "$GITHUB_ENV"
+
+          echo "Loaded CloudMart configuration for environment: $ENVIRONMENT"
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
         with:
@@ -811,6 +1063,52 @@ jobs:
     needs: initialize
     steps:
       - uses: actions/checkout@v5
+
+      - name: Load CloudMart deployment parameters
+        env:
+          CLOUDMART_ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          CONFIG_FILE="cloudformation/parameters.json"
+          test -f "$CONFIG_FILE" || { echo "ERROR: $CONFIG_FILE not found."; exit 1; }
+
+          ENVIRONMENT=$(jq -r '.Environment' "$CONFIG_FILE")
+          PROJECT_NAME=$(jq -r '.ProjectName' "$CONFIG_FILE")
+          NOTIFICATION_EMAIL="${CLOUDMART_ADMIN_EMAIL:-}"
+          VPC_CIDR=$(jq -r '.VpcCidr' "$CONFIG_FILE")
+          PUBLIC_SUBNET_CIDR=$(jq -r '.PublicSubnetCidr' "$CONFIG_FILE")
+          MONITORING_PUBLIC_SUBNET_CIDR=$(jq -r '.MonitoringPublicSubnetCidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET1_CIDR=$(jq -r '.PrivateSubnet1Cidr' "$CONFIG_FILE")
+          PRIVATE_SUBNET2_CIDR=$(jq -r '.PrivateSubnet2Cidr' "$CONFIG_FILE")
+          DB_NAME=$(jq -r '.DBName' "$CONFIG_FILE")
+          DB_INSTANCE_CLASS=$(jq -r '.DBInstanceClass' "$CONFIG_FILE")
+          ALLOCATED_STORAGE=$(jq -r '.AllocatedStorage' "$CONFIG_FILE")
+          AUTHORIZER_CACHE_TTL=$(jq -r '.AuthorizerCacheTTL' "$CONFIG_FILE")
+          EC2_INSTANCE_TYPE=$(jq -r '.EC2InstanceType' "$CONFIG_FILE")
+          DASHBOARD_SOURCE_PREFIX=$(jq -r '.DashboardSourcePrefix' "$CONFIG_FILE")
+
+          for value in "$ENVIRONMENT" "$PROJECT_NAME" "$NOTIFICATION_EMAIL" "$VPC_CIDR"                        "$PUBLIC_SUBNET_CIDR" "$MONITORING_PUBLIC_SUBNET_CIDR"                        "$PRIVATE_SUBNET1_CIDR" "$PRIVATE_SUBNET2_CIDR" "$DB_NAME"                        "$DB_INSTANCE_CLASS" "$ALLOCATED_STORAGE" "$AUTHORIZER_CACHE_TTL"                        "$EC2_INSTANCE_TYPE" "$DASHBOARD_SOURCE_PREFIX"; do
+            test -n "$value" || { echo "ERROR: parameters.json contains an empty required value."; exit 1; }
+          done
+
+          echo "ENVIRONMENT=$ENVIRONMENT" >> "$GITHUB_ENV"
+          echo "PROJECT_NAME=$PROJECT_NAME" >> "$GITHUB_ENV"
+          echo "ADMIN_EMAIL=$NOTIFICATION_EMAIL" >> "$GITHUB_ENV"
+          echo "VPC_CIDR=$VPC_CIDR" >> "$GITHUB_ENV"
+          echo "PUBLIC_SUBNET_CIDR=$PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "MONITORING_PUBLIC_SUBNET_CIDR=$MONITORING_PUBLIC_SUBNET_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET1_CIDR=$PRIVATE_SUBNET1_CIDR" >> "$GITHUB_ENV"
+          echo "PRIVATE_SUBNET2_CIDR=$PRIVATE_SUBNET2_CIDR" >> "$GITHUB_ENV"
+          echo "DB_NAME=$DB_NAME" >> "$GITHUB_ENV"
+          echo "DB_INSTANCE_CLASS=$DB_INSTANCE_CLASS" >> "$GITHUB_ENV"
+          echo "ALLOCATED_STORAGE=$ALLOCATED_STORAGE" >> "$GITHUB_ENV"
+          echo "AUTHORIZER_CACHE_TTL=$AUTHORIZER_CACHE_TTL" >> "$GITHUB_ENV"
+          echo "EC2_INSTANCE_TYPE=$EC2_INSTANCE_TYPE" >> "$GITHUB_ENV"
+          echo "DASHBOARD_SOURCE_PREFIX=$DASHBOARD_SOURCE_PREFIX" >> "$GITHUB_ENV"
+
+          echo "Loaded CloudMart configuration for environment: $ENVIRONMENT"
       - uses: aws-actions/setup-sam@v2
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -830,8 +1128,8 @@ jobs:
 
           test -n "$REPORT_BUCKET" || { echo "Report bucket was not found."; exit 1; }
 
-          aws s3 sync dashboard "s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}" --delete --exclude "venv/*" --exclude "venv"
-          echo "Dashboard source uploaded to s3://${REPORT_BUCKET}/dashboard-source/${GITHUB_SHA}"
+          aws s3 sync dashboard "s3://${REPORT_BUCKET}/${DASHBOARD_SOURCE_PREFIX}/${GITHUB_SHA}" --delete --exclude "venv/*" --exclude "venv"
+          echo "Dashboard source uploaded to s3://${REPORT_BUCKET}/${DASHBOARD_SOURCE_PREFIX}/${GITHUB_SHA}"
 
       - name: Validate monitoring template
         run: sam validate --template-file cloudformation/API-Monitoring-EC2.yaml
@@ -840,8 +1138,6 @@ jobs:
         run: sam build --template-file cloudformation/API-Monitoring-EC2.yaml
 
       - name: Deploy API-Monitoring-EC2 stack
-        env:
-          ADMIN_EMAIL: ${{ vars.CLOUDMART_ADMIN_EMAIL }}
         run: |
           set -euo pipefail
           test -n "$ADMIN_EMAIL" || { echo "CLOUDMART_ADMIN_EMAIL is missing"; exit 1; }
@@ -914,7 +1210,7 @@ jobs:
 
           echo "Using CloudFormation execution role: $CFN_EXECUTION_ROLE_ARN"
           echo "Dashboard bootstrap version: ${GITHUB_RUN_NUMBER}"
-          echo "Dashboard source prefix: dashboard-source/${GITHUB_SHA}"
+          echo "Dashboard source prefix: ${DASHBOARD_SOURCE_PREFIX}/${GITHUB_SHA}"
 
           sam deploy \
             --template-file .aws-sam/build/template.yaml \
@@ -927,10 +1223,10 @@ jobs:
             --no-fail-on-empty-changeset \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
-              ProjectName=cloudmart \
+              ProjectName="$PROJECT_NAME" \
               NotificationEmail="$ADMIN_EMAIL" \
-              EC2InstanceType=t3.micro \
-              DashboardSourcePrefix="dashboard-source/${GITHUB_SHA}" \
+              EC2InstanceType="$EC2_INSTANCE_TYPE" \
+              DashboardSourcePrefix="${DASHBOARD_SOURCE_PREFIX}/${GITHUB_SHA}" \
               DashboardBootstrapVersion="${GITHUB_RUN_NUMBER}"
 
           MONITORING_STATUS=$(aws cloudformation describe-stacks \
@@ -1355,7 +1651,7 @@ jobs:
             echo "Dashboard URL: $DASHBOARD_URL"
             echo ""
             echo "EC2 instance: $DASHBOARD_INSTANCE_ID"
-            echo "Dashboard source: dashboard-source/${GITHUB_SHA}"
+            echo "Dashboard source: ${DASHBOARD_SOURCE_PREFIX}/${GITHUB_SHA}"
             echo ""
             echo "The dashboard source was uploaded to S3 and refreshed on the running EC2 instance through SSM."
             echo "The Flask session secret is preserved on the EC2 instance and shared by both Gunicorn workers."

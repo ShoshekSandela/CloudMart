@@ -1,0 +1,15 @@
+{
+  "Environment": "dev",
+  "ProjectName": "cloudmart",
+  "VpcCidr": "10.0.0.0/16",
+  "PublicSubnetCidr": "10.0.1.0/24",
+  "MonitoringPublicSubnetCidr": "10.0.2.0/24",
+  "PrivateSubnet1Cidr": "10.0.11.0/24",
+  "PrivateSubnet2Cidr": "10.0.12.0/24",
+  "DBName": "cloudmart",
+  "DBInstanceClass": "db.t3.micro",
+  "AllocatedStorage": 20,
+  "AuthorizerCacheTTL": 0,
+  "EC2InstanceType": "t3.micro",
+  "DashboardSourcePrefix": "dashboard-source"
+}

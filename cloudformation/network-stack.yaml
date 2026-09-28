@@ -8,8 +8,7 @@ Description: >
 Parameters:
   Environment:
     Type: String
-    Default: dev
-    AllowedValues: [dev, test, prod]
+    Description: Deployment environment loaded from cloudformation/parameters.json.
 
   VpcCidr:
     Type: String
@@ -18,6 +17,10 @@ Parameters:
   PublicSubnetCidr:
     Type: String
     Default: 10.0.1.0/24
+
+  MonitoringPublicSubnetCidr:
+    Type: String
+    Default: 10.0.2.0/24
 
   PrivateSubnet1Cidr:
     Type: String
@@ -58,17 +61,14 @@ Resources:
       VpcId: !Ref CloudMartVPC
       InternetGatewayId: !Ref InternetGateway
 
-  # Public subnet used by the Operations EC2 instance.
-  # Keep this subnet in the first AZ returned by AWS for the region.
-  # This avoids selecting an AZ where the requested EC2 instance type
-  # may be unavailable (for example, t3.micro was unavailable in
-  # us-east-1e in the failed monitoring deployment).
+  # Existing public subnet. Keep this resource unchanged.
+  # The monitoring dashboard uses a separate public subnet below so this
+  # existing subnet is never recreated just to change its Availability Zone.
   PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PublicSubnetCidr
-      AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -136,6 +136,33 @@ Resources:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Separate public subnet for the Operations Dashboard EC2.
+  # This avoids changing/recreating the existing PublicSubnet.
+  MonitoringPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CloudMartVPC
+      CidrBlock: !Ref MonitoringPublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub cloudmart-${Environment}-monitoring-public-subnet
+        - Key: Tier
+          Value: Public
+        - Key: Purpose
+          Value: OperationsDashboard
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringPublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref MonitoringPublicSubnet
       RouteTableId: !Ref PublicRouteTable
 
   PrivateRouteTable:
@@ -333,6 +360,10 @@ Outputs:
     Value: !Ref PublicSubnet
     Export:
       Name: !Sub CloudMart-${Environment}-PublicSubnetId
+  MonitoringPublicSubnetId:
+    Value: !Ref MonitoringPublicSubnet
+    Export:
+      Name: !Sub CloudMart-${Environment}-MonitoringPublicSubnetId
   PrivateSubnet1Id:
     Value: !Ref PrivateSubnet1
     Export:

@@ -8,8 +8,7 @@ Description: >
 Parameters:
   Environment:
     Type: String
-    Default: dev
-    AllowedValues: [dev, test, prod]
+    Description: Deployment environment loaded from cloudformation/parameters.json.
 
   DBName:
     Type: String
