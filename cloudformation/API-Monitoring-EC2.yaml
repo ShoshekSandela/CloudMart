@@ -10,7 +10,6 @@ Parameters:
   Environment:
     Type: String
     Description: Deployment environment loaded from cloudformation/parameters.json.
-    AllowedValues: [dev, test, prod]
 
   ProjectName:
     Type: String
@@ -637,6 +636,80 @@ Resources:
                     "stat": "Sum",
                     "metrics": [
                       [ "AWS/ApiGateway", "4XXError", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 0, "y": 24, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "Lambda Throttles",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "AWS/Lambda", "Throttles", "FunctionName", "${ProjectName}-${Environment}-order" ],
+                      [ ".", ".", ".", "${ProjectName}-${Environment}-product" ],
+                      [ ".", ".", ".", "${ProjectName}-${Environment}-daily-report" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 12, "y": 24, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "API Gateway Integration Latency",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Average",
+                    "metrics": [
+                      [ "AWS/ApiGateway", "IntegrationLatency", "ApiName", "${ProjectName}-${Environment}-api", "Stage", "${Environment}" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 0, "y": 30, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "RDS Read and Write Latency",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Average",
+                    "metrics": [
+                      [ "AWS/RDS", "ReadLatency", "DBInstanceIdentifier", "${DB_INSTANCE_ID}" ],
+                      [ ".", "WriteLatency", ".", "." ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 12, "y": 30, "width": 12, "height": 6,
+                  "properties": {
+                    "title": "Low Stock Events",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "stat": "Sum",
+                    "metrics": [
+                      [ "CloudMart/Operations", "LowStockEvents", "Environment", "${Environment}" ]
+                    ]
+                  }
+                },
+                {
+                  "type": "metric",
+                  "x": 0, "y": 36, "width": 24, "height": 6,
+                  "properties": {
+                    "title": "Report Lambda Health",
+                    "view": "timeSeries",
+                    "region": "${AWS::Region}",
+                    "period": 300,
+                    "metrics": [
+                      [ "AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-${Environment}-daily-report" ],
+                      [ ".", "Errors", ".", "." ],
+                      [ ".", "Duration", ".", "." ]
                     ]
                   }
                 }
