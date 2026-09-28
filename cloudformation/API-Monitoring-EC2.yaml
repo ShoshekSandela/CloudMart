@@ -358,8 +358,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   OrdersFailedAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -377,8 +375,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   LowStockAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -396,8 +392,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   API5XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -417,8 +411,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   # ------------------------------------------------------------
   # Additional application and API alarms
@@ -439,8 +431,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   ProductLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -458,8 +448,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   ReportGenerationFailureAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -477,8 +465,6 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
 
   API4XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -498,8 +484,152 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions:
-        - !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
+
+
+  # ------------------------------------------------------------
+  # Custom alarm notification Lambda
+  # ------------------------------------------------------------
+  AlarmNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-alarm-notification"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 30
+      MemorySize: 128
+      InlineCode: |
+        import json
+        import os
+        from datetime import datetime, timezone
+
+        import boto3
+
+        sns = boto3.client("sns")
+        topic_arn = os.environ["MONITORING_TOPIC_ARN"]
+
+        def _alarm_name(detail):
+            return detail.get("alarmName", "CloudWatch Alarm")
+
+        def _service(alarm_name):
+            name = alarm_name.lower()
+            if "api-4xx" in name:
+                return "API Gateway"
+            if "api-5xx" in name:
+                return "API Gateway"
+            if "rds-cpu" in name:
+                return "RDS"
+            if "low-stock" in name:
+                return "Inventory"
+            if "orders-failed" in name:
+                return "Order Processing"
+            if "order-lambda" in name:
+                return "Order Lambda"
+            if "product-lambda" in name:
+                return "Product Lambda"
+            if "report-generation" in name:
+                return "Daily Report Lambda"
+            return "CloudMart Monitoring"
+
+        def _description(alarm_name):
+            name = alarm_name.lower()
+            if "api-4xx" in name:
+                return "An API Gateway 4XX error was detected."
+            if "api-5xx" in name:
+                return "An API Gateway 5XX error was detected."
+            if "rds-cpu" in name:
+                return "RDS CPU utilization reached the configured threshold."
+            if "low-stock" in name:
+                return "A product inventory level reached the low-stock threshold."
+            if "orders-failed" in name:
+                return "A failed order was detected."
+            if "order-lambda" in name:
+                return "The Order Lambda reported an execution error."
+            if "product-lambda" in name:
+                return "The Product Lambda reported an execution error."
+            if "report-generation" in name:
+                return "The Daily Report Lambda reported an execution error."
+            return "A CloudWatch alarm changed state."
+
+        def lambda_handler(event, context):
+            detail = event.get("detail", {})
+            state = detail.get("state", {}).get("value", "UNKNOWN")
+            alarm_name = _alarm_name(detail)
+            service = _service(alarm_name)
+            description = _description(alarm_name)
+
+            event_time = event.get("time")
+            if event_time:
+                try:
+                    dt = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                    event_time = dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+                except ValueError:
+                    pass
+
+            if state == "ALARM":
+                status = "ALARM"
+            elif state == "OK":
+                status = "OK"
+            else:
+                status = state
+
+            message = (
+                "CLOUDMART MONITORING ALERT\n\n"
+                f"Alert   : {service}\n"
+                f"Status  : {status}\n"
+                f"Alarm   : {alarm_name}\n\n"
+                f"{description}\n\n"
+                "Action  : Check the CloudWatch alarm and related service logs.\n\n"
+                f"Time    : {event_time or 'Not available'}"
+            )
+
+            sns.publish(
+                TopicArn=topic_arn,
+                Subject=f"[CloudMart] {service} - {status}",
+                Message=message,
+            )
+
+            return {"statusCode": 200, "body": json.dumps({"message": "Notification sent"})}
+
+      Environment:
+        Variables:
+          MONITORING_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
+
+  # ------------------------------------------------------------
+  # EventBridge rule for CloudWatch alarm state changes
+  # ------------------------------------------------------------
+  AlarmNotificationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-alarm-notifications"
+      Description: Sends CloudWatch alarm state changes to the CloudMart notification Lambda.
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - prefix: !Sub "${ProjectName}-${Environment}-"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: AlarmNotificationLambda
+          Arn: !GetAtt AlarmNotificationFunction.Arn
+
+  AlarmNotificationRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AlarmNotificationFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt AlarmNotificationRule.Arn
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard
