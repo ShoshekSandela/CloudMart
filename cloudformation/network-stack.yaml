@@ -9,26 +9,22 @@ Parameters:
   Environment:
     Type: String
     Description: Deployment environment loaded from cloudformation/parameters.json.
+    AllowedValues: [dev, test, prod]
 
   VpcCidr:
     Type: String
-    Default: 10.0.0.0/16
 
   PublicSubnetCidr:
     Type: String
-    Default: 10.0.1.0/24
 
   MonitoringPublicSubnetCidr:
     Type: String
-    Default: 10.0.2.0/24
 
   PrivateSubnet1Cidr:
     Type: String
-    Default: 10.0.11.0/24
 
   PrivateSubnet2Cidr:
     Type: String
-    Default: 10.0.12.0/24
 
 Resources:
   # Main CloudMart VPC for all application resources.

@@ -10,7 +10,7 @@ Parameters:
   Environment:
     Type: String
     Description: Deployment environment loaded from cloudformation/parameters.json.
-    Description: Deployment environment name.
+    AllowedValues: [dev, test, prod]
 
   GitHubActionsRoleName:
     Type: String

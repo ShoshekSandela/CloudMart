@@ -124,7 +124,13 @@ jobs:
                 --template-file cloudformation/network-stack.yaml \
                 --stack-name "$STACK_NAME" \
                 --region "$AWS_REGION" \
-                --parameter-overrides Environment="$ENVIRONMENT" \
+                --parameter-overrides \
+                Environment="$ENVIRONMENT" \
+                VpcCidr="$VPC_CIDR" \
+                PublicSubnetCidr="$PUBLIC_SUBNET_CIDR" \
+                MonitoringPublicSubnetCidr="$MONITORING_PUBLIC_SUBNET_CIDR" \
+                PrivateSubnet1Cidr="$PRIVATE_SUBNET1_CIDR" \
+                PrivateSubnet2Cidr="$PRIVATE_SUBNET2_CIDR" \
                 --capabilities CAPABILITY_NAMED_IAM \
                 --no-fail-on-empty-changeset
               ;;

@@ -9,10 +9,10 @@ Parameters:
   Environment:
     Type: String
     Description: Deployment environment loaded from cloudformation/parameters.json.
+    AllowedValues: [dev, test, prod]
 
   DBName:
     Type: String
-    Default: cloudmart
     MinLength: 1
     MaxLength: 64
     AllowedPattern: '^[A-Za-z][A-Za-z0-9_]*$'
@@ -32,11 +32,9 @@ Parameters:
 
   DBInstanceClass:
     Type: String
-    Default: db.t3.micro
 
   AllocatedStorage:
     Type: Number
-    Default: 20
     MinValue: 20
 
 Resources:

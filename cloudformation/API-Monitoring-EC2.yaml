@@ -10,10 +10,10 @@ Parameters:
   Environment:
     Type: String
     Description: Deployment environment loaded from cloudformation/parameters.json.
+    AllowedValues: [dev, test, prod]
 
   ProjectName:
     Type: String
-    Default: cloudmart
 
   NotificationEmail:
     Type: String
@@ -21,18 +21,15 @@ Parameters:
 
   EC2InstanceType:
     Type: String
-    Default: t3.micro
 
   DashboardSourcePrefix:
     Type: String
-    Default: dashboard-source
 
   # Changes on every monitoring deployment so the EC2 bootstrap definition
   # stays aligned with the deployed dashboard configuration. Existing EC2
   # instances are refreshed by the GitHub Actions SSM deployment step.
   DashboardBootstrapVersion:
     Type: String
-    Default: "1"
 
 Resources:
 

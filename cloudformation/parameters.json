@@ -11,5 +11,7 @@
   "AllocatedStorage": 20,
   "AuthorizerCacheTTL": 0,
   "EC2InstanceType": "t3.micro",
-  "DashboardSourcePrefix": "dashboard-source"
+  "DashboardSourcePrefix": "dashboard-source",
+  "ApiDeploymentVersion": "1",
+  "DashboardBootstrapVersion": "1"
 }
