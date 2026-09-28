@@ -854,64 +854,49 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text 2>/dev/null || true)
 
-          # REVIEW_IN_PROGRESS is an unfinished CREATE/change-set state.
-          # It is safe to remove ONLY this unfinished monitoring stack.
-          # The monitoring SNS topic is intentionally external to this stack,
-          # so deleting this stack does NOT delete the existing confirmed
-          # SNS topic or its email subscription.
+          # IMPORTANT:
+          # Monitoring stack rollback/review/delete recovery is MANUAL.
+          # GitHub Actions must NEVER automatically delete this stack.
           case "$STACK_STATUS" in
             ROLLBACK_*|UPDATE_ROLLBACK_*)
               echo "============================================================"
               echo "ERROR: Monitoring stack is in rollback state: $STACK_STATUS"
               echo "Stack: $STACK_NAME"
-              echo "No automatic recovery or deletion will be performed."
-              echo "Please manually inspect and recover/delete the stack."
-              echo "After resolving the stack, run the workflow again."
+              echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+              echo "Inspect CloudFormation Events and manually delete/recover"
+              echo "the stack if required. Then run the workflow again."
               echo "============================================================"
               exit 1
               ;;
 
             REVIEW_IN_PROGRESS)
               echo "============================================================"
-              echo "Monitoring stack is in REVIEW_IN_PROGRESS."
-              echo "This is an unfinished CREATE/change-set state."
-              echo "Deleting ONLY this unfinished monitoring stack..."
-              echo "The existing monitoring SNS topic is external to this stack"
-              echo "and will NOT be deleted."
+              echo "ERROR: Monitoring stack is in REVIEW_IN_PROGRESS."
+              echo "Stack: $STACK_NAME"
+              echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+              echo "Manually delete the unfinished stack in CloudFormation,"
+              echo "then run the workflow again."
               echo "============================================================"
-
-              aws cloudformation delete-stack                 --stack-name "$STACK_NAME"                 --region "$AWS_REGION"
-
-              echo "Waiting for monitoring stack deletion to complete..."
-
-              aws cloudformation wait stack-delete-complete                 --stack-name "$STACK_NAME"                 --region "$AWS_REGION"
-
-              echo "Unfinished monitoring stack deleted successfully."
-              STACK_STATUS=""
+              exit 1
               ;;
 
             DELETE_FAILED)
               echo "============================================================"
               echo "ERROR: Monitoring stack is in DELETE_FAILED."
               echo "Stack: $STACK_NAME"
+              echo "NO AUTOMATIC DELETION OR RECOVERY WILL BE PERFORMED."
               echo "Manual CloudFormation recovery is required."
               echo "============================================================"
               exit 1
               ;;
 
-            DELETE_IN_PROGRESS)
-              echo "Monitoring stack is already being deleted."
-              echo "Waiting for CloudFormation deletion to complete..."
-
-              aws cloudformation wait stack-delete-complete                 --stack-name "$STACK_NAME"                 --region "$AWS_REGION"
-
-              echo "Monitoring stack deletion completed."
-              STACK_STATUS=""
-              ;;
-
-            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS)
+            ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|DELETE_IN_PROGRESS)
+              echo "============================================================"
               echo "ERROR: Monitoring stack is currently $STACK_STATUS."
-              echo "Wait for CloudFormation to finish before retrying."
+              echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+              echo "Wait for the current CloudFormation operation to finish."
+              echo "Then manually inspect/delete the stack if required."
+              echo "============================================================"
               exit 1
               ;;
           esac
