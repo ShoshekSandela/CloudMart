@@ -59,11 +59,16 @@ Resources:
       InternetGatewayId: !Ref InternetGateway
 
   # Public subnet used by the Operations EC2 instance.
+  # Keep this subnet in the first AZ returned by AWS for the region.
+  # This avoids selecting an AZ where the requested EC2 instance type
+  # may be unavailable (for example, t3.micro was unavailable in
+  # us-east-1e in the failed monitoring deployment).
   PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref CloudMartVPC
       CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
