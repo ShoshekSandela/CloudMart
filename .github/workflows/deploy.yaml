@@ -276,10 +276,12 @@ jobs:
           # hard-coded instance ARN because CloudFormation may replace the
           # Operations EC2 instance during a later monitoring deployment.
           IAM_CREATE_PARAMETERS=(
+            "ParameterKey=ProjectName,ParameterValue=$PROJECT_NAME"
             "ParameterKey=Environment,ParameterValue=$ENVIRONMENT"
             "ParameterKey=GitHubActionsRoleName,ParameterValue=${AWS_ROLE_ARN##*/}"
           )
           IAM_DEPLOY_PARAMETERS=(
+            "ProjectName=$PROJECT_NAME"
             "Environment=$ENVIRONMENT"
             "GitHubActionsRoleName=${AWS_ROLE_ARN##*/}"
           )
@@ -865,28 +867,24 @@ jobs:
              fi
            fi
 
-           # Remove the obsolete singular topic created by an older version.
-           # The current CloudFormation-managed topic is plural:
-           # cloudmart-${ENVIRONMENT}-order-notifications.
-           STALE_ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
+           # Read-only verification of the obsolete singular topic.
+          # GitHub Actions does not create or delete this legacy resource.
+          # If it still exists from an older deployment, remove it manually
+          # after confirming that it is no longer used.
+          STALE_ORDER_TOPIC_ARN=$(aws sns list-topics \
+            --region "$AWS_REGION" \
+            --query 'Topics[].TopicArn' \
+            --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
 
-           if [ -n "$STALE_ORDER_TOPIC_ARN" ]; then
-             echo "Deleting stale SNS topic: $STALE_ORDER_TOPIC_ARN"
-             aws sns delete-topic                --topic-arn "$STALE_ORDER_TOPIC_ARN"                --region "$AWS_REGION"
-             echo "Stale singular order-notification topic deleted."
-           else
-             echo "No stale singular order-notification topic found."
-           fi
+          if [ -n "$STALE_ORDER_TOPIC_ARN" ]; then
+            echo "WARNING: obsolete singular order-notification topic still exists:"
+            echo "$STALE_ORDER_TOPIC_ARN"
+            echo "GitHub Actions will NOT delete or modify it."
+          else
+            echo "No obsolete singular order-notification topic found."
+          fi
 
-           # Verify the obsolete singular topic is gone.
-           STALE_ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notification$" | head -n 1 || true)
-
-           test -z "$STALE_ORDER_TOPIC_ARN" || {
-             echo "ERROR: stale singular order-notification topic still exists."
-             exit 1
-           }
-
-           # Read-only verification. The email subscription itself is created by
+          # Read-only verification. The email subscription itself is created by
            # CloudFormation from NotificationEmail. GitHub Actions does not call
            # sns:Subscribe, ConfirmSubscription, or Unsubscribe.
            FINAL_LOW_STOCK_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
@@ -1270,40 +1268,19 @@ jobs:
 
           echo "Monitoring SNS topic: $MONITORING_TOPIC_ARN"
 
-          # The monitoring SNS topic is intentionally external to this
-          # CloudFormation stack. Verify that it exists before querying
-          # subscriptions. If it is missing, recreate only the topic.
-          # Existing confirmed subscriptions are never removed.
+          # Read-only verification only.
+          # The monitoring SNS topic and email subscription are CloudFormation-managed.
+          # GitHub Actions must never create, subscribe, confirm, unsubscribe, or delete
+          # monitoring SNS resources.
+
           MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
             --topic-arn "$MONITORING_TOPIC_ARN" \
             --region "$AWS_REGION" \
             --output json 2>/tmp/monitoring-sns-error.log || true)
 
-          if [ -z "$MONITORING_SUBSCRIPTIONS" ] ||              grep -qiE 'NotFound|Topic does not exist|does not exist' /tmp/monitoring-sns-error.log; then
-            echo "Monitoring SNS topic does not currently exist."
-            echo "Creating the existing CloudMart monitoring topic: $MONITORING_TOPIC_ARN"
-
-            MONITORING_TOPIC_ARN=$(aws sns create-topic \
-              --name "${PROJECT_NAME}-${ENVIRONMENT}-monitoring" \
-              --region "$AWS_REGION" \
-              --query 'TopicArn' \
-              --output text)
-
-            test -n "$MONITORING_TOPIC_ARN" && test "$MONITORING_TOPIC_ARN" != "None" || {
-              echo "ERROR: Failed to create the monitoring SNS topic."
-              cat /tmp/monitoring-sns-error.log || true
-              exit 1
-            }
-
-            echo "Monitoring SNS topic created: $MONITORING_TOPIC_ARN"
-
-            MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
-              --topic-arn "$MONITORING_TOPIC_ARN" \
-              --region "$AWS_REGION" \
-              --output json)
-          elif grep -q 'An error occurred' /tmp/monitoring-sns-error.log; then
-            echo "ERROR: Unable to query the monitoring SNS topic."
-            cat /tmp/monitoring-sns-error.log
+          if [ -z "$MONITORING_SUBSCRIPTIONS" ] || grep -q 'An error occurred' /tmp/monitoring-sns-error.log; then
+            echo "ERROR: Unable to query the CloudFormation-managed monitoring SNS topic."
+            cat /tmp/monitoring-sns-error.log || true
             exit 1
           fi
 
@@ -1317,56 +1294,30 @@ jobs:
 
           case "$MONITORING_SUB_STATUS" in
             CONFIRMED)
-              echo "Monitoring SNS email subscription is CONFIRMED and will be left untouched."
+              echo "Monitoring SNS email subscription is CONFIRMED."
               ;;
-
             PENDING)
               echo "WARNING: Monitoring SNS email subscription is PendingConfirmation."
-              echo "AWS SNS has already sent the confirmation email to $ADMIN_EMAIL."
-              echo "Confirm that email before alarm notifications can be delivered."
+              echo "The recipient must confirm the AWS SNS email before alarm notifications can be delivered."
               ;;
-
             DELETED)
-              echo "WARNING: The previous monitoring SNS subscription is Deleted."
-              echo "Creating a new email subscription for $ADMIN_EMAIL."
-              echo "The new subscription will remain PendingConfirmation until the recipient confirms it."
-
-              NEW_MONITORING_SUB_ARN=$(aws sns subscribe \
-                --topic-arn "$MONITORING_TOPIC_ARN" \
-                --protocol email \
-                --notification-endpoint "$ADMIN_EMAIL" \
-                --region "$AWS_REGION" \
-                --query 'SubscriptionArn' \
-                --output text)
-
-              echo "New monitoring SNS subscription request created: $NEW_MONITORING_SUB_ARN"
-              echo "Confirmation email should now be sent to $ADMIN_EMAIL."
+              echo "ERROR: CloudFormation-managed monitoring SNS subscription is Deleted."
+              echo "Do not recreate it with AWS CLI. Recover the CloudFormation-managed resource instead."
+              exit 1
               ;;
-
             "")
-              echo "Monitoring SNS email subscription does not exist."
-              echo "Creating it now for $ADMIN_EMAIL."
-              echo "This sends the AWS SNS confirmation email to the recipient."
-
-              NEW_MONITORING_SUB_ARN=$(aws sns subscribe \
-                --topic-arn "$MONITORING_TOPIC_ARN" \
-                --protocol email \
-                --notification-endpoint "$ADMIN_EMAIL" \
-                --region "$AWS_REGION" \
-                --query 'SubscriptionArn' \
-                --output text)
-
-              echo "Monitoring SNS subscription request created: $NEW_MONITORING_SUB_ARN"
-              echo "Please open the AWS SNS confirmation email sent to $ADMIN_EMAIL."
+              echo "ERROR: CloudFormation-managed monitoring SNS email subscription was not found."
+              echo "Do not create it manually with AWS CLI."
+              exit 1
               ;;
-
             *)
               echo "WARNING: Monitoring SNS subscription status could not be determined."
-              echo "No deletion or unsubscribe operation will be performed."
               ;;
           esac
 
-          echo "Monitoring SNS subscription handling completed."
+          rm -f /tmp/monitoring-sns-error.log
+          echo "Monitoring SNS subscription read-only verification completed."
+          echo "No SNS resource is created, deleted, subscribed, confirmed, or unsubscribed by this workflow."
           echo "Confirmed subscriptions are never deleted, unsubscribed, or recreated by this workflow."
 
           echo "Verifying deployed daily report EventBridge rule..."
