@@ -11,6 +11,10 @@ Parameters:
     Description: Deployment environment loaded from cloudformation/parameters.json.
     AllowedValues: [dev, test, prod]
 
+  ProjectName:
+    Type: String
+    AllowedPattern: '^[a-z0-9-]+$'
+
   DBName:
     Type: String
     MinLength: 1
@@ -42,6 +46,7 @@ Resources:
   CloudMartDBSubnetGroup:
     Type: AWS::RDS::DBSubnetGroup
     Properties:
+      DBSubnetGroupName: !Sub "cloudmart-${Environment}-rds-subnet-group"
       DBSubnetGroupDescription: !Sub CloudMart ${Environment} RDS subnet group
       SubnetIds:
         - Fn::ImportValue: !Sub CloudMart-${Environment}-PrivateSubnet1Id
@@ -60,6 +65,7 @@ Resources:
     DeletionPolicy: Snapshot
     UpdateReplacePolicy: Snapshot
     Properties:
+      DBInstanceIdentifier: !Sub "cloudmart-${Environment}-mysql"
       Engine: mysql
       EngineVersion: "8.0"
       DBName: !Ref DBName
@@ -172,6 +178,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
+      BucketName: !Sub "${ProjectName}-${Environment}-reports-${AWS::AccountId}-${AWS::Region}"
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:

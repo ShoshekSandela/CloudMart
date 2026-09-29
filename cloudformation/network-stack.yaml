@@ -187,6 +187,7 @@ Resources:
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "cloudmart-${Environment}-lambda-sg"
       GroupDescription: CloudMart Lambda security group
       VpcId: !Ref CloudMartVPC
       SecurityGroupEgress:
@@ -204,6 +205,7 @@ Resources:
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "cloudmart-${Environment}-rds-sg"
       GroupDescription: CloudMart RDS MySQL security group
       VpcId: !Ref CloudMartVPC
       SecurityGroupIngress:
@@ -230,6 +232,7 @@ Resources:
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "cloudmart-${Environment}-ec2-sg"
       GroupDescription: CloudMart operations EC2 security group
       VpcId: !Ref CloudMartVPC
       SecurityGroupIngress:
@@ -258,6 +261,7 @@ Resources:
   VPCEndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupName: !Sub "cloudmart-${Environment}-vpc-endpoint-sg"
       GroupDescription: CloudMart VPC interface endpoint security group
       VpcId: !Ref CloudMartVPC
       SecurityGroupIngress:

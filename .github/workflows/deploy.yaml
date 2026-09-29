@@ -584,6 +584,7 @@ jobs:
               --region "$AWS_REGION" \
               --parameter-overrides \
                 Environment="$ENVIRONMENT" \
+                ProjectName="$PROJECT_NAME" \
                 DBName="$DB_NAME" \
                 DBInstanceClass="$DB_INSTANCE_CLASS" \
                 AllocatedStorage="$ALLOCATED_STORAGE" \
@@ -601,6 +602,7 @@ jobs:
             --region "$AWS_REGION" \
             --parameter-overrides \
               Environment="$ENVIRONMENT" \
+              ProjectName="$PROJECT_NAME" \
               DBName="$DB_NAME" \
               DBInstanceClass="$DB_INSTANCE_CLASS" \
               AllocatedStorage="$ALLOCATED_STORAGE" \
