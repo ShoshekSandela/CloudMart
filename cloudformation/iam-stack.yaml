@@ -7,6 +7,11 @@ Description: >
   intentionally not created or replaced by this stack.
 
 Parameters:
+  ProjectName:
+    Type: String
+    Description: CloudMart project name loaded from cloudformation/parameters.json.
+    Default: CloudMart
+
   Environment:
     Type: String
     Description: Deployment environment loaded from cloudformation/parameters.json.
@@ -72,7 +77,7 @@ Resources:
             Effect: Allow
             Action:
               - ssm:SendCommand
-            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:aws:document/AWS-RunShellScript
+            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
 
           - Sid: ReadOperationsDashboardCommandResult
             Effect: Allow
