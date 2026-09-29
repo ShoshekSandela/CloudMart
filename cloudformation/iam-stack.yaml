@@ -79,11 +79,14 @@ Resources:
               - ssm:SendCommand
             Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::document/AWS-RunShellScript
 
+          # GetCommandInvocation does not support resource-level IAM
+          # permissions in Systems Manager, so Resource must be "*".
+          # SendCommand above remains restricted to CloudMart instances.
           - Sid: ReadOperationsDashboardCommandResult
             Effect: Allow
             Action:
               - ssm:GetCommandInvocation
-            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:command/*
+            Resource: "*"
 
           - Sid: DescribeOperationsDashboardSSM
             Effect: Allow
