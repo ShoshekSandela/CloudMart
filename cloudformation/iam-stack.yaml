@@ -12,11 +12,6 @@ Parameters:
     Description: Deployment environment loaded from cloudformation/parameters.json.
     AllowedValues: [dev, test, prod]
 
-  ProjectName:
-    Type: String
-    Description: Project name loaded from cloudformation/parameters.json.
-    AllowedPattern: '^[a-z0-9-]+$'
-
   GitHubActionsRoleName:
     Type: String
     Description: Existing GitHub Actions IAM role name used by the deployment workflow.
@@ -40,35 +35,51 @@ Resources:
               - cloudwatch:PutDashboard
               - cloudwatch:DeleteDashboards
               - cloudwatch:GetDashboard
-            Resource: !Sub "arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/${ProjectName}-${Environment}-operations"
+              - cloudwatch:ListDashboards
+            Resource: "*"
           - Sid: ManageCloudWatchAlarms
             Effect: Allow
             Action:
               - cloudwatch:PutMetricAlarm
               - cloudwatch:DeleteAlarms
               - cloudwatch:DescribeAlarms
-            Resource:
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-rds-cpu-80"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-orders-failed"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-low-stock"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-api-5xx"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-order-lambda-errors"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-product-lambda-errors"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-report-generation-failure"
-              - !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${ProjectName}-${Environment}-api-4xx"
-          - Sid: ManageOperationsDashboardSSM
+            Resource: "*"
+          # CloudFormation may stop/start the Operations EC2 instance
+          # when updating EC2 properties such as its security group.
+          - Sid: ManageOperationsEC2Lifecycle
+            Effect: Allow
+            Action:
+              - ec2:StopInstances
+              - ec2:StartInstances
+              - ec2:TerminateInstances
+              - ec2:ModifyInstanceAttribute
+            Resource: "*"
+
+          # The deployment workflow refreshes the Operations Dashboard by
+          # sending AWS-RunShellScript to the CloudMart Operations EC2 instance.
+          # SendCommand authorization covers both the target instance and the
+          # SSM document, so they are kept in separate statements.
+          - Sid: SendOperationsDashboardCommand
             Effect: Allow
             Action:
               - ssm:SendCommand
-              - ssm:GetCommandInvocation
-            Resource:
-              - !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+            Resource: !Sub arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
             Condition:
               StringEquals:
                 aws:ResourceTag/Project: CloudMart
 
-          # DescribeInstanceInformation is a list/describe API and does not
-          # support resource-level authorization.
+          - Sid: UseOperationsDashboardRunShellScript
+            Effect: Allow
+            Action:
+              - ssm:SendCommand
+            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:aws:document/AWS-RunShellScript
+
+          - Sid: ReadOperationsDashboardCommandResult
+            Effect: Allow
+            Action:
+              - ssm:GetCommandInvocation
+            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:command/*
+
           - Sid: DescribeOperationsDashboardSSM
             Effect: Allow
             Action:
@@ -114,16 +125,23 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
               # Publishes Product inventory events to the CloudMart event bus only.
               - Sid: PublishProductEvents
                 Effect: Allow
                 Action: events:PutEvents
-                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/${ProjectName}-${Environment}-event-bus
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
+              - Sid: PublishOperationsMetrics
+                Effect: Allow
+                Action: cloudwatch:PutMetricData
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    cloudwatch:namespace: CloudMart/Operations
       Tags:
         - Key: Project
           Value: CloudMart
@@ -156,25 +174,25 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
               - Sid: ManageCustomerOrderSnsTopic
                 Effect: Allow
                 Action:
                   - sns:Subscribe
                   - sns:ListSubscriptionsByTopic
                   - sns:GetSubscriptionAttributes
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
               - Sid: ManageCustomerOrderSnsSubscriptions
                 Effect: Allow
                 Action:
                   - sns:SetSubscriptionAttributes
                   - sns:Unsubscribe
                 # SNS IAM authorizes subscription-management actions against the topic ARN.
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
       Tags:
         - Key: Project
           Value: CloudMart
@@ -219,23 +237,19 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameters
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
               # Publishes Order lifecycle events to the CloudMart event bus only.
               - Sid: PublishOrderEvents
                 Effect: Allow
                 Action: events:PutEvents
-                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/${ProjectName}-${Environment}-event-bus
-              # CloudWatch PutMetricData does not support resource-level
-              # authorization. AWS requires Resource: "*"; the namespace
-              # condition limits this permission to CloudMart metrics.
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/cloudmart-${Environment}-event-bus
               - Sid: PublishOperationsMetrics
                 Effect: Allow
-                Action:
-                  - cloudwatch:PutMetricData
+                Action: cloudwatch:PutMetricData
                 Resource: "*"
                 Condition:
                   StringEquals:
@@ -274,16 +288,16 @@ Resources:
                 Action:
                   - ssm:GetParameter
                   - ssm:PutParameter
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/auth/token
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
               - Sid: ReadDatabaseParameters
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
       Tags:
         - Key: Project
           Value: CloudMart
@@ -316,30 +330,30 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
               - Sid: ManageCustomerOrderSnsTopic
                 Effect: Allow
                 Action:
                   - sns:ListSubscriptionsByTopic
                   - sns:GetSubscriptionAttributes
                   - sns:Subscribe
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
               - Sid: ManageCustomerOrderSnsSubscriptions
                 Effect: Allow
                 Action:
                   - sns:SetSubscriptionAttributes
                 # SNS IAM policies use the topic ARN for subscription-management actions.
                 # Do not append :* here; SetSubscriptionAttributes authorizes against the topic.
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
               - Sid: PublishCustomerOrderNotifications
                 Effect: Allow
                 Action:
                   - sns:Publish
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:cloudmart-${Environment}-order-notifications
       Tags:
         - Key: Project
           Value: CloudMart
@@ -375,18 +389,18 @@ Resources:
                 Action:
                   - ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/auth/token
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
 
               # Reads database connection parameters used during customer token validation.
               - Sid: ReadDatabaseParameters
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
       Tags:
         - Key: Project
           Value: CloudMart
@@ -419,17 +433,16 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
               - Sid: WriteReports
                 Effect: Allow
                 Action:
                   - s3:PutObject
-                Resource:
-                  - !Sub "arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-reports-${AWS::AccountId}-${AWS::Region}/reports/*"
+                Resource: "*"
       Tags:
         - Key: Project
           Value: CloudMart
@@ -462,12 +475,12 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/host
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/port
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/name
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/username
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/database/password
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${ProjectName}/${Environment}/auth/token
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/host
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/port
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/name
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
         - PolicyName: CloudMartECDashboardS3Read
           PolicyDocument:
             Version: "2012-10-17"
@@ -477,15 +490,15 @@ Resources:
                 Action:
                   - s3:ListBucket
                 Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-reports-${AWS::AccountId}-${AWS::Region}
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports
 
               - Sid: ReadDashboardAndReportObjects
                 Effect: Allow
                 Action:
                   - s3:GetObject
                 Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-reports-${AWS::AccountId}-${AWS::Region}/dashboard-source/*
-                  - !Sub arn:${AWS::Partition}:s3:::${ProjectName}-${Environment}-reports-${AWS::AccountId}-${AWS::Region}/reports/*
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports/dashboard-source/*
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports/reports/*
       Tags:
         - Key: Project
           Value: CloudMart
