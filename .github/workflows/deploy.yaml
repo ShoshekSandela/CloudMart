@@ -1451,8 +1451,27 @@ jobs:
           test -f /opt/cloudmart/dashboard/app.py
           test -f /opt/cloudmart/dashboard/requirements.txt
 
-          python3 -m venv /opt/cloudmart/dashboard/venv
-          
+          # Use a copied Python interpreter instead of a symlink.
+
+          # This prevents broken venv/bin/python3.x links on the EC2 host.
+
+          rm -rf /opt/cloudmart/dashboard/venv
+
+          python3 -m venv --copies /opt/cloudmart/dashboard/venv
+
+
+          test -x /opt/cloudmart/dashboard/venv/bin/python || {
+
+            echo "ERROR: Dashboard virtual environment Python was not created."
+
+            ls -la /opt/cloudmart/dashboard/venv/bin || true
+
+            exit 1
+
+          }
+
+
+          /opt/cloudmart/dashboard/venv/bin/python --version
           if ! grep -vE '^[[:space:]]*(pip|pip3)([[:space:]]|[<>=!~]|$)' \
           /opt/cloudmart/dashboard/requirements.txt \
           > /opt/cloudmart/dashboard/requirements-runtime.txt; then
