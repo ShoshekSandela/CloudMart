@@ -451,11 +451,32 @@ jobs:
             exit 1
           fi
 
+          # REVIEW_IN_PROGRESS means the Data stack creation change set was
+          # created but not successfully completed. No deployed data resources
+          # are owned by this unfinished stack, so it is safe to remove this
+          # CloudFormation shell and retry the real deployment.
           if [ "$STACK_STATUS" = "REVIEW_IN_PROGRESS" ]; then
-            echo "WARNING: Data stack is REVIEW_IN_PROGRESS."
-            echo "No automatic deletion will be performed."
-            echo "Please manually inspect/delete the unfinished stack."
-            exit 1
+            echo "Data stack is REVIEW_IN_PROGRESS."
+            echo "Deleting the unfinished CloudFormation stack before retrying."
+            aws cloudformation delete-stack               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            echo "Waiting for the unfinished Data stack deletion to complete..."
+            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            echo "Unfinished Data stack deleted successfully."
+            STACK_STATUS=""
+          fi
+
+          # If a previous workflow/manual action already started deletion,
+          # wait for it to finish before creating the stack again.
+          if [ "$STACK_STATUS" = "DELETE_IN_PROGRESS" ]; then
+            echo "Data stack deletion is already in progress."
+            echo "Waiting for CloudFormation deletion to complete..."
+
+            aws cloudformation wait stack-delete-complete               --stack-name "$STACK_NAME"               --region "$AWS_REGION"
+
+            echo "Data stack deletion completed."
+            STACK_STATUS=""
           fi
 
           # Authentication token lifecycle is owned exclusively by Token Manager.
