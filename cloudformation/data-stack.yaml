@@ -178,7 +178,10 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub "${ProjectName}-${Environment}-reports-${AWS::AccountId}-${AWS::Region}"
+      # Do not hard-code the bucket name.
+      # CloudFormation generates a unique bucket name, which prevents
+      # ResourceExistenceCheck failures when an older retained report
+      # bucket still exists after a stack recreation.
       BucketEncryption:
         ServerSideEncryptionConfiguration:
           - ServerSideEncryptionByDefault:
