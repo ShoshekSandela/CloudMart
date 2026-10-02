@@ -80,7 +80,15 @@ def lambda_handler(event, context):
     # while the actual order table is still empty.
     # ============================================================
 
-    if not orders:
+    # For a one-time sample report, invoke the Lambda with:
+    # {
+    #   "use_sample_data": true
+    # }
+    #
+    # Normal EventBridge invocation remains {} and uses real RDS orders.
+    use_sample_data = bool(event.get("use_sample_data", False))
+
+    if use_sample_data or not orders:
         sample_time = datetime.now(timezone.utc)
 
         orders = [
@@ -156,7 +164,10 @@ def lambda_handler(event, context):
             },
         ]
 
-        logger.info("No orders found in RDS. Using 10 sample orders for this report only.")
+        if use_sample_data:
+            logger.info("Sample report requested. Using 10 sample orders for this report only.")
+        else:
+            logger.info("No orders found in RDS. Using 10 sample orders for this report only.")
 
 
     # Build ONE CSV file with two clearly separated sections:
@@ -226,14 +237,29 @@ def lambda_handler(event, context):
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     key = f"{os.environ.get('REPORT_PREFIX', 'reports')}/daily-report-{timestamp}.csv"
 
+    csv_body = output.getvalue().encode("utf-8")
+
+    logger.info(
+        "Uploading daily report: bucket=%s key=%s bytes=%d products=%d orders=%d",
+        os.environ["REPORT_BUCKET_NAME"],
+        key,
+        len(csv_body),
+        len(products),
+        len(orders),
+    )
+
     s3.put_object(
         Bucket=os.environ["REPORT_BUCKET_NAME"],
         Key=key,
-        Body=output.getvalue().encode("utf-8"),
+        Body=csv_body,
         ContentType="text/csv",
     )
 
-    logger.info("Daily report uploaded to s3://%s/%s", os.environ["REPORT_BUCKET_NAME"], key)
+    logger.info(
+        "Daily report uploaded successfully to s3://%s/%s",
+        os.environ["REPORT_BUCKET_NAME"],
+        key,
+    )
 
     return {
         "statusCode": 200,
