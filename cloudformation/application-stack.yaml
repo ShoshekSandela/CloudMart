@@ -634,8 +634,8 @@ Resources:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref ProductsResource
       HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
+      # Product browsing is public. No customer/admin token is required.
+      AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST
@@ -663,14 +663,13 @@ Resources:
   GetProductMethod:
     Type: AWS::ApiGateway::Method
     DependsOn:
-      - ApiGatewayAuthorizer
       - ProductLambdaPermission
     Properties:
       RestApiId: !Ref CloudMartRestApi
       ResourceId: !Ref ProductByIdResource
       HttpMethod: GET
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref ApiGatewayAuthorizer
+      # Product browsing is public. No customer/admin token is required.
+      AuthorizationType: NONE
       Integration:
         Type: AWS_PROXY
         IntegrationHttpMethod: POST

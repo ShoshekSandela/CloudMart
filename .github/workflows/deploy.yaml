@@ -1032,7 +1032,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          AUTH_PARAMETER="/cloudmart/${ENVIRONMENT}/auth/token"
           API_URL=$(aws cloudformation describe-stacks \
             --stack-name "cloudmart-application-${ENVIRONMENT}" \
             --region "$AWS_REGION" \
@@ -1042,7 +1041,11 @@ jobs:
           echo "Verifying POST /customers without an Authorization header..."
 
           CUSTOMER_PUBLIC_RESPONSE=/tmp/customer-public-response.json
-          CUSTOMER_PUBLIC_HTTP_CODE=$(curl -sS -o "$CUSTOMER_PUBLIC_RESPONSE" -w '%{http_code}'             -X POST             -H "Content-Type: application/json"             --data '{}'             "$API_URL/customers")
+          CUSTOMER_PUBLIC_HTTP_CODE=$(curl -sS -o "$CUSTOMER_PUBLIC_RESPONSE" -w '%{http_code}' \
+            -X POST \
+            -H "Content-Type: application/json" \
+            --data '{}' \
+            "$API_URL/customers")
 
           echo "POST /customers without Authorization returned HTTP $CUSTOMER_PUBLIC_HTTP_CODE"
           cat "$CUSTOMER_PUBLIC_RESPONSE"
@@ -1059,29 +1062,23 @@ jobs:
           echo "POST /customers public-registration smoke test passed."
           rm -f "$CUSTOMER_PUBLIC_RESPONSE"
 
-          ADMIN_TOKEN=$(aws ssm get-parameter \
-            --name "$AUTH_PARAMETER" \
-            --region "$AWS_REGION" \
-            --with-decryption \
-            --query 'Parameter.Value' \
-            --output text | jq -r '.admin_token')
-
-          test -n "$ADMIN_TOKEN" && test "$ADMIN_TOKEN" != "null" || { echo "ERROR: admin_token is missing from $AUTH_PARAMETER"; exit 1; }
-
-          RESPONSE_FILE=/tmp/products-response.json
-          HTTP_CODE=$(curl -sS -o "$RESPONSE_FILE" -w '%{http_code}' \
-            -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+          # Product browsing is intentionally public.
+          # Do NOT send Authorization here.
+          PRODUCTS_RESPONSE=/tmp/products-response.json
+          PRODUCTS_HTTP_CODE=$(curl -sS -o "$PRODUCTS_RESPONSE" -w '%{http_code}' \
             -H "Content-Type: application/json" \
             "$API_URL/products")
 
-          echo "API authentication smoke-test HTTP status: $HTTP_CODE"
-          if [ "$HTTP_CODE" != "200" ]; then
-            echo "ERROR: GET /products did not authenticate successfully."
-            cat "$RESPONSE_FILE"
+          echo "GET /products without Authorization returned HTTP $PRODUCTS_HTTP_CODE"
+          cat "$PRODUCTS_RESPONSE"
+
+          if [ "$PRODUCTS_HTTP_CODE" != "200" ]; then
+            echo "ERROR: GET /products public-access check failed."
             exit 1
           fi
 
-          echo "API authentication smoke test passed: GET /products returned HTTP 200."
+          echo "Public product API smoke test passed: GET /products returned HTTP 200."
+          rm -f "$PRODUCTS_RESPONSE"
           rm -f "$RESPONSE_FILE"
 
   deploy-monitoring:
