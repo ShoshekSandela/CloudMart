@@ -1099,7 +1099,6 @@ jobs:
 
           echo "API Gateway ${ENVIRONMENT} stage is using deployment: $DEPLOYMENT_ID"
 
-          rm -f "$RESPONSE_FILE"
 
   deploy-monitoring:
     name: Deploy API Monitoring and EC2 Dashboard
