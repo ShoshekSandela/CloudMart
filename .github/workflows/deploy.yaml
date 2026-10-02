@@ -837,11 +837,30 @@ jobs:
            echo "Customer Lambda registration version is deployed."
 
            echo "Verifying SNS notification infrastructure..."
-           ORDER_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-order-notifications$" | head -n 1 || true)
-           LOW_STOCK_TOPIC_ARN=$(aws sns list-topics              --region "$AWS_REGION"              --query 'Topics[].TopicArn'              --output text | tr '\t' '\n' | grep -E ":cloudmart-${ENVIRONMENT}-low-stock$" | head -n 1 || true)
+           # Read the SNS topic ARNs directly from the Application stack outputs.
+           # Do not reconstruct or grep topic names here because the stack uses
+           # the ProjectName parameter when creating the topic names.
+           ORDER_TOPIC_ARN=$(aws cloudformation describe-stacks \
+             --stack-name "$STACK_NAME" \
+             --region "$AWS_REGION" \
+             --query 'Stacks[0].Outputs[?OutputKey==`OrderNotificationTopicArn`].OutputValue' \
+             --output text)
 
-           test -n "$ORDER_TOPIC_ARN" || { echo "ERROR: Customer order SNS topic was not created."; exit 1; }
-           test -n "$LOW_STOCK_TOPIC_ARN" || { echo "ERROR: Low-stock SNS topic was not created."; exit 1; }
+           LOW_STOCK_TOPIC_ARN=$(aws cloudformation describe-stacks \
+             --stack-name "$STACK_NAME" \
+             --region "$AWS_REGION" \
+             --query 'Stacks[0].Outputs[?OutputKey==`LowStockTopicArn`].OutputValue' \
+             --output text)
+
+           test -n "$ORDER_TOPIC_ARN" && test "$ORDER_TOPIC_ARN" != "None" || {
+             echo "ERROR: Order-notification SNS topic ARN was not returned by the Application stack."
+             exit 1
+           }
+
+           test -n "$LOW_STOCK_TOPIC_ARN" && test "$LOW_STOCK_TOPIC_ARN" != "None" || {
+             echo "ERROR: Low-stock SNS topic ARN was not returned by the Application stack."
+             exit 1
+           }
 
            echo "Customer order SNS topic: $ORDER_TOPIC_ARN"
            echo "Low-stock SNS topic: $LOW_STOCK_TOPIC_ARN"

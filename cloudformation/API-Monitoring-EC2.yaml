@@ -329,15 +329,25 @@ Resources:
 
 
   # ------------------------------------------------------------
-  # Existing SNS topic used by all operational alarms
+  # SNS topic used by all operational alarms
   # ------------------------------------------------------------
-  # The topic is intentionally NOT created by this stack.
-  # It is retained independently so deleting/recreating this stack
-  # does not delete the confirmed email subscription.
-  #
-  # Existing topic name:
-  # cloudmart-${Environment}-monitoring
-  #
+  MonitoringTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref MonitoringTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
   # ------------------------------------------------------------
   # CloudWatch alarms
   # ------------------------------------------------------------
@@ -616,13 +626,13 @@ Resources:
 
       Environment:
         Variables:
-          MONITORING_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
+          MONITORING_TOPIC_ARN: !Ref MonitoringTopic
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - sns:Publish
-              Resource: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring"
+              Resource: !Ref MonitoringTopic
 
   # ------------------------------------------------------------
   # EventBridge rule for CloudWatch alarm state changes
@@ -903,8 +913,8 @@ Outputs:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
 
   MonitoringTopicArn:
-    Description: Existing SNS topic used by all monitoring alarms.
-    Value: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-monitoring" 
+    Description: CloudFormation-managed SNS topic used by all monitoring alarms.
+    Value: !Ref MonitoringTopic
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.

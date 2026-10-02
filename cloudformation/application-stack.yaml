@@ -54,16 +54,43 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Existing SNS topics are intentionally NOT managed by this stack.
-  # They were created previously and must be preserved across stack
-  # recreation. The application uses their existing ARNs directly.
+  # SNS topics used by CloudMart notifications.
+  # The topics are environment-specific so dev/test/prod remain isolated.
+  OrderNotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-order-notifications"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  LowStockTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Admin email subscription for low-stock notifications.
+  LowStockTopicSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref LowStockTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
 
   # SNS resource policy allows the notification Lambda to publish
   # formatted low-stock notifications to the admin topic.
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
-      Topics: [!Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-low-stock"]
+      Topics:
+        - !Ref LowStockTopic
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -73,7 +100,7 @@ Resources:
               AWS:
                 Fn::ImportValue: !Sub "CloudMart-${Environment}-NotificationLambdaRoleArn"
             Action: sns:Publish
-            Resource: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-low-stock"
+            Resource: !Ref LowStockTopic
 
   # Routes low-stock inventory events to the same Notification Lambda
   # used by customer order notifications.
@@ -129,8 +156,8 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          ORDER_NOTIFICATION_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications"
-          LOW_STOCK_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-low-stock"
+          ORDER_NOTIFICATION_TOPIC_ARN: !Ref OrderNotificationTopic
+          LOW_STOCK_TOPIC_ARN: !Ref LowStockTopic
           CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
@@ -379,7 +406,7 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          ORDER_NOTIFICATION_TOPIC_ARN: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications"
+          ORDER_NOTIFICATION_TOPIC_ARN: !Ref OrderNotificationTopic
           CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
@@ -938,10 +965,10 @@ Outputs:
     Value: !GetAtt CloudMartEventBus.Arn
 
   OrderNotificationTopicArn:
-    Value: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-order-notifications"
+    Value: !Ref OrderNotificationTopic
 
   LowStockTopicArn:
-    Value: !Sub "arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:${ProjectName}-${Environment}-low-stock"
+    Value: !Ref LowStockTopic
 
   LowStockRuleArn:
     Value: !GetAtt LowStockEventRule.Arn
