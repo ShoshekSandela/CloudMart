@@ -624,19 +624,77 @@ def reports_page():
 
                 csv_content = response["Body"].read().decode("utf-8-sig")
 
+                # Read the current normalized CSV format.
+                # Also support the older section-based CSV format so reports
+                # already stored in S3 continue to work.
                 reader = csv.DictReader(io.StringIO(csv_content))
                 view_columns = reader.fieldnames or []
                 view_rows = list(reader)
 
-                # Split the existing single CSV into separate Product and Order
-                # sections for display in the dashboard. The S3 file itself and
-                # the Download CSV action remain unchanged.
-                for row in view_rows:
-                    record_type = (row.get("record_type") or "").strip().upper()
-                    if record_type == "PRODUCT":
-                        product_report_rows.append(row)
-                    elif record_type == "ORDER":
-                        order_report_rows.append(row)
+                if "record_type" in view_columns:
+                    for row in view_rows:
+                        record_type = (row.get("record_type") or "").strip().upper()
+                        if record_type == "PRODUCT":
+                            product_report_rows.append(row)
+                        elif record_type == "ORDER":
+                            order_report_rows.append(row)
+                else:
+                    # Legacy format:
+                    # PRODUCT REPORT
+                    # <blank>
+                    # id,name,status,...
+                    # ...
+                    # ORDER REPORT
+                    # <blank>
+                    # id,customer,status,...
+                    #
+                    # Re-parse with csv.reader because DictReader cannot
+                    # represent the two different header sections correctly.
+                    rows = list(csv.reader(io.StringIO(csv_content)))
+                    section = None
+
+                    for raw_row in rows:
+                        cells = [cell.strip() for cell in raw_row]
+                        if not cells or not any(cells):
+                            continue
+
+                        first = cells[0].upper()
+                        if first == "PRODUCT REPORT":
+                            section = "PRODUCT"
+                            continue
+                        if first == "ORDER REPORT":
+                            section = "ORDER"
+                            continue
+
+                        if section == "PRODUCT" and cells[0].lower() == "id":
+                            continue
+                        if section == "ORDER" and cells[0].lower() == "id":
+                            continue
+
+                        if section == "PRODUCT" and len(cells) >= 6:
+                            product_report_rows.append({
+                                "record_type": "PRODUCT",
+                                "id": cells[0],
+                                "name": cells[1],
+                                "customer": "",
+                                "status": cells[2],
+                                "stock_quantity": cells[3],
+                                "low_stock_threshold": cells[4],
+                                "total_amount": "",
+                                "created_or_updated_at": cells[5],
+                            })
+                        elif section == "ORDER" and len(cells) >= 5:
+                            order_report_rows.append({
+                                "record_type": "ORDER",
+                                "id": cells[0],
+                                "name": "",
+                                "customer": cells[1],
+                                "status": cells[2],
+                                "stock_quantity": "",
+                                "low_stock_threshold": "",
+                                "total_amount": cells[3],
+                                "created_or_updated_at": cells[4],
+                            })
 
                 view_report = dict(matched_report)
                 view_report["url"] = report_download(view_report)

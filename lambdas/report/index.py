@@ -170,66 +170,48 @@ def lambda_handler(event, context):
             logger.info("No orders found in RDS. Using 10 sample orders for this report only.")
 
 
-    # Build ONE CSV file with two clearly separated sections:
-    # 1. PRODUCT REPORT
-    # 2. ORDER REPORT
+    # Build one normalized CSV file.  Every data row has a record_type so the
+    # dashboard can reliably separate products and orders.
     #
-    # We intentionally keep a single S3 object/report file.
-
+    # This also avoids the old section-header format ("PRODUCT REPORT" /
+    # "ORDER REPORT"), which csv.DictReader cannot interpret as normal rows.
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # ============================================================
-    # PRODUCT REPORT
-    # ============================================================
-
-    writer.writerow(["PRODUCT REPORT"])
-    writer.writerow([])
-
     writer.writerow([
+        "record_type",
         "id",
         "name",
+        "customer",
         "status",
         "stock_quantity",
         "low_stock_threshold",
+        "total_amount",
         "created_or_updated_at",
     ])
 
     for product in products:
         writer.writerow([
+            "PRODUCT",
             product["product_id"],
             product["name"],
+            "",
             product["status"],
             product["stock_quantity"],
             product["low_stock_threshold"],
+            "",
             product["updated_at"],
         ])
 
-    # Blank rows separating the two report sections.
-    writer.writerow([])
-    writer.writerow([])
-    writer.writerow([])
-
-    # ============================================================
-    # ORDER REPORT
-    # ============================================================
-
-    writer.writerow(["ORDER REPORT"])
-    writer.writerow([])
-
-    writer.writerow([
-        "id",
-        "customer",
-        "status",
-        "total_amount",
-        "created_or_updated_at",
-    ])
-
     for order in orders:
         writer.writerow([
+            "ORDER",
             order["order_id"],
+            "",
             order["customer_name"],
             order["status"],
+            "",
+            "",
             order["total_amount"],
             order["created_at"],
         ])
