@@ -1079,6 +1079,26 @@ jobs:
 
           echo "Public product API smoke test passed: GET /products returned HTTP 200."
           rm -f "$PRODUCTS_RESPONSE"
+
+          echo "Checking deployed API Gateway stage..."
+          DEPLOYMENT_ID=$(aws apigateway get-stage \
+            --rest-api-id "$(aws cloudformation describe-stacks \
+              --stack-name "cloudmart-application-${ENVIRONMENT}" \
+              --region "$AWS_REGION" \
+              --query 'Stacks[0].Outputs[?OutputKey==`RestApiId`].OutputValue' \
+              --output text)" \
+            --stage-name "$ENVIRONMENT" \
+            --region "$AWS_REGION" \
+            --query 'deploymentId' \
+            --output text)
+
+          test -n "$DEPLOYMENT_ID" && test "$DEPLOYMENT_ID" != "None" || {
+            echo "ERROR: API Gateway stage has no deployment."
+            exit 1
+          }
+
+          echo "API Gateway ${ENVIRONMENT} stage is using deployment: $DEPLOYMENT_ID"
+
           rm -f "$RESPONSE_FILE"
 
   deploy-monitoring:

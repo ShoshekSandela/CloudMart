@@ -856,7 +856,7 @@ Resources:
             - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CustomerLambdaArn}/invocations
             - CustomerLambdaArn: !GetAtt CustomerFunction.Arn
 
-  ApiGatewayDeploymentV7:
+  ApiGatewayDeploymentV8:
     Type: AWS::ApiGateway::Deployment
     DependsOn:
       - ApiGatewayAuthorizer
@@ -878,13 +878,13 @@ Resources:
       - DeleteCustomerMethod
     Properties:
       RestApiId: !Ref CloudMartRestApi
-      Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion}"
+      Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion} - V8"
 
   ApiGatewayStage:
     Type: AWS::ApiGateway::Stage
     Properties:
       RestApiId: !Ref CloudMartRestApi
-      DeploymentId: !Ref ApiGatewayDeploymentV7
+      DeploymentId: !Ref ApiGatewayDeploymentV8
       StageName: !Ref Environment
       Description: !Sub "CloudMart ${Environment} API Gateway stage"
       Tags:
