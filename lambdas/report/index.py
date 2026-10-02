@@ -15,10 +15,7 @@ s3 = boto3.client("s3")
 
 
 def get_parameter(name):
-    return ssm.get_parameter(
-        Name=name,
-        WithDecryption=True
-    )["Parameter"]["Value"]
+    return ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"]
 
 
 def get_connection():
@@ -35,152 +32,8 @@ def get_connection():
     )
 
 
-def seed_report_test_data():
-    """
-    Creates exactly 10 report-test orders.
-
-    This function is ONLY called when the Lambda is explicitly invoked with:
-        {"action": "seed_report_test_data"}
-
-    It is never called by the normal daily report execution.
-
-    The orders are inserted directly into ORDERS so inventory is not changed.
-    """
+def lambda_handler(event, context):
     connection = get_connection()
-
-    try:
-        with connection.cursor() as cursor:
-            # Use existing customers. No customer records are created.
-            cursor.execute(
-                """
-                SELECT customer_id, customer_name, customer_email
-                FROM customers
-                ORDER BY customer_id
-                LIMIT 3
-                """
-            )
-            customers = cursor.fetchall()
-
-            if len(customers) < 3:
-                raise RuntimeError(
-                    "At least 3 customers are required to generate report test data."
-                )
-
-            # Use existing active products. No product or inventory records
-            # are changed by this test-data action.
-            cursor.execute(
-                """
-                SELECT product_id, price
-                FROM products
-                WHERE status = 'ACTIVE'
-                ORDER BY product_id
-                LIMIT 2
-                """
-            )
-            products = cursor.fetchall()
-
-            if len(products) < 2:
-                raise RuntimeError(
-                    "At least 2 ACTIVE products are required to generate "
-                    "report test data."
-                )
-
-            customer_1 = customers[0]
-            customer_2 = customers[1]
-            customer_3 = customers[2]
-
-            product_1 = products[0]
-            product_2 = products[1]
-
-            p1 = product_1["price"]
-            p2 = product_2["price"]
-
-            # Check whether this explicit report-test set already exists.
-            # The marker is stored only in the historical customer_email
-            # snapshot on these test orders. Customer records are untouched.
-            cursor.execute(
-                """
-                SELECT order_id, customer_id, status, total_amount
-                FROM orders
-                WHERE customer_email LIKE %s
-                ORDER BY order_id
-                """,
-                ("%#REPORT_TEST%",),
-            )
-            existing_orders = cursor.fetchall()
-
-            if len(existing_orders) >= 10:
-                return {
-                    "created": 0,
-                    "already_exists": True,
-                    "orders": existing_orders,
-                }
-
-            test_orders = [
-                (customer_1, "CONFIRMED", product_1["price"] * 1),
-                (customer_1, "FAILED", product_1["price"] * 100),
-                (customer_1, "COMPLETED", product_2["price"] * 2),
-                (customer_1, "FAILED", product_2["price"] * 100),
-                (customer_2, "CANCELED", product_1["price"] * 1),
-                (customer_2, "CONFIRMED", product_2["price"] * 3),
-                (customer_2, "COMPLETED", product_1["price"] * 2),
-                (customer_3, "CANCELED", product_2["price"] * 1),
-                (customer_3, "CONFIRMED", product_1["price"] * 3),
-                (customer_3, "COMPLETED", product_2["price"] * 2),
-            ]
-
-            created_orders = []
-
-            for customer, status, amount in test_orders:
-                cursor.execute(
-                    """
-                    INSERT INTO orders
-                        (customer_id, customer_email, status, total_amount)
-                    VALUES
-                        (%s, %s, %s, %s)
-                    """,
-                    (
-                        customer["customer_id"],
-                        f"{customer['customer_email']}#REPORT_TEST",
-                        status,
-                        amount,
-                    ),
-                )
-
-                created_orders.append(
-                    {
-                        "order_id": cursor.lastrowid,
-                        "customer": customer["customer_name"],
-                        "status": status,
-                        "total_amount": amount,
-                    }
-                )
-
-            connection.commit()
-
-            logger.info(
-                "Created %d report test orders without changing inventory.",
-                len(created_orders),
-            )
-
-            return {
-                "created": len(created_orders),
-                "already_exists": False,
-                "orders": created_orders,
-            }
-
-    except Exception:
-        connection.rollback()
-        logger.exception("Report test-data generation failed.")
-        raise
-
-    finally:
-        connection.close()
-
-
-def generate_report():
-    connection = get_connection()
-
     try:
         with connection.cursor() as cursor:
             cursor.execute(
@@ -214,15 +67,103 @@ def generate_report():
                 """
             )
             orders = cursor.fetchall()
-
     finally:
         connection.close()
 
-    logger.info(
-        "Report data loaded: %d products, %d orders.",
-        len(products),
-        len(orders),
-    )
+    # ============================================================
+    # SAMPLE ORDER DATA
+    # ============================================================
+    # If there are no real orders in RDS yet, use sample records
+    # only for the report. This does NOT insert anything into RDS.
+    #
+    # This lets the dashboard/CSV show realistic order statuses
+    # while the actual order table is still empty.
+    # ============================================================
+
+    if not orders:
+        sample_time = datetime.now(timezone.utc)
+
+        orders = [
+            {
+                "order_id": 1001,
+                "customer_name": "Shoshek",
+                "status": "COMPLETED",
+                "total_amount": 500.00,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1002,
+                "customer_name": "Shoshek",
+                "status": "CONFIRMED",
+                "total_amount": 1000.00,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1003,
+                "customer_name": "Shoshek",
+                "status": "FAILED",
+                "total_amount": 500000.00,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1004,
+                "customer_name": "Shoshek",
+                "status": "CANCELED",
+                "total_amount": 500.00,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1005,
+                "customer_name": "Manjula",
+                "status": "COMPLETED",
+                "total_amount": 899.99,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1006,
+                "customer_name": "Manjula",
+                "status": "CONFIRMED",
+                "total_amount": 79.99,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1007,
+                "customer_name": "Manjula",
+                "status": "FAILED",
+                "total_amount": 2999.00,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1008,
+                "customer_name": "Shyam",
+                "status": "CANCELED",
+                "total_amount": 29.99,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1009,
+                "customer_name": "Shyam",
+                "status": "COMPLETED",
+                "total_amount": 79.99,
+                "created_at": sample_time,
+            },
+            {
+                "order_id": 1010,
+                "customer_name": "Adhithya",
+                "status": "CONFIRMED",
+                "total_amount": 929.98,
+                "created_at": sample_time,
+            },
+        ]
+
+        logger.info("No orders found in RDS. Using 10 sample orders for this report only.")
+
+
+    # Build ONE CSV file with two clearly separated sections:
+    # 1. PRODUCT REPORT
+    # 2. ORDER REPORT
+    #
+    # We intentionally keep a single S3 object/report file.
 
     output = io.StringIO()
     writer = csv.writer(output)
@@ -253,6 +194,7 @@ def generate_report():
             product["updated_at"],
         ])
 
+    # Blank rows separating the two report sections.
     writer.writerow([])
     writer.writerow([])
     writer.writerow([])
@@ -282,10 +224,7 @@ def generate_report():
         ])
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    key = (
-        f"{os.environ.get('REPORT_PREFIX', 'reports')}"
-        f"/daily-report-{timestamp}.csv"
-    )
+    key = f"{os.environ.get('REPORT_PREFIX', 'reports')}/daily-report-{timestamp}.csv"
 
     s3.put_object(
         Bucket=os.environ["REPORT_BUCKET_NAME"],
@@ -294,11 +233,7 @@ def generate_report():
         ContentType="text/csv",
     )
 
-    logger.info(
-        "Daily report uploaded to s3://%s/%s",
-        os.environ["REPORT_BUCKET_NAME"],
-        key,
-    )
+    logger.info("Daily report uploaded to s3://%s/%s", os.environ["REPORT_BUCKET_NAME"], key)
 
     return {
         "statusCode": 200,
@@ -307,45 +242,3 @@ def generate_report():
         "products": len(products),
         "orders": len(orders),
     }
-
-
-def lambda_handler(event, context):
-    event = event or {}
-
-    # ============================================================
-    # SAMPLE REPORT ACTION
-    # ============================================================
-    # Invoke manually with:
-    # {
-    #   "action": "generate_sample_report"
-    # }
-    #
-    # This creates the 10 test orders (only if they do not already
-    # exist) AND immediately generates/uploads the CSV.
-    #
-    # Normal EventBridge execution uses {} and is NOT affected.
-    # ============================================================
-
-    if event.get("action") == "generate_sample_report":
-        seed_result = seed_report_test_data()
-        report_result = generate_report()
-
-        return {
-            "statusCode": 200,
-            "message": "Sample orders created/verified and report CSV generated.",
-            "sample_data": seed_result,
-            "report": report_result,
-        }
-
-    # Optional: seed only, without generating a report.
-    if event.get("action") == "seed_report_test_data":
-        result = seed_report_test_data()
-
-        return {
-            "statusCode": 200,
-            "message": "Report test-data action completed.",
-            **result,
-        }
-
-    # Normal daily report generation.
-    return generate_report()
