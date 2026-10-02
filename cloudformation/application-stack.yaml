@@ -24,6 +24,14 @@ Parameters:
     Type: String
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
 
+  ExistingOrderNotificationTopicArn:
+    Type: String
+    Description: ARN of the pre-existing CloudMart order-notification SNS topic.
+
+  ExistingLowStockTopicArn:
+    Type: String
+    Description: ARN of the pre-existing CloudMart low-stock SNS topic.
+
   ApiDeploymentVersion:
     Type: String
 
@@ -54,43 +62,27 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # SNS topics used by CloudMart notifications.
-  # The topics are environment-specific so dev/test/prod remain isolated.
-  OrderNotificationTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-order-notifications"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  LowStockTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-low-stock"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  # Admin email subscription for low-stock notifications.
+  # SNS topics are pre-existing resources in AWS.
+  # This stack references them by ARN instead of trying to create them again.
+  #
+  # The GitHub Actions workflow verifies that both topics exist before
+  # deploying this stack and passes their ARNs as parameters.
+  #
+  # The low-stock email subscription remains CloudFormation-managed.
   LowStockTopicSubscription:
     Type: AWS::SNS::Subscription
     Properties:
-      TopicArn: !Ref LowStockTopic
+      TopicArn: !Ref ExistingLowStockTopicArn
       Protocol: email
       Endpoint: !Ref NotificationEmail
 
   # SNS resource policy allows the notification Lambda to publish
-  # formatted low-stock notifications to the admin topic.
+  # formatted low-stock notifications to the existing admin topic.
   CloudMartLowStockTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
       Topics:
-        - !Ref LowStockTopic
+        - !Ref ExistingLowStockTopicArn
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -100,7 +92,7 @@ Resources:
               AWS:
                 Fn::ImportValue: !Sub "CloudMart-${Environment}-NotificationLambdaRoleArn"
             Action: sns:Publish
-            Resource: !Ref LowStockTopic
+            Resource: !Ref ExistingLowStockTopicArn
 
   # Routes low-stock inventory events to the same Notification Lambda
   # used by customer order notifications.
@@ -156,8 +148,8 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          ORDER_NOTIFICATION_TOPIC_ARN: !Ref OrderNotificationTopic
-          LOW_STOCK_TOPIC_ARN: !Ref LowStockTopic
+          ORDER_NOTIFICATION_TOPIC_ARN: !Ref ExistingOrderNotificationTopicArn
+          LOW_STOCK_TOPIC_ARN: !Ref ExistingLowStockTopicArn
           CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
@@ -406,7 +398,7 @@ Resources:
           DB_NAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/name
           DB_USERNAME_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/username
           DB_PASSWORD_PARAMETER_NAME: !Sub /cloudmart/${Environment}/database/password
-          ORDER_NOTIFICATION_TOPIC_ARN: !Ref OrderNotificationTopic
+          ORDER_NOTIFICATION_TOPIC_ARN: !Ref ExistingOrderNotificationTopicArn
           CUSTOMER_REGISTRATION_VERSION: "2"
       Tags:
         Project: CloudMart
@@ -964,11 +956,12 @@ Outputs:
   EventBusArn:
     Value: !GetAtt CloudMartEventBus.Arn
 
+  # Expose the ARNs of the pre-existing SNS topics used by this stack.
   OrderNotificationTopicArn:
-    Value: !Ref OrderNotificationTopic
+    Value: !Ref ExistingOrderNotificationTopicArn
 
   LowStockTopicArn:
-    Value: !Ref LowStockTopic
+    Value: !Ref ExistingLowStockTopicArn
 
   LowStockRuleArn:
     Value: !GetAtt LowStockEventRule.Arn

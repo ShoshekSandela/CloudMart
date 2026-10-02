@@ -791,11 +791,25 @@ jobs:
             check_named_resource "EventBridge rule" "$EXISTING_RULE"
           done
 
-          for TOPIC_NAME in             "${PROJECT_NAME}-${ENVIRONMENT}-order-notifications"             "${PROJECT_NAME}-${ENVIRONMENT}-low-stock"
-          do
-            EXISTING_TOPIC=$(aws sns get-topic-attributes               --topic-arn "arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}:${TOPIC_NAME}"               --region "$AWS_REGION"               --query 'Attributes.TopicArn'               --output text 2>/dev/null || true)
-            check_named_resource "SNS topic" "$EXISTING_TOPIC"
-          done
+          # These two SNS topics already exist outside the Application stack.
+          # They are intentionally referenced by ARN from application-stack.yaml,
+          # so their existence is REQUIRED and is NOT treated as a conflict.
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          ORDER_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-order-notifications"
+          LOW_STOCK_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-low-stock"
+
+          if ! aws sns get-topic-attributes             --topic-arn "$ORDER_TOPIC_ARN"             --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "ERROR: Required existing SNS topic was not found: $ORDER_TOPIC_ARN"
+            exit 1
+          fi
+          echo "Using existing SNS topic: $ORDER_TOPIC_ARN"
+
+          if ! aws sns get-topic-attributes             --topic-arn "$LOW_STOCK_TOPIC_ARN"             --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "ERROR: Required existing SNS topic was not found: $LOW_STOCK_TOPIC_ARN"
+            exit 1
+          fi
+          echo "Using existing SNS topic: $LOW_STOCK_TOPIC_ARN"
+
 
           for LOG_GROUP in             "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-notification"             "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-order"
           do
@@ -807,8 +821,10 @@ jobs:
             echo "============================================================"
             echo "ERROR: CloudFormation found one or more existing application"
             echo "resources that are not currently owned by cloudmart-application-${ENVIRONMENT}."
-            echo "These resources must be manually deleted or imported before"
-            echo "the fresh Application stack can be created."
+            echo "The pre-existing order-notifications and low-stock SNS topics are"
+            echo "expected and are excluded from this conflict check."
+            echo "Other conflicting named resources must be manually deleted or"
+            echo "imported before the Application stack can be created."
             echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
             echo "============================================================"
             exit 1
@@ -816,7 +832,7 @@ jobs:
 
           echo "No known unmanaged application resource-name conflicts found."
 
-          if ! sam deploy             --template-file .aws-sam/build/template.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --resolve-s3             --capabilities CAPABILITY_NAMED_IAM             --no-confirm-changeset             --no-fail-on-empty-changeset             --parameter-overrides               Environment="$ENVIRONMENT"               ProjectName="$PROJECT_NAME"               AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL"               NotificationEmail="$ADMIN_EMAIL"               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"               EC2InstanceType="$EC2_INSTANCE_TYPE"
+          if ! sam deploy             --template-file .aws-sam/build/template.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --resolve-s3             --capabilities CAPABILITY_NAMED_IAM             --no-confirm-changeset             --no-fail-on-empty-changeset             --parameter-overrides               Environment="$ENVIRONMENT"               ProjectName="$PROJECT_NAME"               AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL"               NotificationEmail="$ADMIN_EMAIL"               ExistingOrderNotificationTopicArn="$ORDER_TOPIC_ARN"               ExistingLowStockTopicArn="$LOW_STOCK_TOPIC_ARN"               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"               EC2InstanceType="$EC2_INSTANCE_TYPE"
           then
             echo "============================================================"
             echo "ERROR: SAM/CloudFormation deployment failed."
