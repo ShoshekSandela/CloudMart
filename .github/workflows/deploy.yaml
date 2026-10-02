@@ -759,21 +759,74 @@ jobs:
 
           # SAM updates the recovered stack or creates a new stack when no
           # previous CloudFormation stack exists.
-          sam deploy \
-            --template-file .aws-sam/build/template.yaml \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --resolve-s3 \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-confirm-changeset \
-            --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              Environment="$ENVIRONMENT" \
-              ProjectName="$PROJECT_NAME" \
-              AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL" \
-              NotificationEmail="$ADMIN_EMAIL" \
-              ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
-              EC2InstanceType="$EC2_INSTANCE_TYPE"
+          echo "Running CloudFormation preflight check for existing named application resources..."
+
+          CONFLICT_FOUND="false"
+
+          check_named_resource() {
+            local label="$1"
+            local result="$2"
+
+            if [ -n "$result" ] && [ "$result" != "None" ]; then
+              echo "ERROR: Existing unmanaged $label found: $result"
+              CONFLICT_FOUND="true"
+            fi
+          }
+
+          EXISTING_REST_API=$(aws apigateway get-rest-apis             --region "$AWS_REGION"             --query "items[?name=='${PROJECT_NAME}-${ENVIRONMENT}-api'].id | [0]"             --output text 2>/dev/null || true)
+          check_named_resource "API Gateway REST API" "$EXISTING_REST_API"
+
+          EXISTING_EVENT_BUS=$(aws events describe-event-bus             --name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus"             --region "$AWS_REGION"             --query 'Name'             --output text 2>/dev/null || true)
+          check_named_resource "EventBridge event bus" "$EXISTING_EVENT_BUS"
+
+          for FUNCTION_NAME in             "${PROJECT_NAME}-${ENVIRONMENT}-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-authorizer"             "${PROJECT_NAME}-${ENVIRONMENT}-token-manager"             "${PROJECT_NAME}-${ENVIRONMENT}-product"             "${PROJECT_NAME}-${ENVIRONMENT}-customer"             "${PROJECT_NAME}-${ENVIRONMENT}-order"
+          do
+            EXISTING_FUNCTION=$(aws lambda get-function               --function-name "$FUNCTION_NAME"               --region "$AWS_REGION"               --query 'Configuration.FunctionName'               --output text 2>/dev/null || true)
+            check_named_resource "Lambda function" "$EXISTING_FUNCTION"
+          done
+
+          for RULE_NAME in             "${PROJECT_NAME}-${ENVIRONMENT}-low-stock"             "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-confirmed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-canceled-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-failed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-completed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-processing"
+          do
+            EXISTING_RULE=$(aws events describe-rule               --name "$RULE_NAME"               --event-bus-name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus"               --region "$AWS_REGION"               --query 'Name'               --output text 2>/dev/null || true)
+            check_named_resource "EventBridge rule" "$EXISTING_RULE"
+          done
+
+          for TOPIC_NAME in             "${PROJECT_NAME}-${ENVIRONMENT}-order-notifications"             "${PROJECT_NAME}-${ENVIRONMENT}-low-stock"
+          do
+            EXISTING_TOPIC=$(aws sns get-topic-attributes               --topic-arn "arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID:-$(aws sts get-caller-identity --query Account --output text)}:${TOPIC_NAME}"               --region "$AWS_REGION"               --query 'Attributes.TopicArn'               --output text 2>/dev/null || true)
+            check_named_resource "SNS topic" "$EXISTING_TOPIC"
+          done
+
+          for LOG_GROUP in             "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-notification"             "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-order"
+          do
+            EXISTING_LOG_GROUP=$(aws logs describe-log-groups               --log-group-name-prefix "$LOG_GROUP"               --region "$AWS_REGION"               --query "logGroups[?logGroupName=='${LOG_GROUP}'].logGroupName | [0]"               --output text 2>/dev/null || true)
+            check_named_resource "CloudWatch log group" "$EXISTING_LOG_GROUP"
+          done
+
+          if [ "$CONFLICT_FOUND" = "true" ]; then
+            echo "============================================================"
+            echo "ERROR: CloudFormation found one or more existing application"
+            echo "resources that are not currently owned by cloudmart-application-${ENVIRONMENT}."
+            echo "These resources must be manually deleted or imported before"
+            echo "the fresh Application stack can be created."
+            echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+            echo "============================================================"
+            exit 1
+          fi
+
+          echo "No known unmanaged application resource-name conflicts found."
+
+          if ! sam deploy             --template-file .aws-sam/build/template.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --resolve-s3             --capabilities CAPABILITY_NAMED_IAM             --no-confirm-changeset             --no-fail-on-empty-changeset             --parameter-overrides               Environment="$ENVIRONMENT"               ProjectName="$PROJECT_NAME"               AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL"               NotificationEmail="$ADMIN_EMAIL"               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"               EC2InstanceType="$EC2_INSTANCE_TYPE"
+          then
+            echo "============================================================"
+            echo "ERROR: SAM/CloudFormation deployment failed."
+            echo "Attempting to retrieve the detailed Early Validation event..."
+            echo "============================================================"
+
+            aws cloudformation describe-events               --stack-name "$STACK_NAME"               --filters FailedEvents=true               --region "$AWS_REGION"               --no-paginate               --output json || true
+
+            exit 1
+          fi
 
            APP_STATUS=$(aws cloudformation describe-stacks \
              --stack-name "$STACK_NAME" \
