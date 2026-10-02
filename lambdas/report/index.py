@@ -312,8 +312,32 @@ def generate_report():
 def lambda_handler(event, context):
     event = event or {}
 
-    # Explicit test-data action.
-    # Normal EventBridge daily execution does NOT enter this branch.
+    # ============================================================
+    # SAMPLE REPORT ACTION
+    # ============================================================
+    # Invoke manually with:
+    # {
+    #   "action": "generate_sample_report"
+    # }
+    #
+    # This creates the 10 test orders (only if they do not already
+    # exist) AND immediately generates/uploads the CSV.
+    #
+    # Normal EventBridge execution uses {} and is NOT affected.
+    # ============================================================
+
+    if event.get("action") == "generate_sample_report":
+        seed_result = seed_report_test_data()
+        report_result = generate_report()
+
+        return {
+            "statusCode": 200,
+            "message": "Sample orders created/verified and report CSV generated.",
+            "sample_data": seed_result,
+            "report": report_result,
+        }
+
+    # Optional: seed only, without generating a report.
     if event.get("action") == "seed_report_test_data":
         result = seed_report_test_data()
 
@@ -323,5 +347,5 @@ def lambda_handler(event, context):
             **result,
         }
 
-    # Normal report generation.
+    # Normal daily report generation.
     return generate_report()
