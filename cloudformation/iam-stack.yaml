@@ -106,6 +106,26 @@ Resources:
               - iam:PassRole
             Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cloudmart-${Environment}-cloudformation-execution-role
 
+  # Grants the existing CloudFormation execution role permission to
+  # create change sets for the AWS SAM/Serverless transform.
+  #
+  # The role already exists in the prod account, so this stack manages only
+  # the inline policy attachment and does NOT try to create/replace the role.
+  CloudFormationTransformPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub CloudMart-${Environment}-CloudFormationTransformPolicy
+      Roles:
+        - !Sub cloudmart-${Environment}-cloudformation-execution-role
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowServerlessTransformChangeSet
+            Effect: Allow
+            Action:
+              - cloudformation:CreateChangeSet
+            Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:aws:transform/Serverless-2016-10-31
+
   # Gives Product Lambda access to its database parameters and EventBridge bus.
   ProductLambdaRole:
     Type: AWS::IAM::Role
