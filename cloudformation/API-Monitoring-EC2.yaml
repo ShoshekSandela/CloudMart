@@ -30,6 +30,12 @@ Parameters:
   DashboardBootstrapVersion:
     Type: String
 
+  # Optional suffix used to avoid collisions with legacy monitoring resources.
+  # Production keeps the existing names; development uses -v2 during recovery.
+  MonitoringResourceSuffix:
+    Type: String
+    Default: ""
+
 Resources:
 
   # ------------------------------------------------------------
@@ -38,7 +44,7 @@ Resources:
   DailyReportFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-daily-report"
+      FunctionName: !Sub "${ProjectName}-${Environment}-daily-report${MonitoringResourceSuffix}"
       Runtime: python3.12
       Handler: index.lambda_handler
       CodeUri: ../lambdas/report/
@@ -77,7 +83,7 @@ Resources:
   DailyReportScheduleV2:
     Type: AWS::Events::Rule
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-daily-report-v2"
+      Name: !Sub "${ProjectName}-${Environment}-daily-report-v2${MonitoringResourceSuffix}"
       Description: Runs the CloudMart daily report once every 24 hours.
       EventBusName: default
       ScheduleExpression: rate(1 day)
@@ -117,7 +123,7 @@ Resources:
         Fn::ImportValue: !Sub "CloudMart-${Environment}-EC2InstanceProfileName"
       Tags:
         - Key: Name
-          Value: !Sub "cloudmart-${Environment}-operations-ec2"
+          Value: !Sub "cloudmart-${Environment}-operations-ec2${MonitoringResourceSuffix}"
         - Key: Project
           Value: CloudMart
         - Key: Environment
@@ -334,7 +340,7 @@ Resources:
   MonitoringTopic:
     Type: AWS::SNS::Topic
     Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-monitoring"
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring${MonitoringResourceSuffix}"
       Tags:
         - Key: Project
           Value: CloudMart
@@ -354,7 +360,7 @@ Resources:
   RDSCPUAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu-80"
+      AlarmName: !Sub "${ProjectName}-${Environment}-rds-cpu-80${MonitoringResourceSuffix}"
       AlarmDescription: "RDS CPU - 80 percent or higher."
       Namespace: AWS/RDS
       MetricName: CPUUtilization
@@ -375,7 +381,7 @@ Resources:
   OrdersFailedAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-orders-failed"
+      AlarmName: !Sub "${ProjectName}-${Environment}-orders-failed${MonitoringResourceSuffix}"
       AlarmDescription: One or more order failures were recorded in five minutes.
       Namespace: CloudMart/Operations
       MetricName: OrdersFailed
@@ -395,7 +401,7 @@ Resources:
   LowStockAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-low-stock"
+      AlarmName: !Sub "${ProjectName}-${Environment}-low-stock${MonitoringResourceSuffix}"
       AlarmDescription: "Low Stock - Product stock below threshold."
       Namespace: CloudMart/Operations
       MetricName: LowStockEvents
@@ -415,7 +421,7 @@ Resources:
   API5XXAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-api-5xx"
+      AlarmName: !Sub "${ProjectName}-${Environment}-api-5xx${MonitoringResourceSuffix}"
       AlarmDescription: API Gateway returned one or more 5XX responses in five minutes.
       Namespace: AWS/ApiGateway
       MetricName: 5XXError
@@ -440,7 +446,7 @@ Resources:
   OrderLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-order-lambda-errors"
+      AlarmName: !Sub "${ProjectName}-${Environment}-order-lambda-errors${MonitoringResourceSuffix}"
       AlarmDescription: "Lambda Error - Order Lambda."
       Namespace: AWS/Lambda
       MetricName: Errors
@@ -460,7 +466,7 @@ Resources:
   ProductLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-product-lambda-errors"
+      AlarmName: !Sub "${ProjectName}-${Environment}-product-lambda-errors${MonitoringResourceSuffix}"
       AlarmDescription: Product Lambda execution errors occurred in five minutes.
       Namespace: AWS/Lambda
       MetricName: Errors
@@ -480,13 +486,13 @@ Resources:
   ReportGenerationFailureAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-report-generation-failure"
+      AlarmName: !Sub "${ProjectName}-${Environment}-report-generation-failure${MonitoringResourceSuffix}"
       AlarmDescription: Daily report Lambda execution errors occurred in five minutes.
       Namespace: AWS/Lambda
       MetricName: Errors
       Dimensions:
         - Name: FunctionName
-          Value: !Sub "${ProjectName}-${Environment}-daily-report"
+          Value: !Sub "${ProjectName}-${Environment}-daily-report${MonitoringResourceSuffix}"
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
@@ -500,7 +506,7 @@ Resources:
   API4XXAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmName: !Sub "${ProjectName}-${Environment}-api-4xx"
+      AlarmName: !Sub "${ProjectName}-${Environment}-api-4xx${MonitoringResourceSuffix}"
       AlarmDescription: API Gateway returned one or more 4XX responses in five minutes.
       Namespace: AWS/ApiGateway
       MetricName: 4XXError
@@ -526,7 +532,7 @@ Resources:
   AlarmNotificationFunction:
     Type: AWS::Serverless::Function
     Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-alarm-notification"
+      FunctionName: !Sub "${ProjectName}-${Environment}-alarm-notification${MonitoringResourceSuffix}"
       Runtime: python3.12
       Handler: index.lambda_handler
       Timeout: 30
@@ -640,7 +646,7 @@ Resources:
   AlarmNotificationRule:
     Type: AWS::Events::Rule
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-alarm-notifications"
+      Name: !Sub "${ProjectName}-${Environment}-alarm-notifications${MonitoringResourceSuffix}"
       Description: Sends CloudWatch alarm state changes to the CloudMart notification Lambda.
       EventPattern:
         source:
@@ -671,7 +677,7 @@ Resources:
   OperationsDashboard:
     Type: AWS::CloudWatch::Dashboard
     Properties:
-      DashboardName: !Sub "${ProjectName}-${Environment}-operations"
+      DashboardName: !Sub "${ProjectName}-${Environment}-operations${MonitoringResourceSuffix}"
       DashboardBody:
         Fn::Sub:
           - |
@@ -782,7 +788,7 @@ Resources:
                     "period": 300,
                     "stat": "Sum",
                     "metrics": [
-                      [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-${Environment}-daily-report" ]
+                      [ "AWS/Lambda", "Errors", "FunctionName", "${ProjectName}-${Environment}-daily-report${MonitoringResourceSuffix}" ]
                     ]
                   }
                 },
@@ -815,7 +821,7 @@ Resources:
                     "metrics": [
                       [ "AWS/Lambda", "Throttles", "FunctionName", "${ProjectName}-${Environment}-order" ],
                       [ ".", ".", ".", "${ProjectName}-${Environment}-product" ],
-                      [ ".", ".", ".", "${ProjectName}-${Environment}-daily-report" ]
+                      [ ".", ".", ".", "${ProjectName}-${Environment}-daily-report${MonitoringResourceSuffix}" ]
                     ]
                   }
                 },
@@ -871,7 +877,7 @@ Resources:
                     "region": "${AWS::Region}",
                     "period": 300,
                     "metrics": [
-                      [ "AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-${Environment}-daily-report" ],
+                      [ "AWS/Lambda", "Invocations", "FunctionName", "${ProjectName}-${Environment}-daily-report${MonitoringResourceSuffix}" ],
                       [ ".", "Errors", ".", "." ],
                       [ ".", "Duration", ".", "." ]
                     ]
@@ -881,6 +887,7 @@ Resources:
             }
           - DB_INSTANCE_ID:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-DBInstanceIdentifier"
+            MonitoringResourceSuffix: !Ref MonitoringResourceSuffix
 
 Outputs:
   OperationsEC2InstanceId:
@@ -918,4 +925,4 @@ Outputs:
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
-    Value: !Sub "${ProjectName}-${Environment}-operations"
+    Value: !Sub "${ProjectName}-${Environment}-operations${MonitoringResourceSuffix}"
