@@ -772,6 +772,9 @@ jobs:
           echo "Running ownership-aware CloudFormation preflight check..."
 
           CONFLICT_FOUND="false"
+          EVENT_RULE_CONFLICT_FOUND="false"
+          NON_EVENT_CONFLICT_FOUND="false"
+          UNMANAGED_EVENT_RULES=()
 
           if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
             echo "Application stack already exists with status: $STACK_STATUS"
@@ -807,6 +810,18 @@ jobs:
               else
                 echo "ERROR: Existing unmanaged $label found: $resource_id"
                 CONFLICT_FOUND="true"
+
+                if [ "$label" != "EventBridge rule" ]; then
+                  NON_EVENT_CONFLICT_FOUND="true"
+                fi
+
+                # Existing EventBridge rules may have been created by an older
+                # CloudFormation version of this same Application stack. They
+                # must be imported into the current stack rather than deleted.
+                if [ "$label" = "EventBridge rule" ]; then
+                  EVENT_RULE_CONFLICT_FOUND="true"
+                  UNMANAGED_EVENT_RULES+=("$resource_id")
+                fi
               fi
             }
 
@@ -965,14 +980,130 @@ jobs:
           echo "Using existing SNS topic: $LOW_STOCK_TOPIC_ARN"
 
           if [ "$CONFLICT_FOUND" = "true" ]; then
-            echo "============================================================"
-            echo "ERROR: One or more application resources already exist"
-            echo "outside the CloudFormation ownership of $STACK_NAME."
-            echo "No automatic deletion will be performed."
-            echo "The resources must be imported into the stack or removed"
-            echo "manually before creating a new Application stack."
-            echo "============================================================"
-            exit 1
+            # The only supported external resources for an existing Application
+            # stack are the legacy EventBridge notification rules. Import them
+            # into the existing stack so the next normal deployment can manage
+            # them. Do NOT delete any AWS resource automatically.
+            if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
+              echo "============================================================"
+              echo "Existing EventBridge rules are outside CloudFormation ownership."
+              echo "They will be IMPORTED into $STACK_NAME."
+              echo "No EventBridge rule will be deleted."
+              echo "============================================================"
+
+              IMPORT_FILE="/tmp/cloudmart-event-rule-import.json"
+              export UNMANAGED_EVENT_RULES="$(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}")"
+              python3 - <<'PY'
+          import json
+          import os
+
+          project = os.environ["PROJECT_NAME"]
+          environment = os.environ["ENVIRONMENT"]
+
+          suffix_to_logical_id = {
+              "low-stock": "LowStockEventRule",
+              "order-placed-notification": "OrderPlacedNotificationRule",
+              "order-confirmed-notification": "OrderConfirmedNotificationRule",
+              "order-canceled-notification": "OrderCanceledNotificationRule",
+              "order-failed-notification": "OrderFailedNotificationRule",
+              "order-completed-notification": "OrderCompletedNotificationRule",
+              "order-placed-processing": "OrderPlacedProcessingRule",
+          }
+
+          rules = []
+          for rule_name in os.environ.get("UNMANAGED_EVENT_RULES", "").split("\n"):
+              rule_name = rule_name.strip()
+              if not rule_name:
+                  continue
+
+              prefix = f"{project}-{environment}-"
+              if not rule_name.startswith(prefix):
+                  raise SystemExit(f"Unsupported EventBridge rule name: {rule_name}")
+
+              suffix = rule_name[len(prefix):]
+              logical_id = suffix_to_logical_id.get(suffix)
+              if not logical_id:
+                  raise SystemExit(
+                      f"No CloudFormation logical ID mapping exists for EventBridge rule: {rule_name}"
+                  )
+
+              rules.append({
+                      "ResourceType": "AWS::Events::Rule",
+                      "LogicalResourceId": logical_id,
+                      "ResourceIdentifier": {"Name": rule_name},
+                  })
+
+          if not rules:
+              raise SystemExit("No supported unmanaged EventBridge rules were found to import.")
+
+          with open("/tmp/cloudmart-event-rule-import.json", "w", encoding="utf-8") as f:
+              json.dump(rules, f)
+          PY
+
+              if [ ! -s "$IMPORT_FILE" ]; then
+                echo "ERROR: EventBridge import file was not created."
+                exit 1
+              fi
+
+              cat "$IMPORT_FILE"
+
+              IMPORT_CHANGE_SET="cloudmart-application-${ENVIRONMENT}-import-$(date +%s)"
+
+              aws cloudformation create-change-set                 --stack-name "$STACK_NAME"                 --change-set-name "$IMPORT_CHANGE_SET"                 --change-set-type IMPORT                 --template-body file://.aws-sam/build/template.yaml                 --resources-to-import "file://$IMPORT_FILE"                 --capabilities CAPABILITY_NAMED_IAM                 --region "$AWS_REGION"
+
+              if ! aws cloudformation wait change-set-create-complete                 --stack-name "$STACK_NAME"                 --change-set-name "$IMPORT_CHANGE_SET"                 --region "$AWS_REGION"; then
+                echo "ERROR: EventBridge import change set failed."
+                aws cloudformation describe-change-set                   --stack-name "$STACK_NAME"                   --change-set-name "$IMPORT_CHANGE_SET"                   --region "$AWS_REGION"                   --output json || true
+                exit 1
+              fi
+
+              echo "EventBridge import change set created successfully."
+
+              aws cloudformation execute-change-set                 --stack-name "$STACK_NAME"                 --change-set-name "$IMPORT_CHANGE_SET"                 --region "$AWS_REGION"
+
+              echo "Waiting for EventBridge resources to be imported..."
+              for attempt in $(seq 1 60); do
+                IMPORT_STATUS=$(aws cloudformation describe-stacks                   --stack-name "$STACK_NAME"                   --region "$AWS_REGION"                   --query 'Stacks[0].StackStatus'                   --output text 2>/dev/null || true)
+
+                echo "Application stack import status ${attempt}/60: ${IMPORT_STATUS:-UNKNOWN}"
+
+                case "$IMPORT_STATUS" in
+                  IMPORT_COMPLETE|UPDATE_COMPLETE|CREATE_COMPLETE)
+                    echo "EventBridge resources are now CloudFormation-managed."
+                    break
+                    ;;
+                  IMPORT_ROLLBACK_IN_PROGRESS|IMPORT_ROLLBACK_FAILED|ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_FAILED)
+                    echo "ERROR: EventBridge resource import failed. Stack status: $IMPORT_STATUS"
+                    aws cloudformation describe-stack-events                       --stack-name "$STACK_NAME"                       --region "$AWS_REGION"                       --max-items 30 || true
+                    exit 1
+                    ;;
+                esac
+
+                if [ "$attempt" -eq 60 ]; then
+                  echo "ERROR: Timed out waiting for EventBridge resource import."
+                  exit 1
+                fi
+
+                sleep 5
+              done
+
+            fi
+
+            # Re-check whether any non-EventBridge conflict remains.
+            if [ "$NON_EVENT_CONFLICT_FOUND" = "true" ]; then
+              echo "ERROR: One or more non-EventBridge application resources"
+              echo "already exist outside CloudFormation ownership."
+              echo "No automatic deletion will be performed."
+              echo "Those resources must be imported or resolved manually."
+              exit 1
+            fi
+
+            # EventBridge conflicts were imported above. Any remaining conflict
+            # means the preflight found a resource type that this workflow does
+            # not safely adopt automatically.
+            if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
+              CONFLICT_FOUND="false"
+            fi
           fi
 
           echo "Application resource ownership preflight passed."
