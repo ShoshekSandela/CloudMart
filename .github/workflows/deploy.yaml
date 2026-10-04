@@ -1473,6 +1473,121 @@ jobs:
               ;;
           esac
 
+          # ------------------------------------------------------------
+          # Monitoring resource-name collision recovery
+          # ------------------------------------------------------------
+          # CloudFormation EarlyValidation::ResourceExistenceCheck rejects
+          # a CREATE when named resources from an older/orphaned monitoring
+          # deployment already exist. Do not delete those resources.
+          #
+          # If this stack already exists, keep the exact suffix currently
+          # stored on the stack so normal updates remain stable.
+          #
+          # If the stack does not exist, probe the named resources. When
+          # legacy names are occupied, use the first free suffix (-v2, -v3,
+          # ...) so CloudFormation can create a clean, independently-owned
+          # monitoring stack without deleting the old resources.
+          MONITORING_RESOURCE_SUFFIX=""
+
+          if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
+            EXISTING_SUFFIX=$(aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query "Stacks[0].Parameters[?ParameterKey=='MonitoringResourceSuffix'].ParameterValue | [0]" \
+              --output text 2>/dev/null || true)
+
+            if [ -n "$EXISTING_SUFFIX" ] && [ "$EXISTING_SUFFIX" != "None" ]; then
+              MONITORING_RESOURCE_SUFFIX="$EXISTING_SUFFIX"
+            fi
+
+            echo "Existing monitoring stack detected."
+            echo "Using existing MonitoringResourceSuffix: '${MONITORING_RESOURCE_SUFFIX}'"
+          else
+            echo "Monitoring stack does not exist. Checking for legacy named resources..."
+
+            monitoring_suffix_is_free() {
+              local suffix="$1"
+              local candidate
+              local found=""
+
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-daily-report${suffix}"
+              if aws lambda get-function --function-name "$candidate" --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
+
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-monitoring${suffix}"
+              if aws sns get-topic-attributes \
+                --topic-arn "arn:aws:sns:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):${candidate}" \
+                --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
+
+              for candidate in \
+                "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${suffix}"
+              do
+                if aws cloudwatch describe-alarms \
+                  --alarm-names "$candidate" \
+                  --region "$AWS_REGION" \
+                  --query 'MetricAlarms[0].AlarmName' \
+                  --output text 2>/dev/null | grep -Fxq "$candidate"; then
+                  return 1
+                fi
+              done
+
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notification${suffix}"
+              if aws lambda get-function --function-name "$candidate" --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
+
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notifications${suffix}"
+              if aws events describe-rule \
+                --name "$candidate" \
+                --event-bus-name default \
+                --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
+
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-operations${suffix}"
+              if aws cloudwatch get-dashboard \
+                --dashboard-name "$candidate" \
+                --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
+
+              return 0
+            }
+
+            if monitoring_suffix_is_free ""; then
+              MONITORING_RESOURCE_SUFFIX=""
+              echo "Base monitoring resource names are available."
+            else
+              echo "Legacy monitoring resources already use the base names."
+              suffix_number=2
+
+              while true; do
+                candidate_suffix="-v${suffix_number}"
+                if monitoring_suffix_is_free "$candidate_suffix"; then
+                  MONITORING_RESOURCE_SUFFIX="$candidate_suffix"
+                  break
+                fi
+                suffix_number=$((suffix_number + 1))
+                if [ "$suffix_number" -gt 20 ]; then
+                  echo "ERROR: Could not find a free monitoring resource suffix."
+                  exit 1
+                fi
+              done
+
+              echo "Using collision-free MonitoringResourceSuffix: '${MONITORING_RESOURCE_SUFFIX}'"
+            fi
+          fi
+
           CFN_EXECUTION_ROLE_ARN=$(aws iam get-role \
             --role-name "cloudmart-${ENVIRONMENT}-cloudformation-execution-role" \
             --region "$AWS_REGION" \
@@ -1503,7 +1618,8 @@ jobs:
               NotificationEmail="$ADMIN_EMAIL" \
               EC2InstanceType="$EC2_INSTANCE_TYPE" \
               DashboardSourcePrefix="${DASHBOARD_SOURCE_PREFIX}/${GITHUB_SHA}" \
-              DashboardBootstrapVersion="${GITHUB_RUN_NUMBER}"
+              DashboardBootstrapVersion="${GITHUB_RUN_NUMBER}" \
+              MonitoringResourceSuffix="$MONITORING_RESOURCE_SUFFIX"
 
           MONITORING_STATUS=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
