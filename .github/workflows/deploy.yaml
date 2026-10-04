@@ -757,80 +757,225 @@ jobs:
             STACK_STATUS=""
           fi
 
-          # SAM updates the recovered stack or creates a new stack when no
-          # previous CloudFormation stack exists.
-          echo "Running CloudFormation preflight check for existing named application resources..."
+          # CloudFormation owns the named application resources after the
+          # Application stack has been created. The old preflight check treated
+          # every existing resource as "unmanaged", even when it was already
+          # owned by cloudmart-application-${ENVIRONMENT}. That caused every
+          # normal re-deployment to fail after the first successful deployment.
+          #
+          # We now make the check ownership-aware:
+          #   1. If the Application stack does not exist, existing named
+          #      resources are genuine conflicts and deployment stops.
+          #   2. If the Application stack exists, resources already listed in
+          #      that stack are allowed and only truly external resources are
+          #      reported as conflicts.
+          echo "Running ownership-aware CloudFormation preflight check..."
 
           CONFLICT_FOUND="false"
 
-          check_named_resource() {
-            local label="$1"
-            local result="$2"
+          if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
+            echo "Application stack already exists with status: $STACK_STATUS"
+            echo "Reading CloudFormation physical resource IDs..."
 
-            if [ -n "$result" ] && [ "$result" != "None" ]; then
-              echo "ERROR: Existing unmanaged $label found: $result"
-              CONFLICT_FOUND="true"
-            fi
-          }
+            STACK_RESOURCE_IDS=$(aws cloudformation list-stack-resources \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query 'StackResourceSummaries[].PhysicalResourceId' \
+              --output text 2>/dev/null || true)
 
-          EXISTING_REST_API=$(aws apigateway get-rest-apis             --region "$AWS_REGION"             --query "items[?name=='${PROJECT_NAME}-${ENVIRONMENT}-api'].id | [0]"             --output text 2>/dev/null || true)
-          check_named_resource "API Gateway REST API" "$EXISTING_REST_API"
+            resource_is_owned() {
+              local resource_id="$1"
 
-          EXISTING_EVENT_BUS=$(aws events describe-event-bus             --name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus"             --region "$AWS_REGION"             --query 'Name'             --output text 2>/dev/null || true)
-          check_named_resource "EventBridge event bus" "$EXISTING_EVENT_BUS"
+              if [ -n "$resource_id" ] && [ "$resource_id" != "None" ] && \
+                 printf '%s\n' "$STACK_RESOURCE_IDS" | tr '\t' '\n' | grep -Fxq "$resource_id"; then
+                return 0
+              fi
 
-          for FUNCTION_NAME in             "${PROJECT_NAME}-${ENVIRONMENT}-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-authorizer"             "${PROJECT_NAME}-${ENVIRONMENT}-token-manager"             "${PROJECT_NAME}-${ENVIRONMENT}-product"             "${PROJECT_NAME}-${ENVIRONMENT}-customer"             "${PROJECT_NAME}-${ENVIRONMENT}-order"
-          do
-            EXISTING_FUNCTION=$(aws lambda get-function               --function-name "$FUNCTION_NAME"               --region "$AWS_REGION"               --query 'Configuration.FunctionName'               --output text 2>/dev/null || true)
-            check_named_resource "Lambda function" "$EXISTING_FUNCTION"
-          done
+              return 1
+            }
 
-          for RULE_NAME in             "${PROJECT_NAME}-${ENVIRONMENT}-low-stock"             "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-confirmed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-canceled-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-failed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-completed-notification"             "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-processing"
-          do
-            EXISTING_RULE=$(aws events describe-rule               --name "$RULE_NAME"               --event-bus-name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus"               --region "$AWS_REGION"               --query 'Name'               --output text 2>/dev/null || true)
-            check_named_resource "EventBridge rule" "$EXISTING_RULE"
-          done
+            check_existing_resource() {
+              local label="$1"
+              local resource_id="$2"
+
+              if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
+                return 0
+              fi
+
+              if resource_is_owned "$resource_id"; then
+                echo "OK: $label is already owned by $STACK_NAME: $resource_id"
+              else
+                echo "ERROR: Existing unmanaged $label found: $resource_id"
+                CONFLICT_FOUND="true"
+              fi
+            }
+
+            EXISTING_REST_API=$(aws apigateway get-rest-apis \
+              --region "$AWS_REGION" \
+              --query "items[?name=='${PROJECT_NAME}-${ENVIRONMENT}-api'].id | [0]" \
+              --output text 2>/dev/null || true)
+            check_existing_resource "API Gateway REST API" "$EXISTING_REST_API"
+
+            EXISTING_EVENT_BUS=$(aws events describe-event-bus \
+              --name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
+              --region "$AWS_REGION" \
+              --query 'Name' \
+              --output text 2>/dev/null || true)
+            check_existing_resource "EventBridge event bus" "$EXISTING_EVENT_BUS"
+
+            for FUNCTION_NAME in \
+              "${PROJECT_NAME}-${ENVIRONMENT}-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-authorizer" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-token-manager" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-product" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-customer" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order"
+            do
+              EXISTING_FUNCTION=$(aws lambda get-function \
+                --function-name "$FUNCTION_NAME" \
+                --region "$AWS_REGION" \
+                --query 'Configuration.FunctionName' \
+                --output text 2>/dev/null || true)
+              check_existing_resource "Lambda function" "$EXISTING_FUNCTION"
+            done
+
+            for RULE_NAME in \
+              "${PROJECT_NAME}-${ENVIRONMENT}-low-stock" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-confirmed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-canceled-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-failed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-completed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-processing"
+            do
+              EXISTING_RULE=$(aws events describe-rule \
+                --name "$RULE_NAME" \
+                --event-bus-name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
+                --region "$AWS_REGION" \
+                --query 'Name' \
+                --output text 2>/dev/null || true)
+              check_existing_resource "EventBridge rule" "$EXISTING_RULE"
+            done
+
+            for LOG_GROUP in \
+              "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-notification" \
+              "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-order"
+            do
+              EXISTING_LOG_GROUP=$(aws logs describe-log-groups \
+                --log-group-name-prefix "$LOG_GROUP" \
+                --region "$AWS_REGION" \
+                --query "logGroups[?logGroupName=='${LOG_GROUP}'].logGroupName | [0]" \
+                --output text 2>/dev/null || true)
+              check_existing_resource "CloudWatch log group" "$EXISTING_LOG_GROUP"
+            done
+
+          else
+            echo "Application stack does not exist. Checking for orphaned named resources..."
+
+            check_orphan_resource() {
+              local label="$1"
+              local result="$2"
+
+              if [ -n "$result" ] && [ "$result" != "None" ]; then
+                echo "ERROR: Existing unmanaged $label found: $result"
+                CONFLICT_FOUND="true"
+              fi
+            }
+
+            EXISTING_REST_API=$(aws apigateway get-rest-apis \
+              --region "$AWS_REGION" \
+              --query "items[?name=='${PROJECT_NAME}-${ENVIRONMENT}-api'].id | [0]" \
+              --output text 2>/dev/null || true)
+            check_orphan_resource "API Gateway REST API" "$EXISTING_REST_API"
+
+            EXISTING_EVENT_BUS=$(aws events describe-event-bus \
+              --name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
+              --region "$AWS_REGION" \
+              --query 'Name' \
+              --output text 2>/dev/null || true)
+            check_orphan_resource "EventBridge event bus" "$EXISTING_EVENT_BUS"
+
+            for FUNCTION_NAME in \
+              "${PROJECT_NAME}-${ENVIRONMENT}-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-authorizer" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-token-manager" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-product" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-customer" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order"
+            do
+              EXISTING_FUNCTION=$(aws lambda get-function \
+                --function-name "$FUNCTION_NAME" \
+                --region "$AWS_REGION" \
+                --query 'Configuration.FunctionName' \
+                --output text 2>/dev/null || true)
+              check_orphan_resource "Lambda function" "$EXISTING_FUNCTION"
+            done
+
+            for RULE_NAME in \
+              "${PROJECT_NAME}-${ENVIRONMENT}-low-stock" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-confirmed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-canceled-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-failed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-completed-notification" \
+              "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-processing"
+            do
+              EXISTING_RULE=$(aws events describe-rule \
+                --name "$RULE_NAME" \
+                --event-bus-name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
+                --region "$AWS_REGION" \
+                --query 'Name' \
+                --output text 2>/dev/null || true)
+              check_orphan_resource "EventBridge rule" "$EXISTING_RULE"
+            done
+
+            for LOG_GROUP in \
+              "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-notification" \
+              "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-order"
+            do
+              EXISTING_LOG_GROUP=$(aws logs describe-log-groups \
+                --log-group-name-prefix "$LOG_GROUP" \
+                --region "$AWS_REGION" \
+                --query "logGroups[?logGroupName=='${LOG_GROUP}'].logGroupName | [0]" \
+                --output text 2>/dev/null || true)
+              check_orphan_resource "CloudWatch log group" "$EXISTING_LOG_GROUP"
+            done
+          fi
 
           # These two SNS topics already exist outside the Application stack.
-          # They are intentionally referenced by ARN from application-stack.yaml,
-          # so their existence is REQUIRED and is NOT treated as a conflict.
+          # Their existence is expected and is never treated as a conflict.
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ORDER_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-order-notifications"
           LOW_STOCK_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-low-stock"
 
-          if ! aws sns get-topic-attributes             --topic-arn "$ORDER_TOPIC_ARN"             --region "$AWS_REGION" >/dev/null 2>&1; then
+          if ! aws sns get-topic-attributes \
+            --topic-arn "$ORDER_TOPIC_ARN" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
             echo "ERROR: Required existing SNS topic was not found: $ORDER_TOPIC_ARN"
             exit 1
           fi
           echo "Using existing SNS topic: $ORDER_TOPIC_ARN"
 
-          if ! aws sns get-topic-attributes             --topic-arn "$LOW_STOCK_TOPIC_ARN"             --region "$AWS_REGION" >/dev/null 2>&1; then
+          if ! aws sns get-topic-attributes \
+            --topic-arn "$LOW_STOCK_TOPIC_ARN" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
             echo "ERROR: Required existing SNS topic was not found: $LOW_STOCK_TOPIC_ARN"
             exit 1
           fi
           echo "Using existing SNS topic: $LOW_STOCK_TOPIC_ARN"
 
-
-          for LOG_GROUP in             "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-notification"             "/aws/lambda/${PROJECT_NAME}-${ENVIRONMENT}-order"
-          do
-            EXISTING_LOG_GROUP=$(aws logs describe-log-groups               --log-group-name-prefix "$LOG_GROUP"               --region "$AWS_REGION"               --query "logGroups[?logGroupName=='${LOG_GROUP}'].logGroupName | [0]"               --output text 2>/dev/null || true)
-            check_named_resource "CloudWatch log group" "$EXISTING_LOG_GROUP"
-          done
-
           if [ "$CONFLICT_FOUND" = "true" ]; then
             echo "============================================================"
-            echo "ERROR: CloudFormation found one or more existing application"
-            echo "resources that are not currently owned by cloudmart-application-${ENVIRONMENT}."
-            echo "The pre-existing order-notifications and low-stock SNS topics are"
-            echo "expected and are excluded from this conflict check."
-            echo "Other conflicting named resources must be manually deleted or"
-            echo "imported before the Application stack can be created."
-            echo "NO AUTOMATIC DELETION WILL BE PERFORMED."
+            echo "ERROR: One or more application resources already exist"
+            echo "outside the CloudFormation ownership of $STACK_NAME."
+            echo "No automatic deletion will be performed."
+            echo "The resources must be imported into the stack or removed"
+            echo "manually before creating a new Application stack."
             echo "============================================================"
             exit 1
           fi
 
-          echo "No known unmanaged application resource-name conflicts found."
+          echo "Application resource ownership preflight passed."
 
           if ! sam deploy             --template-file .aws-sam/build/template.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --resolve-s3             --capabilities CAPABILITY_NAMED_IAM             --no-confirm-changeset             --no-fail-on-empty-changeset             --parameter-overrides               Environment="$ENVIRONMENT"               ProjectName="$PROJECT_NAME"               AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL"               NotificationEmail="$ADMIN_EMAIL"               ExistingOrderNotificationTopicArn="$ORDER_TOPIC_ARN"               ExistingLowStockTopicArn="$LOW_STOCK_TOPIC_ARN"               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"               EC2InstanceType="$EC2_INSTANCE_TYPE"
           then
