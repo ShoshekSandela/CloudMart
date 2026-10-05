@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, eight alarms, and SNS email notifications.
+  CloudWatch dashboard, eight alarms, and formatted SNS email notifications.
 
 Parameters:
   Environment:
@@ -337,8 +337,9 @@ Resources:
   # ------------------------------------------------------------
   # SNS monitoring email notification
   # ------------------------------------------------------------
-  # CloudWatch alarms publish directly to this topic. SNS then delivers
-  # the alarm message to the configured email address.
+  # EventBridge receives CloudWatch alarm state-change events and sends
+  # a short, human-readable message to this SNS topic.
+  # SNS then delivers the formatted message to the configured email address.
   # The recipient must confirm the SNS subscription once.
   MonitoringTopic:
     Type: AWS::SNS::Topic
@@ -357,6 +358,62 @@ Resources:
       TopicArn: !Ref MonitoringTopic
       Protocol: email
       Endpoint: !Ref NotificationEmail
+
+  MonitoringTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref MonitoringTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgeToPublishMonitoringAlerts
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref MonitoringTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt MonitoringAlarmNotificationRule.Arn
+
+  MonitoringAlarmNotificationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-monitoring-alerts${MonitoringResourceSuffix}"
+      Description: Sends formatted CloudWatch alarm notifications to the CloudMart monitoring email topic.
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          state:
+            value:
+              - ALARM
+        resources:
+          - !GetAtt RDSCPUAlarm.Arn
+          - !GetAtt OrdersFailedAlarm.Arn
+          - !GetAtt LowStockAlarm.Arn
+          - !GetAtt API5XXAlarm.Arn
+          - !GetAtt OrderLambdaErrorsAlarm.Arn
+          - !GetAtt ProductLambdaErrorsAlarm.Arn
+          - !GetAtt ReportGenerationFailureAlarm.Arn
+          - !GetAtt API4XXAlarm.Arn
+      Targets:
+        - Id: MonitoringSnsTopic
+          Arn: !Ref MonitoringTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              time: $.time
+              region: $.region
+            InputTemplate: !Sub |
+              "CloudMart Monitoring Alert\n\nEnvironment: ${Environment}\nAlarm: <alarmName>\nStatus: <state>\n\nProblem:\n<reason>\n\nTime:\n<time>\n\nRegion:\n<region>\n\nAction Required:\nPlease check the CloudMart dashboard and the relevant AWS service logs."
 
   # ------------------------------------------------------------
   # CloudWatch alarms
@@ -379,8 +436,6 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
@@ -400,8 +455,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   LowStockAlarm:
@@ -421,8 +474,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API5XXAlarm:
@@ -444,8 +495,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
@@ -468,8 +517,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
@@ -489,8 +536,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
@@ -510,8 +555,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API4XXAlarm:
@@ -533,8 +576,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
 
