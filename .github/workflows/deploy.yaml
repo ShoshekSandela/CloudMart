@@ -972,22 +972,65 @@ jobs:
           fi
 
           # EventBridge rules are owned by the Application stack.
-          # We intentionally do NOT auto-import or auto-delete orphaned rules.
-          # If rules remain after an earlier stack deletion, remove them manually
-          # once, then rerun the workflow.
+          # If the Application stack does not exist, any matching rules found
+          # by the preflight are leftovers from an earlier CloudFormation
+          # deployment (for example, a previous Retain policy). Remove only
+          # those known CloudMart rules and their targets, then let the normal
+          # CloudFormation deployment recreate them under stack ownership.
+          #
+          # If the Application stack already exists, NEVER auto-delete an
+          # unmanaged rule. Stop so ownership can be investigated safely.
           if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
-            echo "============================================================"
-            echo "ERROR: Existing unmanaged EventBridge rules were found."
-            echo "Stack: $STACK_NAME"
-            echo "These rules are CloudMart application resources and are not"
-            echo "owned by the current CloudFormation stack."
-            echo "No automatic import or deletion will be performed."
-            echo "Delete the orphaned EventBridge rules manually after verifying"
-            echo "that they are no longer needed, then run the workflow again."
-            printf 'Orphaned EventBridge rules:\n'
-            printf '  %s\n' "${UNMANAGED_EVENT_RULES[@]}"
-            echo "============================================================"
-            exit 1
+            if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
+              echo "============================================================"
+              echo "Found orphaned CloudMart EventBridge rules."
+              echo "Application stack does not exist: $STACK_NAME"
+              echo "Removing only the known CloudMart rules and their targets."
+              echo "CloudFormation will recreate them during the application deployment."
+              echo "============================================================"
+
+              for RULE_NAME in $(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u); do
+                echo "Cleaning orphaned EventBridge rule: $RULE_NAME"
+
+                TARGET_IDS=$(aws events list-targets-by-rule \
+                  --rule "$RULE_NAME" \
+                  --event-bus-name "$EVENT_BUS_NAME" \
+                  --region "$AWS_REGION" \
+                  --query 'Targets[].Id' \
+                  --output text 2>/dev/null || true)
+
+                if [ -n "$TARGET_IDS" ] && [ "$TARGET_IDS" != "None" ]; then
+                  read -r -a TARGET_ARRAY <<< "$TARGET_IDS"
+                  echo "Removing targets from $RULE_NAME: ${TARGET_ARRAY[*]}"
+                  aws events remove-targets \
+                    --rule "$RULE_NAME" \
+                    --event-bus-name "$EVENT_BUS_NAME" \
+                    --ids "${TARGET_ARRAY[@]}" \
+                    --region "$AWS_REGION"
+                fi
+
+                aws events delete-rule \
+                  --name "$RULE_NAME" \
+                  --event-bus-name "$EVENT_BUS_NAME" \
+                  --region "$AWS_REGION"
+
+                echo "Deleted orphaned rule: $RULE_NAME"
+              done
+
+              EVENT_RULE_CONFLICT_FOUND="false"
+              UNMANAGED_EVENT_RULES=()
+              echo "All orphaned CloudMart EventBridge rules were cleaned up."
+            else
+              echo "============================================================"
+              echo "ERROR: Existing unmanaged EventBridge rules were found."
+              echo "Application stack exists: $STACK_NAME ($STACK_STATUS)"
+              echo "No automatic deletion will be performed because the stack already exists."
+              printf 'Unmanaged EventBridge rules:\n'
+              printf '  %s\n' "${UNMANAGED_EVENT_RULES[@]}"
+              echo "Inspect CloudFormation ownership/drift and resolve the rules manually."
+              echo "============================================================"
+              exit 1
+            fi
           fi
 
           echo "Application resource ownership preflight passed."
