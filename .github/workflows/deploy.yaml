@@ -977,7 +977,8 @@ jobs:
           # the old rules are adopted while the rest of the application is created.
           if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
             IMPORT_FILE="/tmp/cloudmart-event-rule-import.json"
-            export UNMANAGED_EVENT_RULES="$(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u)"
+            IMPORT_RULE_NAMES="$(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u)"
+            export IMPORT_RULE_NAMES
 
             python3 - <<'PY'
           import json
@@ -992,12 +993,12 @@ jobs:
               "order-canceled-notification": "OrderCanceledNotificationRule",
               "order-failed-notification": "OrderFailedNotificationRule",
               "order-completed-notification": "OrderCompletedNotificationRule",
-              "order-placed-processing": "OrderPlacedProcessingRule",
+              "order-placed-processing": "OrderPlacedProcessingEventRule",
           }
 
           rules = []
           prefix = f"{project}-{environment}-"
-          for rule_name in os.environ.get("UNMANAGED_EVENT_RULES", "").splitlines():
+          for rule_name in os.environ.get("IMPORT_RULE_NAMES", "").splitlines():
               rule_name = rule_name.strip()
               if not rule_name:
                   continue
