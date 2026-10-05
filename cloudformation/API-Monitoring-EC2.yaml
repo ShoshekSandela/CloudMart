@@ -335,10 +335,12 @@ Resources:
 
 
   # ------------------------------------------------------------
-  # SNS monitoring email notification
+  # SNS monitoring notification topics
   # ------------------------------------------------------------
-  # EventBridge sends a formatted CloudWatch alarm message to this topic.
-  # SNS then delivers the formatted message to the confirmed email address.
+  # This topic is attached directly to every CloudWatch alarm so the
+  # CloudWatch console shows the SNS Notification action. It intentionally
+  # has no email subscription, so the raw AWS alarm message is not emailed.
+  # The existing topic name is preserved for the production/dev stacks.
   MonitoringTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -350,13 +352,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  MonitoringEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref MonitoringTopic
-      Protocol: email
-      Endpoint: !Ref NotificationEmail
-
   MonitoringTopicPolicy:
     Type: AWS::SNS::TopicPolicy
     Properties:
@@ -365,12 +360,58 @@ Resources:
       PolicyDocument:
         Version: "2012-10-17"
         Statement:
+          - Sid: AllowCloudWatchAlarmsToPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref MonitoringTopic
+            Condition:
+              ArnEquals:
+                aws:SourceArn:
+                  - !GetAtt RDSCPUAlarm.Arn
+                  - !GetAtt OrdersFailedAlarm.Arn
+                  - !GetAtt LowStockAlarm.Arn
+                  - !GetAtt API5XXAlarm.Arn
+                  - !GetAtt OrderLambdaErrorsAlarm.Arn
+                  - !GetAtt ProductLambdaErrorsAlarm.Arn
+                  - !GetAtt ReportGenerationFailureAlarm.Arn
+                  - !GetAtt API4XXAlarm.Arn
+
+  # Separate email-delivery topic. EventBridge sends the formatted,
+  # alarm-specific message here and SNS delivers it to the recipient.
+  MonitoringEmailTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring-email${MonitoringResourceSuffix}"
+      DisplayName: !Sub "CloudMart ${Environment} Monitoring Email"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref MonitoringEmailTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  MonitoringEmailTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref MonitoringEmailTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
           - Sid: AllowEventBridgeToPublishMonitoringAlerts
             Effect: Allow
             Principal:
               Service: events.amazonaws.com
             Action: sns:Publish
-            Resource: !Ref MonitoringTopic
+            Resource: !Ref MonitoringEmailTopic
             Condition:
               ArnEquals:
                 aws:SourceArn:
@@ -384,8 +425,10 @@ Resources:
                   - !GetAtt API4XXAlarmNotificationRule.Arn
 
   # One EventBridge rule per alarm keeps every email message simple,
-  # readable, and alarm-specific. CloudWatch alarms have no direct
-  # AlarmActions; EventBridge publishes the formatted text to SNS.
+  # readable, and alarm-specific. The alarms also have a direct SNS
+  # action topic so the CloudWatch console shows the Notification action.
+  # That action topic has no email subscription; EventBridge publishes
+  # the formatted message to the separate email topic.
 
   RDSCPUAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -407,7 +450,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -436,7 +479,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -465,7 +508,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -494,7 +537,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -523,7 +566,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -552,7 +595,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -581,7 +624,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -610,7 +653,7 @@ Resources:
               - ALARM
       Targets:
         - Id: MonitoringSnsTopic
-          Arn: !Ref MonitoringTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -639,6 +682,8 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
@@ -658,6 +703,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   LowStockAlarm:
@@ -677,6 +724,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API5XXAlarm:
@@ -698,6 +747,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
@@ -720,6 +771,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
@@ -739,6 +792,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
@@ -758,6 +813,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API4XXAlarm:
@@ -779,6 +836,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
+      AlarmActions:
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
 
@@ -1030,9 +1089,17 @@ Outputs:
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
 
+  MonitoringAlarmActionTopicArn:
+    Description: SNS topic ARN attached directly to CloudWatch alarms for the console Notification action.
+    Value: !Ref MonitoringAlarmActionTopic
+
   MonitoringTopicArn:
-    Description: SNS topic ARN used by CloudWatch alarms for monitoring email notifications.
+    Description: SNS topic ARN attached directly to CloudWatch alarms for the console Notification action.
     Value: !Ref MonitoringTopic
+
+  MonitoringEmailTopicArn:
+    Description: SNS topic ARN used by EventBridge for formatted monitoring email notifications.
+    Value: !Ref MonitoringEmailTopic
 
   MonitoringTopicName:
     Description: SNS topic name used by CloudWatch alarms for monitoring email notifications.
