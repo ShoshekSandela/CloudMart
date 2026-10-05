@@ -768,7 +768,6 @@ jobs:
           EVENT_RULE_CONFLICT_FOUND="false"
           NON_EVENT_CONFLICT_FOUND="false"
           UNMANAGED_EVENT_RULES=()
-          IMPORT_DEPLOYED="false"
 
           resource_is_owned() {
             local resource_id="$1"
@@ -972,152 +971,30 @@ jobs:
             exit 1
           fi
 
-          # Import any pre-existing EventBridge rules. If the Application stack
-          # does not exist, use a CREATE change set with resources-to-import so
-          # the old rules are adopted while the rest of the application is created.
+          # EventBridge rules are owned by the Application stack.
+          # We intentionally do NOT auto-import or auto-delete orphaned rules.
+          # If rules remain after an earlier stack deletion, remove them manually
+          # once, then rerun the workflow.
           if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
-            IMPORT_FILE="/tmp/cloudmart-event-rule-import.json"
-            IMPORT_RULE_NAMES="$(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u)"
-            export IMPORT_RULE_NAMES
-
-            python3 - <<'PY'
-          import json
-          import os
-
-          project = os.environ["PROJECT_NAME"]
-          environment = os.environ["ENVIRONMENT"]
-          suffix_to_logical_id = {
-              "low-stock": "LowStockEventRule",
-              "order-placed-notification": "OrderPlacedNotificationRule",
-              "order-confirmed-notification": "OrderConfirmedNotificationRule",
-              "order-canceled-notification": "OrderCanceledNotificationRule",
-              "order-failed-notification": "OrderFailedNotificationRule",
-              "order-completed-notification": "OrderCompletedNotificationRule",
-              "order-placed-processing": "OrderPlacedProcessingEventRule",
-          }
-
-          rules = []
-          prefix = f"{project}-{environment}-"
-          for rule_name in os.environ.get("IMPORT_RULE_NAMES", "").splitlines():
-              rule_name = rule_name.strip()
-              if not rule_name:
-                  continue
-              if not rule_name.startswith(prefix):
-                  raise SystemExit(f"Unsupported EventBridge rule name: {rule_name}")
-              suffix = rule_name[len(prefix):]
-              logical_id = suffix_to_logical_id.get(suffix)
-              if not logical_id:
-                  raise SystemExit(f"No CloudFormation logical ID mapping exists for EventBridge rule: {rule_name}")
-              rules.append({
-                  "ResourceType": "AWS::Events::Rule",
-                  "LogicalResourceId": logical_id,
-                  "ResourceIdentifier": {"Name": rule_name},
-              })
-
-          if not rules:
-              raise SystemExit("No supported unmanaged EventBridge rules were found to import.")
-
-          with open("/tmp/cloudmart-event-rule-import.json", "w", encoding="utf-8") as f:
-              json.dump(rules, f)
-          PY
-
-            cat "$IMPORT_FILE"
-            IMPORT_CHANGE_SET="cloudmart-application-${ENVIRONMENT}-event-import-$(date +%s)"
-
-            if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
-              IMPORT_TYPE="IMPORT"
-            else
-              IMPORT_TYPE="CREATE"
-            fi
-
-            echo "Creating EventBridge import change set: type=$IMPORT_TYPE"
-            aws cloudformation create-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$IMPORT_CHANGE_SET" \
-              --change-set-type "$IMPORT_TYPE" \
-              --template-body file://.aws-sam/build/template.yaml \
-              --resources-to-import "file://$IMPORT_FILE" \
-              --capabilities CAPABILITY_NAMED_IAM \
-              --parameters \
-                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
-                ParameterKey=ProjectName,ParameterValue="$PROJECT_NAME" \
-                ParameterKey=AuthorizerCacheTTL,ParameterValue="$AUTHORIZER_CACHE_TTL" \
-                ParameterKey=NotificationEmail,ParameterValue="$ADMIN_EMAIL" \
-                ParameterKey=ExistingOrderNotificationTopicArn,ParameterValue="$ORDER_TOPIC_ARN" \
-                ParameterKey=ExistingLowStockTopicArn,ParameterValue="$LOW_STOCK_TOPIC_ARN" \
-                ParameterKey=ExistingEventBusName,ParameterValue="$EVENT_BUS_NAME" \
-                ParameterKey=ApiDeploymentVersion,ParameterValue="${GITHUB_RUN_NUMBER}" \
-              --region "$AWS_REGION"
-
-            if ! aws cloudformation wait change-set-create-complete \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$IMPORT_CHANGE_SET" \
-              --region "$AWS_REGION"; then
-              echo "ERROR: EventBridge import change set failed."
-              aws cloudformation describe-change-set \
-                --stack-name "$STACK_NAME" \
-                --change-set-name "$IMPORT_CHANGE_SET" \
-                --region "$AWS_REGION" \
-                --output json || true
-              exit 1
-            fi
-
-            aws cloudformation execute-change-set \
-              --stack-name "$STACK_NAME" \
-              --change-set-name "$IMPORT_CHANGE_SET" \
-              --region "$AWS_REGION"
-
-            echo "Waiting for EventBridge resources and Application stack..."
-            IMPORT_FINISHED="false"
-            for attempt in $(seq 1 60); do
-              IMPORT_STATUS=$(aws cloudformation describe-stacks \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION" \
-                --query 'Stacks[0].StackStatus' \
-                --output text 2>/dev/null || true)
-
-              echo "Application stack import status ${attempt}/60: ${IMPORT_STATUS:-UNKNOWN}"
-
-              case "$IMPORT_STATUS" in
-                IMPORT_COMPLETE|CREATE_COMPLETE|UPDATE_COMPLETE)
-                  IMPORT_FINISHED="true"
-                  break
-                  ;;
-                IMPORT_ROLLBACK_IN_PROGRESS|IMPORT_ROLLBACK_FAILED|ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_FAILED|CREATE_FAILED|UPDATE_FAILED)
-                  echo "ERROR: EventBridge resource import failed. Stack status: $IMPORT_STATUS"
-                  aws cloudformation describe-stack-events \
-                    --stack-name "$STACK_NAME" \
-                    --region "$AWS_REGION" \
-                    --max-items 40 || true
-                  exit 1
-                  ;;
-              esac
-
-              if [ "$attempt" -eq 60 ]; then
-                echo "ERROR: Timed out waiting for EventBridge resource import."
-                exit 1
-              fi
-              sleep 5
-            done
-
-            if [ "$IMPORT_FINISHED" != "true" ]; then
-              echo "ERROR: EventBridge import did not reach a successful stack state."
-              exit 1
-            fi
-
-            echo "EventBridge rules are now CloudFormation-managed."
-            EVENT_RULE_CONFLICT_FOUND="false"
-            CONFLICT_FOUND="false"
-            IMPORT_DEPLOYED="true"
+            echo "============================================================"
+            echo "ERROR: Existing unmanaged EventBridge rules were found."
+            echo "Stack: $STACK_NAME"
+            echo "These rules are CloudMart application resources and are not"
+            echo "owned by the current CloudFormation stack."
+            echo "No automatic import or deletion will be performed."
+            echo "Delete the orphaned EventBridge rules manually after verifying"
+            echo "that they are no longer needed, then run the workflow again."
+            printf 'Orphaned EventBridge rules:\n'
+            printf '  %s\n' "${UNMANAGED_EVENT_RULES[@]}"
+            echo "============================================================"
+            exit 1
           fi
 
           echo "Application resource ownership preflight passed."
 
-          # If the stack was created by the CREATE+IMPORT change set above, the
-          # template has already been deployed. Otherwise perform the normal SAM
+          # With no orphaned resources, perform the normal SAM
           # update/create deployment.
-          if [ "$IMPORT_DEPLOYED" != "true" ]; then
-            if ! sam deploy \
+          if ! sam deploy \
               --template-file .aws-sam/build/template.yaml \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
@@ -1134,8 +1011,8 @@ jobs:
                 ExistingLowStockTopicArn="$LOW_STOCK_TOPIC_ARN" \
                 ExistingEventBusName="$EVENT_BUS_NAME" \
                 ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
-                EC2InstanceType="$EC2_INSTANCE_TYPE"
-            then
+              EC2InstanceType="$EC2_INSTANCE_TYPE"
+          then
               echo "============================================================"
               echo "ERROR: SAM/CloudFormation deployment failed."
               echo "Attempting to retrieve the detailed CloudFormation events..."
@@ -1146,7 +1023,6 @@ jobs:
                 --max-items 40 || true
               exit 1
             fi
-          fi
 
            APP_STATUS=$(aws cloudformation describe-stacks \
              --stack-name "$STACK_NAME" \

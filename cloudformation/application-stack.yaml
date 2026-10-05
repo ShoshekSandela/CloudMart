@@ -89,9 +89,11 @@ Resources:
 
   # Routes low-stock inventory events to the same Notification Lambda
   # used by customer order notifications.
+  # EventBridge rules are owned by this Application stack.
+  # Do not retain them on stack deletion; the shared EventBridge bus remains external.
   LowStockEventRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     DependsOn:
       - CloudMartLowStockTopicPolicy
     Properties:
@@ -168,7 +170,7 @@ Resources:
 
   OrderPlacedNotificationRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     DependsOn: NotificationInvokePermission
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed-notification"
@@ -183,7 +185,7 @@ Resources:
 
   OrderConfirmedNotificationRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     DependsOn: NotificationInvokePermission
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-confirmed-notification"
@@ -198,7 +200,7 @@ Resources:
 
   OrderCanceledNotificationRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     DependsOn: NotificationInvokePermission
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-canceled-notification"
@@ -213,7 +215,7 @@ Resources:
 
   OrderFailedNotificationRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     DependsOn: NotificationInvokePermission
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-failed-notification"
@@ -228,7 +230,7 @@ Resources:
 
   OrderCompletedNotificationRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     DependsOn: NotificationInvokePermission
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-completed-notification"
@@ -425,7 +427,6 @@ Resources:
       CodeUri: ../lambdas/order/
       Role:
         Fn::ImportValue: !Sub "CloudMart-${Environment}-OrderLambdaRoleArn"
-      Timeout: 15
       MemorySize: 256
       VpcConfig:
         SecurityGroupIds:
@@ -468,7 +469,7 @@ Resources:
 
   OrderPlacedProcessingEventRule:
     Type: AWS::Events::Rule
-    DeletionPolicy: Retain
+    DeletionPolicy: Delete
     Properties:
       Name: !Sub "${ProjectName}-${Environment}-order-placed-processing"
       Description: Processes newly placed PENDING orders asynchronously.
@@ -895,6 +896,7 @@ Resources:
       - PostCustomerMethod
       - PutCustomerMethod
       - DeleteCustomerMethod
+      - PostCustomerUnsubscribeMethod
     Properties:
       RestApiId: !Ref CloudMartRestApi
       Description: !Sub "CloudMart ${Environment} API deployment ${ApiDeploymentVersion} - V8"
@@ -965,6 +967,3 @@ Outputs:
 
   LowStockRuleArn:
     Value: !GetAtt LowStockEventRule.Arn
-
-
-
