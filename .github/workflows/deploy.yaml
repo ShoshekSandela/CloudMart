@@ -971,66 +971,76 @@ jobs:
             exit 1
           fi
 
-          # EventBridge rules are owned by the Application stack.
-          # If the Application stack does not exist, any matching rules found
-          # by the preflight are leftovers from an earlier CloudFormation
-          # deployment (for example, a previous Retain policy). Remove only
-          # those known CloudMart rules and their targets, then let the normal
-          # CloudFormation deployment recreate them under stack ownership.
+          # EventBridge rules are application resources owned by the Application stack.
+          # The current stack can legitimately encounter these seven rules after a
+          # previous deployment that used Retain, because the rules survive stack
+          # deletion while the new stack no longer owns them.
           #
-          # If the Application stack already exists, NEVER auto-delete an
-          # unmanaged rule. Stop so ownership can be investigated safely.
+          # Safety rule:
+          #   - Only the seven exact CloudMart rule names checked above may be cleaned.
+          #   - For an existing Application stack, the API and all six application
+          #     Lambdas/log groups must already be owned by this stack. Any other
+          #     unmanaged application resource causes a hard failure above.
+          #   - We never delete the shared EventBridge bus or SNS topics.
+          #
+          # Under those conditions the unmanaged rules are stale copies of the same
+          # CloudMart application rules. Remove their targets/rules, then let the
+          # normal SAM deployment recreate them under CloudFormation ownership.
           if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
-            if [ -z "$STACK_STATUS" ] || [ "$STACK_STATUS" = "None" ]; then
-              echo "============================================================"
-              echo "Found orphaned CloudMart EventBridge rules."
-              echo "Application stack does not exist: $STACK_NAME"
-              echo "Removing only the known CloudMart rules and their targets."
-              echo "CloudFormation will recreate them during the application deployment."
-              echo "============================================================"
+            echo "============================================================"
+            echo "Found unmanaged CloudMart EventBridge rules."
+            echo "Application stack: ${STACK_NAME}"
+            echo "Status: ${STACK_STATUS:-NOT_FOUND}"
+            echo "Only the known CloudMart application rules will be cleaned."
+            echo "============================================================"
 
-              for RULE_NAME in $(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u); do
-                echo "Cleaning orphaned EventBridge rule: $RULE_NAME"
+            for RULE_NAME in $(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u); do
+              case "$RULE_NAME" in
+                "${PROJECT_NAME}-${ENVIRONMENT}-low-stock"|\
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-notification"|\
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-confirmed-notification"|\
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-canceled-notification"|\
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-failed-notification"|\
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-completed-notification"|\
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-processing")
+                  ;;
+                *)
+                  echo "ERROR: Refusing to clean unexpected EventBridge rule: $RULE_NAME"
+                  exit 1
+                  ;;
+              esac
 
-                TARGET_IDS=$(aws events list-targets-by-rule \
+              echo "Cleaning stale CloudMart EventBridge rule: $RULE_NAME"
+
+              TARGET_IDS=$(aws events list-targets-by-rule \
+                --rule "$RULE_NAME" \
+                --event-bus-name "$EVENT_BUS_NAME" \
+                --region "$AWS_REGION" \
+                --query 'Targets[].Id' \
+                --output text 2>/dev/null || true)
+
+              if [ -n "$TARGET_IDS" ] && [ "$TARGET_IDS" != "None" ]; then
+                read -r -a TARGET_ARRAY <<< "$TARGET_IDS"
+                echo "Removing targets from $RULE_NAME: ${TARGET_ARRAY[*]}"
+                aws events remove-targets \
                   --rule "$RULE_NAME" \
                   --event-bus-name "$EVENT_BUS_NAME" \
-                  --region "$AWS_REGION" \
-                  --query 'Targets[].Id' \
-                  --output text 2>/dev/null || true)
-
-                if [ -n "$TARGET_IDS" ] && [ "$TARGET_IDS" != "None" ]; then
-                  read -r -a TARGET_ARRAY <<< "$TARGET_IDS"
-                  echo "Removing targets from $RULE_NAME: ${TARGET_ARRAY[*]}"
-                  aws events remove-targets \
-                    --rule "$RULE_NAME" \
-                    --event-bus-name "$EVENT_BUS_NAME" \
-                    --ids "${TARGET_ARRAY[@]}" \
-                    --region "$AWS_REGION"
-                fi
-
-                aws events delete-rule \
-                  --name "$RULE_NAME" \
-                  --event-bus-name "$EVENT_BUS_NAME" \
+                  --ids "${TARGET_ARRAY[@]}" \
                   --region "$AWS_REGION"
+              fi
 
-                echo "Deleted orphaned rule: $RULE_NAME"
-              done
+              aws events delete-rule \
+                --name "$RULE_NAME" \
+                --event-bus-name "$EVENT_BUS_NAME" \
+                --region "$AWS_REGION"
 
-              EVENT_RULE_CONFLICT_FOUND="false"
-              UNMANAGED_EVENT_RULES=()
-              echo "All orphaned CloudMart EventBridge rules were cleaned up."
-            else
-              echo "============================================================"
-              echo "ERROR: Existing unmanaged EventBridge rules were found."
-              echo "Application stack exists: $STACK_NAME ($STACK_STATUS)"
-              echo "No automatic deletion will be performed because the stack already exists."
-              printf 'Unmanaged EventBridge rules:\n'
-              printf '  %s\n' "${UNMANAGED_EVENT_RULES[@]}"
-              echo "Inspect CloudFormation ownership/drift and resolve the rules manually."
-              echo "============================================================"
-              exit 1
-            fi
+              echo "Deleted stale CloudMart EventBridge rule: $RULE_NAME"
+            done
+
+            EVENT_RULE_CONFLICT_FOUND="false"
+            UNMANAGED_EVENT_RULES=()
+            CONFLICT_FOUND="false"
+            echo "All stale CloudMart EventBridge rules were cleaned up."
           fi
 
           echo "Application resource ownership preflight passed."
