@@ -778,15 +778,20 @@ jobs:
             return 1
           }
 
+          # Compare the actual CloudFormation physical resource ID.
+          # For AWS::Events::Rule, CloudFormation uses:
+          #   <event-bus-name>|<rule-name>
+          # while events:describe-rule returns only <rule-name>.
           check_existing_resource() {
             local label="$1"
             local resource_id="$2"
+            local ownership_id="${3:-$2}"
 
             if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
               return 0
             fi
 
-            if resource_is_owned "$resource_id"; then
+            if resource_is_owned "$ownership_id"; then
               echo "OK: $label is already owned by $STACK_NAME: $resource_id"
             else
               echo "ERROR: Existing unmanaged $label found: $resource_id"
@@ -880,7 +885,12 @@ jobs:
                 --region "$AWS_REGION" \
                 --query 'Name' \
                 --output text 2>/dev/null || true)
-              check_existing_resource "EventBridge rule" "$EXISTING_RULE"
+              if [ -n "$EXISTING_RULE" ] && [ "$EXISTING_RULE" != "None" ]; then
+                EVENT_RULE_PHYSICAL_ID="${EVENT_BUS_NAME}|${EXISTING_RULE}"
+              else
+                EVENT_RULE_PHYSICAL_ID=""
+              fi
+              check_existing_resource "EventBridge rule" "$EXISTING_RULE" "$EVENT_RULE_PHYSICAL_ID"
             done
 
             for LOG_GROUP in \
@@ -1066,16 +1076,34 @@ jobs:
                 ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
               EC2InstanceType="$EC2_INSTANCE_TYPE"
           then
-              echo "============================================================"
-              echo "ERROR: SAM/CloudFormation deployment failed."
-              echo "Attempting to retrieve the detailed CloudFormation events..."
-              echo "============================================================"
-              aws cloudformation describe-stack-events \
-                --stack-name "$STACK_NAME" \
-                --region "$AWS_REGION" \
-                --max-items 40 || true
-              exit 1
-            fi
+            echo "============================================================"
+            echo "ERROR: SAM/CloudFormation deployment failed."
+            echo "============================================================"
+
+            echo "STACK STATUS:"
+            aws cloudformation describe-stacks \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --query 'Stacks[0].[StackStatus,StackStatusReason]' \
+              --output table || true
+
+            echo "FAILED CLOUDFORMATION RESOURCES:"
+            aws cloudformation describe-stack-events \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --no-paginate \
+              --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_FAILED' || ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
+              --output table || true
+
+            echo "RECENT CLOUDFORMATION EVENTS:"
+            aws cloudformation describe-stack-events \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --max-items 100 \
+              --output table || true
+
+            exit 1
+          fi
 
            APP_STATUS=$(aws cloudformation describe-stacks \
              --stack-name "$STACK_NAME" \
