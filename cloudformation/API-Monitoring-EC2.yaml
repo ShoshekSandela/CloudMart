@@ -347,12 +347,8 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  MonitoringTopicSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref MonitoringTopic
-      Protocol: email
-      Endpoint: !Ref NotificationEmail
+  # No email SNS subscription is created.
+  # Alarm emails are sent through Amazon SES by AlarmNotificationFunction.
 
   # ------------------------------------------------------------
   # CloudWatch alarms
@@ -375,8 +371,7 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
@@ -396,8 +391,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   LowStockAlarm:
@@ -417,8 +411,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   API5XXAlarm:
@@ -440,8 +433,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
@@ -464,8 +456,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
@@ -485,8 +476,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
@@ -506,8 +496,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
   API4XXAlarm:
@@ -529,10 +518,158 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
+      AlarmActions: []
       TreatMissingData: notBreaching
 
+
+  # ------------------------------------------------------------
+  # Direct alarm email notification Lambda
+  # ------------------------------------------------------------
+  # EventBridge delivers ALARM state changes to this function.
+  # The function sends email through Amazon SES, so there is no SNS email
+  # subscription and no PendingConfirmation state.
+  AlarmNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-alarm-notification${MonitoringResourceSuffix}"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 30
+      MemorySize: 128
+      InlineCode: |
+        import json
+        import logging
+        import os
+        from datetime import datetime, timezone
+
+        import boto3
+
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
+
+        ses = boto3.client("ses")
+        admin_email = os.environ["ADMIN_EMAIL"]
+
+        def _alarm_name(detail):
+            return detail.get("alarmName", "CloudWatch Alarm")
+
+        def _service(alarm_name):
+            name = alarm_name.lower()
+            if "api-4xx" in name:
+                return "API Gateway"
+            if "api-5xx" in name:
+                return "API Gateway"
+            if "rds-cpu" in name:
+                return "RDS"
+            if "low-stock" in name:
+                return "Inventory"
+            if "orders-failed" in name:
+                return "Order Processing"
+            if "order-lambda" in name:
+                return "Order Lambda"
+            if "product-lambda" in name:
+                return "Product Lambda"
+            if "report-generation" in name:
+                return "Daily Report Lambda"
+            return "CloudMart Monitoring"
+
+        def _description(alarm_name):
+            name = alarm_name.lower()
+            if "api-4xx" in name:
+                return "An API Gateway 4XX error was detected."
+            if "api-5xx" in name:
+                return "An API Gateway 5XX error was detected."
+            if "rds-cpu" in name:
+                return "RDS CPU utilization reached the configured threshold."
+            if "low-stock" in name:
+                return "A product inventory level reached the low-stock threshold."
+            if "orders-failed" in name:
+                return "A failed order was detected."
+            if "order-lambda" in name:
+                return "The Order Lambda reported an execution error."
+            if "product-lambda" in name:
+                return "The Product Lambda reported an execution error."
+            if "report-generation" in name:
+                return "The Daily Report Lambda reported an execution error."
+            return "A CloudWatch alarm changed state."
+
+        def lambda_handler(event, context):
+            detail = event.get("detail", {})
+            state = detail.get("state", {}).get("value", "UNKNOWN")
+            alarm_name = _alarm_name(detail)
+            service = _service(alarm_name)
+            description = _description(alarm_name)
+
+            event_time = event.get("time")
+            if event_time:
+                try:
+                    dt = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                    event_time = dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+                except ValueError:
+                    pass
+
+            message = (
+                "CLOUDMART MONITORING ALERT\n\n"
+                f"Alert   : {service}\n"
+                f"Status  : {state}\n"
+                f"Alarm   : {alarm_name}\n\n"
+                f"{description}\n\n"
+                "Action  : Check the CloudWatch alarm and related service logs.\n\n"
+                f"Time    : {event_time or 'Not available'}"
+            )
+
+            ses.send_email(
+                Source=admin_email,
+                Destination={"ToAddresses": [admin_email]},
+                Message={
+                    "Subject": {"Data": f"[CloudMart] {service} - {state}"},
+                    "Body": {"Text": {"Data": message}},
+                },
+            )
+
+            logger.info("Alarm email sent through SES for %s", alarm_name)
+            return {"statusCode": 200, "body": json.dumps({"message": "Notification sent"})}
+
+      Environment:
+        Variables:
+          ADMIN_EMAIL: !Ref NotificationEmail
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+              Resource: "*"
+
+  # ------------------------------------------------------------
+  # EventBridge rule for CloudWatch alarm state changes
+  # ------------------------------------------------------------
+  AlarmNotificationRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-alarm-notifications${MonitoringResourceSuffix}"
+      Description: Sends CloudWatch ALARM state changes to the SES notification Lambda.
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - prefix: !Sub "${ProjectName}-${Environment}-"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: AlarmNotificationLambda
+          Arn: !GetAtt AlarmNotificationFunction.Arn
+
+  AlarmNotificationRulePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AlarmNotificationFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt AlarmNotificationRule.Arn
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard

@@ -1753,10 +1753,10 @@ jobs:
               ;;
           esac
 
-          # Read-only verification of the monitoring SNS destination.
-          # This workflow intentionally does NOT call sns:Subscribe,
-          # sns:ConfirmSubscription, or sns:Unsubscribe. The subscription is
-          # retained by CloudFormation and remains active after confirmation.
+          # Alarm notifications are sent through the SES-based
+          # AlarmNotificationFunction. There is intentionally NO email SNS
+          # subscription, so there is no PendingConfirmation state.
+          # Keep the topic only for backward-compatible stack output.
           MONITORING_TOPIC_ARN=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
@@ -1768,59 +1768,8 @@ jobs:
             exit 1
           }
 
-          echo "Monitoring SNS topic: $MONITORING_TOPIC_ARN"
-
-          # Read-only verification only.
-          # The monitoring SNS topic and email subscription are CloudFormation-managed.
-          # GitHub Actions must never create, subscribe, confirm, unsubscribe, or delete
-          # monitoring SNS resources.
-
-          MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$MONITORING_TOPIC_ARN" \
-            --region "$AWS_REGION" \
-            --output json 2>/tmp/monitoring-sns-error.log || true)
-
-          if [ -z "$MONITORING_SUBSCRIPTIONS" ] || grep -q 'An error occurred' /tmp/monitoring-sns-error.log; then
-            echo "ERROR: Unable to query the CloudFormation-managed monitoring SNS topic."
-            cat /tmp/monitoring-sns-error.log || true
-            exit 1
-          fi
-
-          MONITORING_SUB_STATUS=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
-            .Subscriptions[]?
-            | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
-            | if .SubscriptionArn == "PendingConfirmation" then "PENDING"
-              elif .SubscriptionArn == "Deleted" then "DELETED"
-              elif (.SubscriptionArn // "" | startswith("arn:")) then "CONFIRMED"
-              else "UNKNOWN" end' | head -n 1)
-
-          case "$MONITORING_SUB_STATUS" in
-            CONFIRMED)
-              echo "Monitoring SNS email subscription is CONFIRMED."
-              ;;
-            PENDING)
-              echo "WARNING: Monitoring SNS email subscription is PendingConfirmation."
-              echo "The recipient must confirm the AWS SNS email before alarm notifications can be delivered."
-              ;;
-            DELETED)
-              echo "ERROR: CloudFormation-managed monitoring SNS subscription is Deleted."
-              echo "Do not recreate it with AWS CLI. Recover the CloudFormation-managed resource instead."
-              exit 1
-              ;;
-            "")
-              echo "ERROR: CloudFormation-managed monitoring SNS email subscription was not found."
-              echo "Do not create it manually with AWS CLI."
-              exit 1
-              ;;
-            *)
-              echo "WARNING: Monitoring SNS subscription status could not be determined."
-              ;;
-          esac
-
-          rm -f /tmp/monitoring-sns-error.log
-          echo "Monitoring SNS subscription read-only verification completed."
-          echo "No SNS resource is created, deleted, subscribed, confirmed, or unsubscribed by this workflow."
-          echo "Confirmed subscriptions are never deleted, unsubscribed, or recreated by this workflow."
+          echo "Monitoring email path: EventBridge -> AlarmNotificationFunction -> SES -> $ADMIN_EMAIL"
+          echo "No SNS email subscription is created, so PendingConfirmation will not appear."
 
           echo "Verifying deployed daily report EventBridge rule..."
 
