@@ -1781,7 +1781,7 @@ jobs:
             --query 'Stacks[0].Outputs[?OutputKey==`MonitoringTopicArn`].OutputValue' \
             --output text)
 
-          MONITORING_TOPIC_ARN=$(aws cloudformation describe-stacks \
+          MONITORING_EMAIL_TOPIC_ARN=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].Outputs[?OutputKey==`MonitoringEmailTopicArn`].OutputValue' \
@@ -1792,18 +1792,18 @@ jobs:
             exit 1
           }
 
-          test -n "$MONITORING_TOPIC_ARN" && test "$MONITORING_TOPIC_ARN" != "None" || {
+          test -n "$MONITORING_EMAIL_TOPIC_ARN" && test "$MONITORING_EMAIL_TOPIC_ARN" != "None" || {
             echo "ERROR: Monitoring email SNS topic ARN was not returned by CloudFormation."
             exit 1
           }
 
           echo "CloudWatch alarm-action SNS topic: $MONITORING_ALARM_ACTION_TOPIC_ARN"
-          if [ "$MONITORING_ALARM_ACTION_TOPIC_ARN" = "$MONITORING_TOPIC_ARN" ]; then
+          if [ "$MONITORING_ALARM_ACTION_TOPIC_ARN" = "$MONITORING_EMAIL_TOPIC_ARN" ]; then
             echo "ERROR: Alarm-action topic and email topic must be separate SNS topics."
             exit 1
           fi
 
-          echo "Formatted monitoring email SNS topic: $MONITORING_TOPIC_ARN"
+          echo "Formatted monitoring email SNS topic: $MONITORING_EMAIL_TOPIC_ARN"
 
           MONITORING_ALARM_NAMES=( \
             "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \
@@ -1819,14 +1819,14 @@ jobs:
           echo "Verifying EventBridge -> SNS formatted alarm notification path..."
 
           MONITORING_RULES=( \
-            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-report-failure-alert${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure-notification${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx-notification${MONITORING_RESOURCE_SUFFIX}" \
           )
 
           for MONITORING_RULE_NAME in "${MONITORING_RULES[@]}"; do
@@ -1858,17 +1858,17 @@ jobs:
 
             MONITORING_TARGET_ARN=$(echo "$MONITORING_TARGET_JSON" | jq -r '
               .Targets[]?
-              | select(.Id == "MonitoringSnsTopic")
+              | select(.Id == "MonitoringEmailTopic")
               | .Arn' | head -n 1)
 
-            if [ "$MONITORING_TARGET_ARN" != "$MONITORING_TOPIC_ARN" ]; then
+            if [ "$MONITORING_TARGET_ARN" != "$MONITORING_EMAIL_TOPIC_ARN" ]; then
               echo "ERROR: Monitoring rule '$MONITORING_RULE_NAME' is not targeting the monitoring SNS topic."
-              echo "Expected: $MONITORING_TOPIC_ARN"
+              echo "Expected: $MONITORING_EMAIL_TOPIC_ARN"
               echo "Actual:   ${MONITORING_TARGET_ARN:-<none>}"
               exit 1
             fi
 
-            echo "OK: $MONITORING_RULE_NAME -> $MONITORING_TOPIC_ARN"
+            echo "OK: $MONITORING_RULE_NAME -> $MONITORING_EMAIL_TOPIC_ARN"
           done
 
           echo "Verifying CloudWatch alarms have the direct SNS Notification action..."
@@ -1891,7 +1891,7 @@ jobs:
 
           echo "Checking monitoring SNS email subscription..."
           MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$MONITORING_TOPIC_ARN" \
+            --topic-arn "$MONITORING_EMAIL_TOPIC_ARN" \
             --region "$AWS_REGION" \
             --output json)
 

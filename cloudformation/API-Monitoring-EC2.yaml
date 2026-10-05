@@ -1073,6 +1073,18 @@ Outputs:
     Description: CloudFormation-managed SNS topic used by all monitoring alarms.
     Value: !Ref MonitoringTopic
 
+  MonitoringTopicName:
+    Description: SNS topic name used by CloudWatch alarms for monitoring actions.
+    Value: !GetAtt MonitoringTopic.TopicName
+
+  MonitoringEmailTopicArn:
+    Description: SNS topic ARN used by EventBridge for formatted monitoring email notifications.
+    Value: !Ref MonitoringEmailTopic
+
+  MonitoringEmailTopicName:
+    Description: SNS topic name used by EventBridge for formatted monitoring email notifications.
+    Value: !GetAtt MonitoringEmailTopic.TopicName
+
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
     Value: !Sub "${ProjectName}-${Environment}-operations${MonitoringResourceSuffix}"
