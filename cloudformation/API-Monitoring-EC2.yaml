@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, eight alarms, and SNS email notifications.
+  CloudWatch dashboard, eight alarms, SNS alarm actions, and formatted email notifications.
 
 Parameters:
   Environment:
@@ -457,7 +457,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nRDS CPU usage has reached 80% or higher.\n\nRecommended Action\nCheck the RDS instance and CloudMart operations dashboard."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              RDS CPU usage has reached 80% or higher.
+              
+              Action:
+              Please check the RDS instance and CloudMart dashboard.
 
   OrdersFailedAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -486,7 +499,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nOne or more orders have failed.\n\nRecommended Action\nCheck the Order Lambda logs and order processing flow."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              One or more orders have failed.
+              
+              Action:
+              Please check the Order Lambda and order logs.
 
   LowStockAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -515,7 +541,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nA product has reached its low-stock threshold.\n\nRecommended Action\nCheck inventory levels and the CloudMart operations dashboard."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              A product has reached the low-stock threshold.
+              
+              Action:
+              Please check inventory and the CloudMart dashboard.
 
   API5XXAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -544,7 +583,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nAPI Gateway has received one or more 5XX responses.\n\nRecommended Action\nCheck API Gateway, the affected Lambda, and CloudWatch logs."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              API Gateway has received one or more 5XX errors.
+              
+              Action:
+              Please check API Gateway and Lambda logs.
 
   OrderLambdaErrorsAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -573,7 +625,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nThe Order Lambda has encountered an error.\n\nRecommended Action\nCheck the Order Lambda CloudWatch logs and recent order requests."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              The Order Lambda has encountered an error.
+              
+              Action:
+              Please check the Order Lambda logs.
 
   ProductLambdaErrorsAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -602,7 +667,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nThe Product Lambda has encountered an error.\n\nRecommended Action\nCheck the Product Lambda CloudWatch logs and recent product requests."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              The Product Lambda has encountered an error.
+              
+              Action:
+              Please check the Product Lambda logs.
 
   ReportGenerationFailureAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -631,7 +709,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nThe daily report could not be generated successfully.\n\nRecommended Action\nCheck the Daily Report Lambda logs and the report generation process."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              The daily report could not be generated.
+              
+              Action:
+              Please check the Report Lambda logs and report process.
 
   API4XXAlarmNotificationRule:
     Type: AWS::Events::Rule
@@ -660,7 +751,20 @@ Resources:
               state: $.detail.state.value
               time: $.time
               region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\n\n----------------------------------------\nEnvironment : ${Environment}\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nDetected At : <time>\n\nIssue\nAPI Gateway has received one or more 4XX responses.\n\nRecommended Action\nCheck the API request, authorization, and API Gateway logs."'
+            InputTemplate: !Sub |
+              CloudMart Alert
+              
+              Alarm: <alarmName>
+              Status: <state>
+              Environment: ${Environment}
+              Region: <region>
+              Time: <time>
+              
+              Message:
+              API Gateway has received one or more 4XX errors.
+              
+              Action:
+              Please check the API request and API Gateway logs.
 
   # CloudWatch alarms
   # ------------------------------------------------------------
@@ -1088,10 +1192,6 @@ Outputs:
     Description: Existing CloudMart report bucket used by the dashboard and report Lambda.
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
-
-  MonitoringAlarmActionTopicArn:
-    Description: SNS topic ARN attached directly to CloudWatch alarms for the console Notification action.
-    Value: !Ref MonitoringAlarmActionTopic
 
   MonitoringTopicArn:
     Description: SNS topic ARN attached directly to CloudWatch alarms for the console Notification action.

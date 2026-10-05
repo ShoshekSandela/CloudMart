@@ -1798,6 +1798,11 @@ jobs:
           }
 
           echo "CloudWatch alarm-action SNS topic: $MONITORING_ALARM_ACTION_TOPIC_ARN"
+          if [ "$MONITORING_ALARM_ACTION_TOPIC_ARN" = "$MONITORING_TOPIC_ARN" ]; then
+            echo "ERROR: Alarm-action topic and email topic must be separate SNS topics."
+            exit 1
+          fi
+
           echo "Formatted monitoring email SNS topic: $MONITORING_TOPIC_ARN"
 
           MONITORING_ALARM_NAMES=( \
