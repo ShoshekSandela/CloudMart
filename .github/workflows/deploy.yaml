@@ -1657,15 +1657,9 @@ jobs:
                 fi
               done
 
-              candidate="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notification${suffix}"
-              if aws lambda get-function --function-name "$candidate" --region "$AWS_REGION" >/dev/null 2>&1; then
-                return 1
-              fi
-
-              candidate="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notifications${suffix}"
-              if aws events describe-rule \
-                --name "$candidate" \
-                --event-bus-name default \
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-monitoring${suffix}"
+              if aws sns get-topic-attributes \
+                --topic-arn "arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):${candidate}" \
                 --region "$AWS_REGION" >/dev/null 2>&1; then
                 return 1
               fi
@@ -1753,20 +1747,21 @@ jobs:
               ;;
           esac
 
-          # Alarm notifications use a direct CloudWatch AlarmActions -> Lambda path.
-          # The Lambda sends the alert through Amazon SES. No SNS email subscription
-          # is created, so the alarms do not show PendingConfirmation.
-          ALARM_FUNCTION_NAME="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notification${MONITORING_RESOURCE_SUFFIX}"
-          ALARM_LAMBDA_ARN=$(aws lambda get-function \
-            --function-name "$ALARM_FUNCTION_NAME" \
+          # Alarm notifications use the simple direct path:
+          # CloudWatch Alarm -> SNS Topic -> Email subscription.
+          # No alarm-notification Lambda and no SES permission are required.
+          MONITORING_TOPIC_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
-            --query 'Configuration.FunctionArn' \
+            --query 'Stacks[0].Outputs[?OutputKey==`MonitoringTopicArn`].OutputValue' \
             --output text)
 
-          test -n "$ALARM_LAMBDA_ARN" && test "$ALARM_LAMBDA_ARN" != "None" || {
-            echo "ERROR: SES alarm notification Lambda was not found: $ALARM_FUNCTION_NAME"
+          test -n "$MONITORING_TOPIC_ARN" && test "$MONITORING_TOPIC_ARN" != "None" || {
+            echo "ERROR: Monitoring SNS topic ARN was not returned by CloudFormation."
             exit 1
           }
+
+          echo "Monitoring SNS topic: $MONITORING_TOPIC_ARN"
 
           MONITORING_ALARM_NAMES=( \
             "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \
@@ -1779,7 +1774,7 @@ jobs:
             "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \
           )
 
-          echo "Verifying direct CloudWatch -> Lambda -> SES notification actions..."
+          echo "Verifying CloudWatch -> SNS alarm notification actions..."
           for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
             ALARM_ACTION=$(aws cloudwatch describe-alarms \
               --alarm-names "$ALARM_NAME" \
@@ -1787,18 +1782,58 @@ jobs:
               --query 'MetricAlarms[0].AlarmActions[0]' \
               --output text 2>/dev/null || true)
 
-            if [ "$ALARM_ACTION" != "$ALARM_LAMBDA_ARN" ]; then
-              echo "ERROR: Alarm '$ALARM_NAME' is not configured with the SES notification Lambda."
-              echo "Expected: $ALARM_LAMBDA_ARN"
+            if [ "$ALARM_ACTION" != "$MONITORING_TOPIC_ARN" ]; then
+              echo "ERROR: Alarm '$ALARM_NAME' is not configured with the monitoring SNS topic."
+              echo "Expected: $MONITORING_TOPIC_ARN"
               echo "Actual:   ${ALARM_ACTION:-<none>}"
               exit 1
             fi
 
-            echo "OK: $ALARM_NAME -> $ALARM_LAMBDA_ARN"
+            echo "OK: $ALARM_NAME -> $MONITORING_TOPIC_ARN"
           done
 
-          echo "Monitoring email path: CloudWatch Alarm -> Lambda -> SES -> $ADMIN_EMAIL"
-          echo "No SNS email subscription is used for alarm notifications; PendingConfirmation is not part of this path."
+          echo "Checking monitoring SNS email subscription..."
+          MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$MONITORING_TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --output json)
+
+          MONITORING_SUB_STATUS=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+            .Subscriptions[]?
+            | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+            | if .SubscriptionArn == "PendingConfirmation" then "PENDING"
+              elif .SubscriptionArn == "Deleted" then "DELETED"
+              elif (.SubscriptionArn // "" | startswith("arn:")) then "CONFIRMED"
+              else "UNKNOWN" end' | head -n 1)
+
+          case "$MONITORING_SUB_STATUS" in
+            CONFIRMED)
+              MONITORING_SUB_ARN=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
+                .Subscriptions[]?
+                | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
+                | .SubscriptionArn
+                | select(startswith("arn:"))' | head -n 1)
+              echo "Confirmed monitoring SNS email subscription: $MONITORING_SUB_ARN"
+              ;;
+            PENDING)
+              echo "WARNING: Monitoring SNS email subscription is PendingConfirmation."
+              echo "The recipient must click the SNS confirmation link before alarm emails can be delivered."
+              ;;
+            DELETED)
+              echo "ERROR: Monitoring SNS email subscription is Deleted."
+              echo "Check the CloudFormation subscription and recipient email address."
+              exit 1
+              ;;
+            *)
+              echo "ERROR: Monitoring SNS email subscription for $ADMIN_EMAIL was not found."
+              echo "Subscriptions:"
+              echo "$MONITORING_SUBSCRIPTIONS" | jq '.Subscriptions'
+              exit 1
+              ;;
+          esac
+
+          echo "Monitoring email path: CloudWatch Alarm -> SNS -> Email -> $ADMIN_EMAIL"
+          echo "No alarm-notification Lambda or SES notification path is used."
 
           echo "Verifying deployed daily report EventBridge rule..."
 
