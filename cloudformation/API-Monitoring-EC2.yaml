@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, eight alarms, and formatted SNS email notifications.
+  CloudWatch dashboard, eight alarms, and SNS email notifications.
 
 Parameters:
   Environment:
@@ -337,10 +337,8 @@ Resources:
   # ------------------------------------------------------------
   # SNS monitoring email notification
   # ------------------------------------------------------------
-  # EventBridge receives CloudWatch alarm state-change events and sends
-  # a short, human-readable message to this SNS topic.
-  # SNS then delivers the formatted message to the configured email address.
-  # The recipient must confirm the SNS subscription once.
+  # EventBridge sends a formatted CloudWatch alarm message to this topic.
+  # SNS then delivers the formatted message to the confirmed email address.
   MonitoringTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -413,7 +411,23 @@ Resources:
               time: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CloudMart Monitoring Alert\n\nEnvironment: ${Environment}\nAlarm: <alarmName>\nStatus: <state>\n\nProblem:\n<reason>\n\nTime:\n<time>\n\nRegion:\n<region>\n\nAction Required:\nPlease check the CloudMart dashboard and the relevant AWS service logs."
+              CloudMart Monitoring Alert
+
+              Environment: ${Environment}
+              Alarm: <alarmName>
+              Status: <state>
+
+              Problem:
+              <reason>
+
+              Time:
+              <time>
+
+              Region:
+              <region>
+
+              Action Required:
+              Please check the CloudMart dashboard and the relevant AWS service logs.
 
   # ------------------------------------------------------------
   # CloudWatch alarms
@@ -834,6 +848,14 @@ Outputs:
   MonitoringTopicName:
     Description: SNS topic name used by CloudWatch alarms for monitoring email notifications.
     Value: !GetAtt MonitoringTopic.TopicName
+
+  MonitoringAlarmNotificationRuleName:
+    Description: EventBridge rule that formats CloudWatch ALARM state changes and sends them to SNS.
+    Value: !Ref MonitoringAlarmNotificationRule
+
+  MonitoringAlarmNotificationRuleArn:
+    Description: EventBridge rule ARN for formatted CloudWatch alarm notifications.
+    Value: !GetAtt MonitoringAlarmNotificationRule.Arn
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
