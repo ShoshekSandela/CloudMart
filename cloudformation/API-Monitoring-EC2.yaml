@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, eight alarms, and SNS email notifications.
+  CloudWatch dashboard, eight alarms, and direct SES email notifications.
 
 Parameters:
   Environment:
@@ -335,22 +335,6 @@ Resources:
 
 
   # ------------------------------------------------------------
-  # SNS topic used by all operational alarms
-  # ------------------------------------------------------------
-  MonitoringTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-monitoring${MonitoringResourceSuffix}"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  # No email SNS subscription is created.
-  # Alarm emails are sent through Amazon SES by AlarmNotificationFunction.
-
-  # ------------------------------------------------------------
   # CloudWatch alarms
   # ------------------------------------------------------------
   RDSCPUAlarm:
@@ -371,7 +355,8 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
@@ -391,7 +376,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   LowStockAlarm:
@@ -411,7 +397,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   API5XXAlarm:
@@ -433,7 +420,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
@@ -456,7 +444,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
@@ -476,7 +465,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
@@ -496,7 +486,8 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
   API4XXAlarm:
@@ -518,14 +509,15 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions: []
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
       TreatMissingData: notBreaching
 
 
   # ------------------------------------------------------------
   # Direct alarm email notification Lambda
   # ------------------------------------------------------------
-  # EventBridge delivers ALARM state changes to this function.
+  # CloudWatch alarms invoke this function directly.
   # The function sends email through Amazon SES, so there is no SNS email
   # subscription and no PendingConfirmation state.
   AlarmNotificationFunction:
@@ -640,36 +632,15 @@ Resources:
                 - ses:SendEmail
               Resource: "*"
 
-  # ------------------------------------------------------------
-  # EventBridge rule for CloudWatch alarm state changes
-  # ------------------------------------------------------------
-  AlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-alarm-notifications${MonitoringResourceSuffix}"
-      Description: Sends CloudWatch ALARM state changes to the SES notification Lambda.
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - prefix: !Sub "${ProjectName}-${Environment}-"
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: AlarmNotificationLambda
-          Arn: !GetAtt AlarmNotificationFunction.Arn
-
-  AlarmNotificationRulePermission:
+  # CloudWatch service permission for direct alarm -> Lambda invocation.
+  # One permission covers all CloudMart alarms in this AWS account.
+  CloudWatchAlarmInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
       Action: lambda:InvokeFunction
       FunctionName: !Ref AlarmNotificationFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt AlarmNotificationRule.Arn
+      Principal: lambda.alarms.cloudwatch.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard
@@ -918,10 +889,6 @@ Outputs:
     Description: Existing CloudMart report bucket used by the dashboard and report Lambda.
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
-
-  MonitoringTopicArn:
-    Description: CloudFormation-managed SNS topic used by all monitoring alarms.
-    Value: !Ref MonitoringTopic
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.

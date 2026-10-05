@@ -1753,23 +1753,52 @@ jobs:
               ;;
           esac
 
-          # Alarm notifications are sent through the SES-based
-          # AlarmNotificationFunction. There is intentionally NO email SNS
-          # subscription, so there is no PendingConfirmation state.
-          # Keep the topic only for backward-compatible stack output.
-          MONITORING_TOPIC_ARN=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
+          # Alarm notifications use a direct CloudWatch AlarmActions -> Lambda path.
+          # The Lambda sends the alert through Amazon SES. No SNS email subscription
+          # is created, so the alarms do not show PendingConfirmation.
+          ALARM_FUNCTION_NAME="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notification${MONITORING_RESOURCE_SUFFIX}"
+          ALARM_LAMBDA_ARN=$(aws lambda get-function \
+            --function-name "$ALARM_FUNCTION_NAME" \
             --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs[?OutputKey==`MonitoringTopicArn`].OutputValue' \
+            --query 'Configuration.FunctionArn' \
             --output text)
 
-          test -n "$MONITORING_TOPIC_ARN" && test "$MONITORING_TOPIC_ARN" != "None" || {
-            echo "ERROR: Monitoring SNS topic ARN was not returned by CloudFormation."
+          test -n "$ALARM_LAMBDA_ARN" && test "$ALARM_LAMBDA_ARN" != "None" || {
+            echo "ERROR: SES alarm notification Lambda was not found: $ALARM_FUNCTION_NAME"
             exit 1
           }
 
-          echo "Monitoring email path: EventBridge -> AlarmNotificationFunction -> SES -> $ADMIN_EMAIL"
-          echo "No SNS email subscription is created, so PendingConfirmation will not appear."
+          MONITORING_ALARM_NAMES=( \
+            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \
+          )
+
+          echo "Verifying direct CloudWatch -> Lambda -> SES notification actions..."
+          for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
+            ALARM_ACTION=$(aws cloudwatch describe-alarms \
+              --alarm-names "$ALARM_NAME" \
+              --region "$AWS_REGION" \
+              --query 'MetricAlarms[0].AlarmActions[0]' \
+              --output text 2>/dev/null || true)
+
+            if [ "$ALARM_ACTION" != "$ALARM_LAMBDA_ARN" ]; then
+              echo "ERROR: Alarm '$ALARM_NAME' is not configured with the SES notification Lambda."
+              echo "Expected: $ALARM_LAMBDA_ARN"
+              echo "Actual:   ${ALARM_ACTION:-<none>}"
+              exit 1
+            fi
+
+            echo "OK: $ALARM_NAME -> $ALARM_LAMBDA_ARN"
+          done
+
+          echo "Monitoring email path: CloudWatch Alarm -> Lambda -> SES -> $ADMIN_EMAIL"
+          echo "No SNS email subscription is used for alarm notifications; PendingConfirmation is not part of this path."
 
           echo "Verifying deployed daily report EventBridge rule..."
 
