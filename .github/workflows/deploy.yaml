@@ -757,86 +757,98 @@ jobs:
             STACK_STATUS=""
           fi
 
-          # CloudFormation owns the named application resources after the
-          # Application stack has been created. The old preflight check treated
-          # every existing resource as "unmanaged", even when it was already
-          # owned by cloudmart-application-${ENVIRONMENT}. That caused every
-          # normal re-deployment to fail after the first successful deployment.
-          #
-          # We now make the check ownership-aware:
-          #   1. If the Application stack does not exist, existing named
-          #      resources are genuine conflicts and deployment stops.
-          #   2. If the Application stack exists, resources already listed in
-          #      that stack are allowed and only truly external resources are
-          #      reported as conflicts.
+          # CloudFormation owns the application resources after the stack is created.
+          # The EventBridge bus is intentionally external to this stack because it
+          # already exists in AWS. CloudFormation manages the rules, but references
+          # the existing bus through ExistingEventBusName.
           echo "Running ownership-aware CloudFormation preflight check..."
 
+          EVENT_BUS_NAME="${PROJECT_NAME}-${ENVIRONMENT}-event-bus"
           CONFLICT_FOUND="false"
           EVENT_RULE_CONFLICT_FOUND="false"
           NON_EVENT_CONFLICT_FOUND="false"
           UNMANAGED_EVENT_RULES=()
+          IMPORT_DEPLOYED="false"
+
+          resource_is_owned() {
+            local resource_id="$1"
+            if [ -n "$resource_id" ] && [ "$resource_id" != "None" ] && \
+               printf '%s\n' "${STACK_RESOURCE_IDS:-}" | tr '\t' '\n' | grep -Fxq "$resource_id"; then
+              return 0
+            fi
+            return 1
+          }
+
+          check_existing_resource() {
+            local label="$1"
+            local resource_id="$2"
+
+            if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
+              return 0
+            fi
+
+            if resource_is_owned "$resource_id"; then
+              echo "OK: $label is already owned by $STACK_NAME: $resource_id"
+            else
+              echo "ERROR: Existing unmanaged $label found: $resource_id"
+              CONFLICT_FOUND="true"
+
+              if [ "$label" = "EventBridge rule" ]; then
+                EVENT_RULE_CONFLICT_FOUND="true"
+                UNMANAGED_EVENT_RULES+=("$resource_id")
+              else
+                NON_EVENT_CONFLICT_FOUND="true"
+              fi
+            fi
+          }
+
+          check_orphan_resource() {
+            local label="$1"
+            local resource_id="$2"
+
+            if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
+              return 0
+            fi
+
+            if [ "$label" = "EventBridge rule" ]; then
+              echo "Existing external EventBridge rule found: $resource_id"
+              EVENT_RULE_CONFLICT_FOUND="true"
+              UNMANAGED_EVENT_RULES+=("$resource_id")
+            else
+              echo "ERROR: Existing unmanaged $label found: $resource_id"
+              CONFLICT_FOUND="true"
+              NON_EVENT_CONFLICT_FOUND="true"
+            fi
+          }
+
+          # The EventBridge bus itself is deliberately NOT treated as a conflict.
+          # It is a pre-existing shared resource and is passed to CloudFormation
+          # as ExistingEventBusName instead of being created by this stack.
+          EXISTING_EVENT_BUS=$(aws events describe-event-bus \
+            --name "$EVENT_BUS_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Name' \
+            --output text 2>/dev/null || true)
+
+          if [ -z "$EXISTING_EVENT_BUS" ] || [ "$EXISTING_EVENT_BUS" = "None" ]; then
+            echo "ERROR: Required EventBridge bus does not exist: $EVENT_BUS_NAME"
+            exit 1
+          fi
+          echo "Using existing EventBridge bus: $EXISTING_EVENT_BUS"
 
           if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
             echo "Application stack already exists with status: $STACK_STATUS"
-            echo "Reading CloudFormation physical resource IDs..."
-
             STACK_RESOURCE_IDS=$(aws cloudformation list-stack-resources \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
               --query 'StackResourceSummaries[].PhysicalResourceId' \
               --output text 2>/dev/null || true)
 
-            resource_is_owned() {
-              local resource_id="$1"
-
-              if [ -n "$resource_id" ] && [ "$resource_id" != "None" ] && \
-                 printf '%s\n' "$STACK_RESOURCE_IDS" | tr '\t' '\n' | grep -Fxq "$resource_id"; then
-                return 0
-              fi
-
-              return 1
-            }
-
-            check_existing_resource() {
-              local label="$1"
-              local resource_id="$2"
-
-              if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
-                return 0
-              fi
-
-              if resource_is_owned "$resource_id"; then
-                echo "OK: $label is already owned by $STACK_NAME: $resource_id"
-              else
-                echo "ERROR: Existing unmanaged $label found: $resource_id"
-                CONFLICT_FOUND="true"
-
-                if [ "$label" != "EventBridge rule" ]; then
-                  NON_EVENT_CONFLICT_FOUND="true"
-                fi
-
-                # Existing EventBridge rules may have been created by an older
-                # CloudFormation version of this same Application stack. They
-                # must be imported into the current stack rather than deleted.
-                if [ "$label" = "EventBridge rule" ]; then
-                  EVENT_RULE_CONFLICT_FOUND="true"
-                  UNMANAGED_EVENT_RULES+=("$resource_id")
-                fi
-              fi
-            }
-
             EXISTING_REST_API=$(aws apigateway get-rest-apis \
               --region "$AWS_REGION" \
               --query "items[?name=='${PROJECT_NAME}-${ENVIRONMENT}-api'].id | [0]" \
               --output text 2>/dev/null || true)
             check_existing_resource "API Gateway REST API" "$EXISTING_REST_API"
-
-            EXISTING_EVENT_BUS=$(aws events describe-event-bus \
-              --name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
-              --region "$AWS_REGION" \
-              --query 'Name' \
-              --output text 2>/dev/null || true)
-            check_existing_resource "EventBridge event bus" "$EXISTING_EVENT_BUS"
 
             for FUNCTION_NAME in \
               "${PROJECT_NAME}-${ENVIRONMENT}-notification" \
@@ -865,7 +877,7 @@ jobs:
             do
               EXISTING_RULE=$(aws events describe-rule \
                 --name "$RULE_NAME" \
-                --event-bus-name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
+                --event-bus-name "$EVENT_BUS_NAME" \
                 --region "$AWS_REGION" \
                 --query 'Name' \
                 --output text 2>/dev/null || true)
@@ -883,32 +895,14 @@ jobs:
                 --output text 2>/dev/null || true)
               check_existing_resource "CloudWatch log group" "$EXISTING_LOG_GROUP"
             done
-
           else
             echo "Application stack does not exist. Checking for orphaned named resources..."
-
-            check_orphan_resource() {
-              local label="$1"
-              local result="$2"
-
-              if [ -n "$result" ] && [ "$result" != "None" ]; then
-                echo "ERROR: Existing unmanaged $label found: $result"
-                CONFLICT_FOUND="true"
-              fi
-            }
 
             EXISTING_REST_API=$(aws apigateway get-rest-apis \
               --region "$AWS_REGION" \
               --query "items[?name=='${PROJECT_NAME}-${ENVIRONMENT}-api'].id | [0]" \
               --output text 2>/dev/null || true)
             check_orphan_resource "API Gateway REST API" "$EXISTING_REST_API"
-
-            EXISTING_EVENT_BUS=$(aws events describe-event-bus \
-              --name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
-              --region "$AWS_REGION" \
-              --query 'Name' \
-              --output text 2>/dev/null || true)
-            check_orphan_resource "EventBridge event bus" "$EXISTING_EVENT_BUS"
 
             for FUNCTION_NAME in \
               "${PROJECT_NAME}-${ENVIRONMENT}-notification" \
@@ -937,7 +931,7 @@ jobs:
             do
               EXISTING_RULE=$(aws events describe-rule \
                 --name "$RULE_NAME" \
-                --event-bus-name "${PROJECT_NAME}-${ENVIRONMENT}-event-bus" \
+                --event-bus-name "$EVENT_BUS_NAME" \
                 --region "$AWS_REGION" \
                 --query 'Name' \
                 --output text 2>/dev/null || true)
@@ -957,49 +951,40 @@ jobs:
             done
           fi
 
-          # These two SNS topics already exist outside the Application stack.
-          # Their existence is expected and is never treated as a conflict.
+          # Existing SNS topics are external resources and are expected.
           AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
           ORDER_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-order-notifications"
           LOW_STOCK_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${AWS_ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-low-stock"
 
-          if ! aws sns get-topic-attributes \
-            --topic-arn "$ORDER_TOPIC_ARN" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
+          if ! aws sns get-topic-attributes --topic-arn "$ORDER_TOPIC_ARN" --region "$AWS_REGION" >/dev/null 2>&1; then
             echo "ERROR: Required existing SNS topic was not found: $ORDER_TOPIC_ARN"
             exit 1
           fi
-          echo "Using existing SNS topic: $ORDER_TOPIC_ARN"
-
-          if ! aws sns get-topic-attributes \
-            --topic-arn "$LOW_STOCK_TOPIC_ARN" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
+          if ! aws sns get-topic-attributes --topic-arn "$LOW_STOCK_TOPIC_ARN" --region "$AWS_REGION" >/dev/null 2>&1; then
             echo "ERROR: Required existing SNS topic was not found: $LOW_STOCK_TOPIC_ARN"
             exit 1
           fi
-          echo "Using existing SNS topic: $LOW_STOCK_TOPIC_ARN"
 
-          if [ "$CONFLICT_FOUND" = "true" ]; then
-            # The only supported external resources for an existing Application
-            # stack are the legacy EventBridge notification rules. Import them
-            # into the existing stack so the next normal deployment can manage
-            # them. Do NOT delete any AWS resource automatically.
-            if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
-              echo "============================================================"
-              echo "Existing EventBridge rules are outside CloudFormation ownership."
-              echo "They will be IMPORTED into $STACK_NAME."
-              echo "No EventBridge rule will be deleted."
-              echo "============================================================"
+          if [ "$NON_EVENT_CONFLICT_FOUND" = "true" ]; then
+            echo "ERROR: One or more non-EventBridge application resources already exist outside CloudFormation ownership."
+            echo "No automatic deletion will be performed."
+            echo "Those resources must be imported or resolved manually."
+            exit 1
+          fi
 
-              IMPORT_FILE="/tmp/cloudmart-event-rule-import.json"
-              export UNMANAGED_EVENT_RULES="$(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}")"
-              python3 - <<'PY'
+          # Import any pre-existing EventBridge rules. If the Application stack
+          # does not exist, use a CREATE change set with resources-to-import so
+          # the old rules are adopted while the rest of the application is created.
+          if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
+            IMPORT_FILE="/tmp/cloudmart-event-rule-import.json"
+            export UNMANAGED_EVENT_RULES="$(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u)"
+
+            python3 - <<'PY'
           import json
           import os
 
           project = os.environ["PROJECT_NAME"]
           environment = os.environ["ENVIRONMENT"]
-
           suffix_to_logical_id = {
               "low-stock": "LowStockEventRule",
               "order-placed-notification": "OrderPlacedNotificationRule",
@@ -1011,27 +996,22 @@ jobs:
           }
 
           rules = []
-          for rule_name in os.environ.get("UNMANAGED_EVENT_RULES", "").split("\n"):
+          prefix = f"{project}-{environment}-"
+          for rule_name in os.environ.get("UNMANAGED_EVENT_RULES", "").splitlines():
               rule_name = rule_name.strip()
               if not rule_name:
                   continue
-
-              prefix = f"{project}-{environment}-"
               if not rule_name.startswith(prefix):
                   raise SystemExit(f"Unsupported EventBridge rule name: {rule_name}")
-
               suffix = rule_name[len(prefix):]
               logical_id = suffix_to_logical_id.get(suffix)
               if not logical_id:
-                  raise SystemExit(
-                      f"No CloudFormation logical ID mapping exists for EventBridge rule: {rule_name}"
-                  )
-
+                  raise SystemExit(f"No CloudFormation logical ID mapping exists for EventBridge rule: {rule_name}")
               rules.append({
-                      "ResourceType": "AWS::Events::Rule",
-                      "LogicalResourceId": logical_id,
-                      "ResourceIdentifier": {"Name": rule_name},
-                  })
+                  "ResourceType": "AWS::Events::Rule",
+                  "LogicalResourceId": logical_id,
+                  "ResourceIdentifier": {"Name": rule_name},
+              })
 
           if not rules:
               raise SystemExit("No supported unmanaged EventBridge rules were found to import.")
@@ -1040,84 +1020,131 @@ jobs:
               json.dump(rules, f)
           PY
 
-              if [ ! -s "$IMPORT_FILE" ]; then
-                echo "ERROR: EventBridge import file was not created."
-                exit 1
-              fi
+            cat "$IMPORT_FILE"
+            IMPORT_CHANGE_SET="cloudmart-application-${ENVIRONMENT}-event-import-$(date +%s)"
 
-              cat "$IMPORT_FILE"
-
-              IMPORT_CHANGE_SET="cloudmart-application-${ENVIRONMENT}-import-$(date +%s)"
-
-              aws cloudformation create-change-set                 --stack-name "$STACK_NAME"                 --change-set-name "$IMPORT_CHANGE_SET"                 --change-set-type IMPORT                 --template-body file://.aws-sam/build/template.yaml                 --resources-to-import "file://$IMPORT_FILE"                 --capabilities CAPABILITY_NAMED_IAM                 --region "$AWS_REGION"
-
-              if ! aws cloudformation wait change-set-create-complete                 --stack-name "$STACK_NAME"                 --change-set-name "$IMPORT_CHANGE_SET"                 --region "$AWS_REGION"; then
-                echo "ERROR: EventBridge import change set failed."
-                aws cloudformation describe-change-set                   --stack-name "$STACK_NAME"                   --change-set-name "$IMPORT_CHANGE_SET"                   --region "$AWS_REGION"                   --output json || true
-                exit 1
-              fi
-
-              echo "EventBridge import change set created successfully."
-
-              aws cloudformation execute-change-set                 --stack-name "$STACK_NAME"                 --change-set-name "$IMPORT_CHANGE_SET"                 --region "$AWS_REGION"
-
-              echo "Waiting for EventBridge resources to be imported..."
-              for attempt in $(seq 1 60); do
-                IMPORT_STATUS=$(aws cloudformation describe-stacks                   --stack-name "$STACK_NAME"                   --region "$AWS_REGION"                   --query 'Stacks[0].StackStatus'                   --output text 2>/dev/null || true)
-
-                echo "Application stack import status ${attempt}/60: ${IMPORT_STATUS:-UNKNOWN}"
-
-                case "$IMPORT_STATUS" in
-                  IMPORT_COMPLETE|UPDATE_COMPLETE|CREATE_COMPLETE)
-                    echo "EventBridge resources are now CloudFormation-managed."
-                    break
-                    ;;
-                  IMPORT_ROLLBACK_IN_PROGRESS|IMPORT_ROLLBACK_FAILED|ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_FAILED)
-                    echo "ERROR: EventBridge resource import failed. Stack status: $IMPORT_STATUS"
-                    aws cloudformation describe-stack-events                       --stack-name "$STACK_NAME"                       --region "$AWS_REGION"                       --max-items 30 || true
-                    exit 1
-                    ;;
-                esac
-
-                if [ "$attempt" -eq 60 ]; then
-                  echo "ERROR: Timed out waiting for EventBridge resource import."
-                  exit 1
-                fi
-
-                sleep 5
-              done
-
+            if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
+              IMPORT_TYPE="IMPORT"
+            else
+              IMPORT_TYPE="CREATE"
             fi
 
-            # Re-check whether any non-EventBridge conflict remains.
-            if [ "$NON_EVENT_CONFLICT_FOUND" = "true" ]; then
-              echo "ERROR: One or more non-EventBridge application resources"
-              echo "already exist outside CloudFormation ownership."
-              echo "No automatic deletion will be performed."
-              echo "Those resources must be imported or resolved manually."
+            echo "Creating EventBridge import change set: type=$IMPORT_TYPE"
+            aws cloudformation create-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$IMPORT_CHANGE_SET" \
+              --change-set-type "$IMPORT_TYPE" \
+              --template-body file://.aws-sam/build/template.yaml \
+              --resources-to-import "file://$IMPORT_FILE" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameters \
+                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+                ParameterKey=ProjectName,ParameterValue="$PROJECT_NAME" \
+                ParameterKey=AuthorizerCacheTTL,ParameterValue="$AUTHORIZER_CACHE_TTL" \
+                ParameterKey=NotificationEmail,ParameterValue="$ADMIN_EMAIL" \
+                ParameterKey=ExistingOrderNotificationTopicArn,ParameterValue="$ORDER_TOPIC_ARN" \
+                ParameterKey=ExistingLowStockTopicArn,ParameterValue="$LOW_STOCK_TOPIC_ARN" \
+                ParameterKey=ExistingEventBusName,ParameterValue="$EVENT_BUS_NAME" \
+                ParameterKey=ApiDeploymentVersion,ParameterValue="${GITHUB_RUN_NUMBER}" \
+              --region "$AWS_REGION"
+
+            if ! aws cloudformation wait change-set-create-complete \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$IMPORT_CHANGE_SET" \
+              --region "$AWS_REGION"; then
+              echo "ERROR: EventBridge import change set failed."
+              aws cloudformation describe-change-set \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$IMPORT_CHANGE_SET" \
+                --region "$AWS_REGION" \
+                --output json || true
               exit 1
             fi
 
-            # EventBridge conflicts were imported above. Any remaining conflict
-            # means the preflight found a resource type that this workflow does
-            # not safely adopt automatically.
-            if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
-              CONFLICT_FOUND="false"
+            aws cloudformation execute-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$IMPORT_CHANGE_SET" \
+              --region "$AWS_REGION"
+
+            echo "Waiting for EventBridge resources and Application stack..."
+            IMPORT_FINISHED="false"
+            for attempt in $(seq 1 60); do
+              IMPORT_STATUS=$(aws cloudformation describe-stacks \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --query 'Stacks[0].StackStatus' \
+                --output text 2>/dev/null || true)
+
+              echo "Application stack import status ${attempt}/60: ${IMPORT_STATUS:-UNKNOWN}"
+
+              case "$IMPORT_STATUS" in
+                IMPORT_COMPLETE|CREATE_COMPLETE|UPDATE_COMPLETE)
+                  IMPORT_FINISHED="true"
+                  break
+                  ;;
+                IMPORT_ROLLBACK_IN_PROGRESS|IMPORT_ROLLBACK_FAILED|ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_FAILED|CREATE_FAILED|UPDATE_FAILED)
+                  echo "ERROR: EventBridge resource import failed. Stack status: $IMPORT_STATUS"
+                  aws cloudformation describe-stack-events \
+                    --stack-name "$STACK_NAME" \
+                    --region "$AWS_REGION" \
+                    --max-items 40 || true
+                  exit 1
+                  ;;
+              esac
+
+              if [ "$attempt" -eq 60 ]; then
+                echo "ERROR: Timed out waiting for EventBridge resource import."
+                exit 1
+              fi
+              sleep 5
+            done
+
+            if [ "$IMPORT_FINISHED" != "true" ]; then
+              echo "ERROR: EventBridge import did not reach a successful stack state."
+              exit 1
             fi
+
+            echo "EventBridge rules are now CloudFormation-managed."
+            EVENT_RULE_CONFLICT_FOUND="false"
+            CONFLICT_FOUND="false"
+            IMPORT_DEPLOYED="true"
           fi
 
           echo "Application resource ownership preflight passed."
 
-          if ! sam deploy             --template-file .aws-sam/build/template.yaml             --stack-name "$STACK_NAME"             --region "$AWS_REGION"             --resolve-s3             --capabilities CAPABILITY_NAMED_IAM             --no-confirm-changeset             --no-fail-on-empty-changeset             --parameter-overrides               Environment="$ENVIRONMENT"               ProjectName="$PROJECT_NAME"               AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL"               NotificationEmail="$ADMIN_EMAIL"               ExistingOrderNotificationTopicArn="$ORDER_TOPIC_ARN"               ExistingLowStockTopicArn="$LOW_STOCK_TOPIC_ARN"               ApiDeploymentVersion="${GITHUB_RUN_NUMBER}"               EC2InstanceType="$EC2_INSTANCE_TYPE"
-          then
-            echo "============================================================"
-            echo "ERROR: SAM/CloudFormation deployment failed."
-            echo "Attempting to retrieve the detailed Early Validation event..."
-            echo "============================================================"
-
-            aws cloudformation describe-events               --stack-name "$STACK_NAME"               --filters FailedEvents=true               --region "$AWS_REGION"               --no-paginate               --output json || true
-
-            exit 1
+          # If the stack was created by the CREATE+IMPORT change set above, the
+          # template has already been deployed. Otherwise perform the normal SAM
+          # update/create deployment.
+          if [ "$IMPORT_DEPLOYED" != "true" ]; then
+            if ! sam deploy \
+              --template-file .aws-sam/build/template.yaml \
+              --stack-name "$STACK_NAME" \
+              --region "$AWS_REGION" \
+              --resolve-s3 \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --no-confirm-changeset \
+              --no-fail-on-empty-changeset \
+              --parameter-overrides \
+                Environment="$ENVIRONMENT" \
+                ProjectName="$PROJECT_NAME" \
+                AuthorizerCacheTTL="$AUTHORIZER_CACHE_TTL" \
+                NotificationEmail="$ADMIN_EMAIL" \
+                ExistingOrderNotificationTopicArn="$ORDER_TOPIC_ARN" \
+                ExistingLowStockTopicArn="$LOW_STOCK_TOPIC_ARN" \
+                ExistingEventBusName="$EVENT_BUS_NAME" \
+                ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
+                EC2InstanceType="$EC2_INSTANCE_TYPE"
+            then
+              echo "============================================================"
+              echo "ERROR: SAM/CloudFormation deployment failed."
+              echo "Attempting to retrieve the detailed CloudFormation events..."
+              echo "============================================================"
+              aws cloudformation describe-stack-events \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --max-items 40 || true
+              exit 1
+            fi
           fi
 
            APP_STATUS=$(aws cloudformation describe-stacks \
@@ -1127,7 +1154,7 @@ jobs:
              --output text)
 
            case "$APP_STATUS" in
-             CREATE_COMPLETE|UPDATE_COMPLETE)
+             CREATE_COMPLETE|UPDATE_COMPLETE|IMPORT_COMPLETE)
                echo "Application stack is healthy: $APP_STATUS"
                ;;
              *)

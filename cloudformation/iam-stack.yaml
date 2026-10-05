@@ -94,6 +94,13 @@ Resources:
               - ssm:DescribeInstanceInformation
             Resource: "*"
 
+          - Sid: ReadCloudFormationEvents
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeChangeSet
+            Resource: "*"
+
           - Sid: ReadCloudFormationExecutionRole
             Effect: Allow
             Action:
