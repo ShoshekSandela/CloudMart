@@ -1664,13 +1664,23 @@ jobs:
                 return 1
               fi
 
-              candidate="${PROJECT_NAME}-${ENVIRONMENT}-monitoring-alerts${suffix}"
-              if aws events describe-rule \
-                --name "$candidate" \
-                --event-bus-name default \
-                --region "$AWS_REGION" >/dev/null 2>&1; then
-                return 1
-              fi
+              for candidate in \
+                "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-low-stock-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-report-failure-alert${suffix}" \
+                "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx-alert${suffix}"
+              do
+                if aws events describe-rule \
+                  --name "$candidate" \
+                  --event-bus-name default \
+                  --region "$AWS_REGION" >/dev/null 2>&1; then
+                  return 1
+                fi
+              done
 
               candidate="${PROJECT_NAME}-${ENVIRONMENT}-operations${suffix}"
               if aws cloudwatch get-dashboard \
@@ -1756,7 +1766,7 @@ jobs:
           esac
 
           # Alarm notifications use the formatted path:
-          # CloudWatch Alarm -> EventBridge -> SNS Topic -> Email subscription.
+          # CloudWatch Alarm -> EventBridge (one rule per alarm) -> SNS Topic -> Email.
           # EventBridge formats the message, so CloudWatch alarms do not need
           # direct AlarmActions and no alarm-notification Lambda or SES path is used.
           MONITORING_TOPIC_ARN=$(aws cloudformation describe-stacks \
@@ -1785,47 +1795,58 @@ jobs:
 
           echo "Verifying EventBridge -> SNS formatted alarm notification path..."
 
-          MONITORING_RULE_NAME="${PROJECT_NAME}-${ENVIRONMENT}-monitoring-alerts${MONITORING_RESOURCE_SUFFIX}"
+          MONITORING_RULES=( \
+            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-report-failure-alert${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx-alert${MONITORING_RESOURCE_SUFFIX}" \
+          )
 
-          MONITORING_RULE_JSON=$(aws events describe-rule \
-            --name "$MONITORING_RULE_NAME" \
-            --event-bus-name default \
-            --region "$AWS_REGION" \
-            --output json)
+          for MONITORING_RULE_NAME in "${MONITORING_RULES[@]}"; do
+            MONITORING_RULE_JSON=$(aws events describe-rule \
+              --name "$MONITORING_RULE_NAME" \
+              --event-bus-name default \
+              --region "$AWS_REGION" \
+              --output json)
 
-          MONITORING_RULE_STATE=$(echo "$MONITORING_RULE_JSON" | jq -r '.State')
-          MONITORING_RULE_ARN=$(echo "$MONITORING_RULE_JSON" | jq -r '.Arn')
+            MONITORING_RULE_STATE=$(echo "$MONITORING_RULE_JSON" | jq -r '.State')
+            MONITORING_RULE_ARN=$(echo "$MONITORING_RULE_JSON" | jq -r '.Arn')
 
-          if [ "$MONITORING_RULE_STATE" != "ENABLED" ]; then
-            echo "ERROR: Monitoring EventBridge rule is not enabled."
-            echo "$MONITORING_RULE_JSON"
-            exit 1
-          fi
+            if [ "$MONITORING_RULE_STATE" != "ENABLED" ]; then
+              echo "ERROR: Monitoring EventBridge rule '$MONITORING_RULE_NAME' is not enabled."
+              echo "$MONITORING_RULE_JSON"
+              exit 1
+            fi
 
-          test -n "$MONITORING_RULE_ARN" && test "$MONITORING_RULE_ARN" != "null" || {
-            echo "ERROR: Monitoring EventBridge rule ARN was not returned."
-            exit 1
-          }
+            test -n "$MONITORING_RULE_ARN" && test "$MONITORING_RULE_ARN" != "null" || {
+              echo "ERROR: Monitoring EventBridge rule ARN was not returned for '$MONITORING_RULE_NAME'."
+              exit 1
+            }
 
-          MONITORING_TARGET_JSON=$(aws events list-targets-by-rule \
-            --rule "$MONITORING_RULE_NAME" \
-            --event-bus-name default \
-            --region "$AWS_REGION" \
-            --output json)
+            MONITORING_TARGET_JSON=$(aws events list-targets-by-rule \
+              --rule "$MONITORING_RULE_NAME" \
+              --event-bus-name default \
+              --region "$AWS_REGION" \
+              --output json)
 
-          MONITORING_TARGET_ARN=$(echo "$MONITORING_TARGET_JSON" | jq -r '
-            .Targets[]?
-            | select(.Id == "MonitoringSnsTopic")
-            | .Arn' | head -n 1)
+            MONITORING_TARGET_ARN=$(echo "$MONITORING_TARGET_JSON" | jq -r '
+              .Targets[]?
+              | select(.Id == "MonitoringSnsTopic")
+              | .Arn' | head -n 1)
 
-          if [ "$MONITORING_TARGET_ARN" != "$MONITORING_TOPIC_ARN" ]; then
-            echo "ERROR: Monitoring EventBridge rule is not targeting the monitoring SNS topic."
-            echo "Expected: $MONITORING_TOPIC_ARN"
-            echo "Actual:   ${MONITORING_TARGET_ARN:-<none>}"
-            exit 1
-          fi
+            if [ "$MONITORING_TARGET_ARN" != "$MONITORING_TOPIC_ARN" ]; then
+              echo "ERROR: Monitoring rule '$MONITORING_RULE_NAME' is not targeting the monitoring SNS topic."
+              echo "Expected: $MONITORING_TOPIC_ARN"
+              echo "Actual:   ${MONITORING_TARGET_ARN:-<none>}"
+              exit 1
+            fi
 
-          echo "OK: $MONITORING_RULE_NAME -> $MONITORING_TOPIC_ARN"
+            echo "OK: $MONITORING_RULE_NAME -> $MONITORING_TOPIC_ARN"
+          done
 
           echo "Verifying CloudWatch alarms have no direct notification action..."
           for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
@@ -1845,7 +1866,7 @@ jobs:
             echo "OK: $ALARM_NAME -> EventBridge state-change rule"
           done
 
-          echo "Checking monitoring SNS email subscription...
+          echo "Checking monitoring SNS email subscription..."
           MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
             --topic-arn "$MONITORING_TOPIC_ARN" \
             --region "$AWS_REGION" \
