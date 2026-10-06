@@ -450,7 +450,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              CloudMart Monitoring Alert
+              "CloudMart Monitoring Alert
               
               Environment: ${Environment}
               Service: Order Processing
@@ -463,7 +463,7 @@ Resources:
               Action:
               Check the Order Lambda logs, order status, database errors, and EventBridge order events.
             
-              CloudMart
+              CloudMart"
   LowStockNotification:
     Type: AWS::Events::Rule
     Properties:
