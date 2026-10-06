@@ -432,6 +432,301 @@ WHERE category_name = 'Accessories'
 LIMIT 1;
 
 
+
+-- ============================================================
+-- SAMPLE ORDERS FOR DASHBOARD DEMONSTRATION
+-- ============================================================
+-- These records are intentionally idempotent: re-running schema.sql
+-- will not create the same demonstration orders again.
+-- They use the existing sample customers and products above.
+
+-- Order 1: CONFIRMED - Laptop
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'CONFIRMED', 899.99, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'CONFIRMED'
+        AND o.total_amount = 899.99
+  )
+LIMIT 1;
+
+-- Order 2: CONFIRMED - Laptop + Mouse
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'CONFIRMED', 929.98, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer2@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'CONFIRMED'
+        AND o.total_amount = 929.98
+  )
+LIMIT 1;
+
+-- Order 3: CONFIRMED - Keyboard + Mouse
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'CONFIRMED', 109.98, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer3@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'CONFIRMED'
+        AND o.total_amount = 109.98
+  )
+LIMIT 1;
+
+-- Order 4: CONFIRMED - Two Laptops
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'CONFIRMED', 1799.98, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer4@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'CONFIRMED'
+        AND o.total_amount = 1799.98
+  )
+LIMIT 1;
+
+-- Order 5: CONFIRMED - Three Keyboards
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'CONFIRMED', 239.97, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer5@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'CONFIRMED'
+        AND o.total_amount = 239.97
+  )
+LIMIT 1;
+
+-- Order 6: PENDING - Laptop + Keyboard
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'PENDING', 979.98, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'PENDING'
+        AND o.total_amount = 979.98
+  )
+LIMIT 1;
+
+-- Order 7: PENDING - Five Mice
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'PENDING', 149.95, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer2@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'PENDING'
+        AND o.total_amount = 149.95
+  )
+LIMIT 1;
+
+-- Order 8: FAILED - Laptop
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'FAILED', 899.99, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer3@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'FAILED'
+        AND o.total_amount = 899.99
+  )
+LIMIT 1;
+
+-- Order 9: FAILED - Keyboard + Mouse
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'FAILED', 109.98, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer4@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'FAILED'
+        AND o.total_amount = 109.98
+  )
+LIMIT 1;
+
+-- Order 10: CANCELED - Mouse
+INSERT INTO orders (customer_id, customer_email, status, total_amount, created_at)
+SELECT c.customer_id, c.customer_email, 'CANCELED', 29.99, CURRENT_TIMESTAMP
+FROM customers c
+WHERE c.customer_email = 'customer5@cloudmart.com'
+  AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.customer_email = c.customer_email
+        AND o.status = 'CANCELED'
+        AND o.total_amount = 29.99
+  )
+LIMIT 1;
+
+
+-- ============================================================
+-- SAMPLE ORDER ITEMS
+-- ============================================================
+-- Add order items by matching the demonstration order's customer,
+-- status and amount. Product IDs are resolved by product name so the
+-- data remains compatible with the AUTO_INCREMENT product IDs.
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Laptop'
+WHERE o.customer_email = 'customer@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 899.99
+  AND NOT EXISTS (
+      SELECT 1 FROM order_items oi
+      WHERE oi.order_id = o.order_id
+  );
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Laptop'
+WHERE o.customer_email = 'customer2@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 929.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id)
+UNION ALL
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Mouse'
+WHERE o.customer_email = 'customer2@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 929.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Keyboard'
+WHERE o.customer_email = 'customer3@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 109.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id)
+UNION ALL
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Mouse'
+WHERE o.customer_email = 'customer3@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 109.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 2, p.price, 2 * p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Laptop'
+WHERE o.customer_email = 'customer4@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 1799.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 3, p.price, 3 * p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Keyboard'
+WHERE o.customer_email = 'customer5@cloudmart.com'
+  AND o.status = 'CONFIRMED'
+  AND o.total_amount = 239.97
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Laptop'
+WHERE o.customer_email = 'customer@cloudmart.com'
+  AND o.status = 'PENDING'
+  AND o.total_amount = 979.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id)
+UNION ALL
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Keyboard'
+WHERE o.customer_email = 'customer@cloudmart.com'
+  AND o.status = 'PENDING'
+  AND o.total_amount = 979.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 5, p.price, 5 * p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Mouse'
+WHERE o.customer_email = 'customer2@cloudmart.com'
+  AND o.status = 'PENDING'
+  AND o.total_amount = 149.95
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Laptop'
+WHERE o.customer_email = 'customer3@cloudmart.com'
+  AND o.status = 'FAILED'
+  AND o.total_amount = 899.99
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Keyboard'
+WHERE o.customer_email = 'customer4@cloudmart.com'
+  AND o.status = 'FAILED'
+  AND o.total_amount = 109.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id)
+UNION ALL
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Mouse'
+WHERE o.customer_email = 'customer4@cloudmart.com'
+  AND o.status = 'FAILED'
+  AND o.total_amount = 109.98
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+INSERT INTO order_items (order_id, product_id, quantity, unit_price, subtotal)
+SELECT o.order_id, p.product_id, 1, p.price, p.price
+FROM orders o
+JOIN products p ON p.name = 'CloudMart Mouse'
+WHERE o.customer_email = 'customer5@cloudmart.com'
+  AND o.status = 'CANCELED'
+  AND o.total_amount = 29.99
+  AND NOT EXISTS (SELECT 1 FROM order_items oi WHERE oi.order_id = o.order_id);
+
+
+-- ============================================================
+-- SAMPLE ORDER STATUS HISTORY
+-- ============================================================
+-- Keep the history consistent with the final demonstration status.
+
+INSERT INTO order_status_history (order_id, old_status, new_status, changed_at, changed_by)
+SELECT o.order_id, NULL, o.status, o.created_at, 'sample-data'
+FROM orders o
+WHERE o.customer_email IN (
+    'customer@cloudmart.com',
+    'customer2@cloudmart.com',
+    'customer3@cloudmart.com',
+    'customer4@cloudmart.com',
+    'customer5@cloudmart.com'
+)
+  AND o.total_amount IN (899.99, 929.98, 109.98, 1799.98, 239.97, 979.98, 149.95, 29.99)
+  AND NOT EXISTS (
+      SELECT 1
+      FROM order_status_history h
+      WHERE h.order_id = o.order_id
+  );
+
+
 -- ============================================================
 -- VERIFICATION
 -- ============================================================
