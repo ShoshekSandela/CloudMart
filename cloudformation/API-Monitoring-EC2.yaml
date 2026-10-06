@@ -338,12 +338,50 @@ Resources:
 
 
   # ------------------------------------------------------------
+  # Monitoring SNS topics and formatted alarm notification path
   # ------------------------------------------------------------
-  # Monitoring SNS topics
-  # ------------------------------------------------------------
+  # Architecture:
+  #   CloudWatch Alarm -> MonitoringAlarmTopic -> Formatter Lambda
+  #   -> MonitoringEmailTopic -> Email
+  #
+  # The alarm topic is intentionally separate from the email topic.
+  # This prevents the native CloudWatch "Threshold Crossed" email format
+  # from being delivered directly to the recipient and lets the Lambda
+  # create one clean CloudMart notification format.
+  MonitoringAlarmTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring-alarm${MonitoringResourceSuffix}"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringAlarmTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref MonitoringAlarmTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudWatchAlarmsToPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref MonitoringAlarmTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
   MonitoringEmailTopic:
     Type: AWS::SNS::Topic
     Properties:
+      # Keep the existing email topic name so the current confirmed
+      # email subscription remains attached to this topic.
       TopicName: !Sub "${ProjectName}-${Environment}-monitoring-email${MonitoringResourceSuffix}"
       Tags:
         - Key: Project
@@ -358,27 +396,182 @@ Resources:
       Protocol: email
       Endpoint: !Ref NotificationEmail
 
-  MonitoringEmailTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
+  MonitoringNotificationFunctionRole:
+    Type: AWS::IAM::Role
     Properties:
-      Topics:
-        - !Ref MonitoringEmailTopic
-      PolicyDocument:
+      RoleName: !Sub "${ProjectName}-${Environment}-monitoring-notification-role${MonitoringResourceSuffix}"
+      AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Sid: AllowCloudWatchAlarmsToPublish
-            Effect: Allow
+          - Effect: Allow
             Principal:
-              Service: cloudwatch.amazonaws.com
+              Service:
+                - lambda.amazonaws.com
             Action:
-              - sns:Publish
-            Resource: !Ref MonitoringEmailTopic
-            Condition:
-              StringEquals:
-                AWS:SourceAccount: !Ref AWS::AccountId
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: MonitoringNotificationPublishPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref MonitoringEmailTopic
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:*"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringNotificationFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-monitoring-notification${MonitoringResourceSuffix}"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt MonitoringNotificationFunctionRole.Arn
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import os
+          from urllib.parse import quote
+          import boto3
+
+          sns = boto3.client("sns")
+          EMAIL_TOPIC_ARN = os.environ["EMAIL_TOPIC_ARN"]
+
+          def _dimension_text(dimensions):
+              if not dimensions:
+                  return "None"
+              return ", ".join(
+                  f"{item.get('name', item.get('Name', ''))}={item.get('value', item.get('Value', ''))}"
+                  for item in dimensions
+              )
+
+          def _format_alarm(message):
+              alarm_name = message.get("AlarmName", "Unknown alarm")
+              state = message.get("NewStateValue", "UNKNOWN")
+              old_state = message.get("OldStateValue", "UNKNOWN")
+              reason = message.get("NewStateReason", "No reason provided.")
+              description = message.get("AlarmDescription", "No description provided.")
+              timestamp = message.get("StateChangeTime", "Unknown")
+              region = message.get("Region", os.environ.get("AWS_REGION", "Unknown"))
+              account = message.get("AWSAccountId", "Unknown")
+              alarm_arn = message.get("AlarmArn", "")
+              trigger = message.get("Trigger", {}) or {}
+
+              metric_name = trigger.get("MetricName", "Unknown")
+              namespace = trigger.get("Namespace", "Unknown")
+              period = trigger.get("Period", "Unknown")
+              statistic = trigger.get("Statistic", "Unknown")
+              threshold = trigger.get("Threshold", "Unknown")
+              comparison = trigger.get("ComparisonOperator", "Unknown")
+              dimensions = _dimension_text(trigger.get("Dimensions", []))
+
+              console_url = (
+                  f"https://{region}.console.aws.amazon.com/cloudwatch/"
+                  f"deeplink.js?region={quote(region)}#alarmsV2:alarm/{quote(alarm_name)}"
+              )
+
+              subject_state = "ALARM" if state == "ALARM" else state
+              subject = f"[CloudMart][{subject_state}] {alarm_name}"
+
+              body = f"""CloudMart Monitoring Alert
+          ========================================
+
+          Status        : {state}
+          Previous State: {old_state}
+          Alarm         : {alarm_name}
+          Description   : {description}
+          Environment   : {os.environ.get('ENVIRONMENT', 'Unknown')}
+          Region        : {region}
+          Account       : {account}
+          Time          : {timestamp}
+
+          Reason
+          ----------------------------------------
+          {reason}
+
+          Metric Details
+          ----------------------------------------
+          Namespace     : {namespace}
+          Metric        : {metric_name}
+          Dimensions    : {dimensions}
+          Period        : {period} seconds
+          Statistic     : {statistic}
+          Comparison    : {comparison}
+          Threshold     : {threshold}
+
+          Alarm ARN
+          ----------------------------------------
+          {alarm_arn or 'Not provided'}
+
+          View Alarm
+          ----------------------------------------
+          {console_url}
+
+          This notification was generated by the CloudMart monitoring alert formatter.
+          """
+              return subject[:100], body
+
+          def lambda_handler(event, context):
+              published = 0
+              for record in event.get("Records", []):
+                  sns_record = record.get("Sns", {})
+                  raw_message = sns_record.get("Message", "{}")
+                  try:
+                      message = json.loads(raw_message)
+                  except json.JSONDecodeError:
+                      message = {
+                          "AlarmName": sns_record.get("Subject", "CloudMart Monitoring Alert"),
+                          "NewStateValue": "UNKNOWN",
+                          "NewStateReason": raw_message,
+                          "Region": os.environ.get("AWS_REGION", "Unknown"),
+                      }
+
+                  subject, body = _format_alarm(message)
+                  sns.publish(
+                      TopicArn=EMAIL_TOPIC_ARN,
+                      Subject=subject,
+                      Message=body,
+                  )
+                  published += 1
+
+              return {"published": published}
+      Environment:
+        Variables:
+          EMAIL_TOPIC_ARN: !Ref MonitoringEmailTopic
+          ENVIRONMENT: !Ref Environment
+      Tags:
+        Project: CloudMart
+        Environment: !Ref Environment
+
+  MonitoringAlarmSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref MonitoringAlarmTopic
+      Protocol: lambda
+      Endpoint: !GetAtt MonitoringNotificationFunction.Arn
+
+  MonitoringNotificationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref MonitoringNotificationFunction
+      Principal: sns.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn: !Ref MonitoringAlarmTopic
 
   # ------------------------------------------------------------
-  # CloudWatch alarms send notifications directly to MonitoringEmailTopic.
   # CloudWatch alarms
   # ------------------------------------------------------------
   RDSCPUAlarm:
@@ -399,7 +592,7 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -420,7 +613,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -441,7 +634,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -464,7 +657,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -488,7 +681,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -509,7 +702,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -530,7 +723,7 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
 
@@ -553,10 +746,9 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       AlarmActions:
-        - !Ref MonitoringEmailTopic
+        - !Ref MonitoringAlarmTopic
       ActionsEnabled: true
       TreatMissingData: notBreaching
-
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard
@@ -806,8 +998,16 @@ Outputs:
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
 
+  MonitoringAlarmTopicArn:
+    Description: SNS topic used by CloudWatch alarms before formatting notifications.
+    Value: !Ref MonitoringAlarmTopic
+
+  MonitoringNotificationFunctionArn:
+    Description: Lambda ARN used to format CloudWatch alarm notifications.
+    Value: !GetAtt MonitoringNotificationFunction.Arn
+
   MonitoringEmailTopicArn:
-    Description: SNS topic used directly by CloudWatch alarms for monitoring email notifications.
+    Description: SNS topic used by the formatter Lambda to deliver formatted monitoring emails.
     Value: !Ref MonitoringEmailTopic
 
   OperationsDashboardName:
