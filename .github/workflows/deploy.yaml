@@ -1805,6 +1805,70 @@ jobs:
 
           echo "Formatted monitoring email SNS topic: $MONITORING_EMAIL_TOPIC_ARN"
 
+          echo "Checking direct CloudWatch alarm-action SNS topic for stale email subscriptions..."
+          MONITORING_ALARM_TOPIC_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$MONITORING_ALARM_ACTION_TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --output json)
+
+          export AWS_REGION
+          export MONITORING_ALARM_ACTION_TOPIC_ARN
+          export MONITORING_ALARM_TOPIC_SUBSCRIPTIONS
+
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          region = os.environ["AWS_REGION"]
+          data = json.loads(os.environ["MONITORING_ALARM_TOPIC_SUBSCRIPTIONS"])
+
+          for subscription in data.get("Subscriptions", []):
+              if subscription.get("Protocol") != "email":
+                  continue
+
+              subscription_arn = subscription.get("SubscriptionArn", "")
+              endpoint = subscription.get("Endpoint", "")
+
+              # Only confirmed subscriptions can currently deliver alarm emails.
+              # Leave PendingConfirmation entries untouched.
+              if not subscription_arn.startswith("arn:"):
+                  print(
+                      f"Found non-confirmed email subscription on the alarm-action topic "
+                      f"for {endpoint}; leaving it unchanged."
+                  )
+                  continue
+
+              print(
+                  f"Removing stale confirmed email subscription from alarm-action topic: "
+                  f"{endpoint}"
+              )
+              subprocess.run(
+                  [
+                      "aws", "sns", "unsubscribe",
+                      "--subscription-arn", subscription_arn,
+                      "--region", region,
+                  ],
+                  check=True,
+              )
+          PY
+
+          STALE_MONITORING_EMAIL_COUNT=$(aws sns list-subscriptions-by-topic \
+            --topic-arn "$MONITORING_ALARM_ACTION_TOPIC_ARN" \
+            --region "$AWS_REGION" \
+            --query 'length(Subscriptions[?Protocol==`email` && SubscriptionArn!=`PendingConfirmation` && SubscriptionArn!=`Deleted`])' \
+            --output text)
+
+          if [ "$STALE_MONITORING_EMAIL_COUNT" != "0" ]; then
+            echo "ERROR: Confirmed email subscription still exists on the direct alarm-action topic."
+            echo "Topic: $MONITORING_ALARM_ACTION_TOPIC_ARN"
+            exit 1
+          fi
+
+          echo "OK: Direct CloudWatch alarm-action topic has no confirmed email subscription."
+          echo "Only EventBridge -> MonitoringEmailTopic -> Email is used for formatted monitoring emails."
+
+
           MONITORING_ALARM_NAMES=( \
             "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \
             "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \
