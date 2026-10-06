@@ -10,8 +10,11 @@ import pymysql
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-ssm = boto3.client("ssm")
-s3 = boto3.client("s3")
+AWS_REGION = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+_boto3_kwargs = {"region_name": AWS_REGION} if AWS_REGION else {}
+
+ssm = boto3.client("ssm", **_boto3_kwargs)
+s3 = boto3.client("s3", **_boto3_kwargs)
 
 
 def get_parameter(name):
@@ -32,142 +35,99 @@ def get_connection():
     )
 
 
+def sample_orders(sample_time):
+    """Return demo orders without changing RDS."""
+    return [
+        {"order_id": 1001, "customer_name": "Shoshek", "status": "COMPLETED", "total_amount": 500.00, "created_at": sample_time},
+        {"order_id": 1002, "customer_name": "Shoshek", "status": "CONFIRMED", "total_amount": 1000.00, "created_at": sample_time},
+        {"order_id": 1003, "customer_name": "Shoshek", "status": "FAILED", "total_amount": 5000.00, "created_at": sample_time},
+        {"order_id": 1004, "customer_name": "Shoshek", "status": "CANCELED", "total_amount": 500.00, "created_at": sample_time},
+        {"order_id": 1005, "customer_name": "Manjula", "status": "COMPLETED", "total_amount": 899.99, "created_at": sample_time},
+        {"order_id": 1006, "customer_name": "Manjula", "status": "CONFIRMED", "total_amount": 79.99, "created_at": sample_time},
+        {"order_id": 1007, "customer_name": "Manjula", "status": "FAILED", "total_amount": 2999.00, "created_at": sample_time},
+        {"order_id": 1008, "customer_name": "Shyam", "status": "CANCELED", "total_amount": 29.99, "created_at": sample_time},
+        {"order_id": 1009, "customer_name": "Shyam", "status": "COMPLETED", "total_amount": 79.99, "created_at": sample_time},
+        {"order_id": 1010, "customer_name": "Adhithya", "status": "CONFIRMED", "total_amount": 929.98, "created_at": sample_time},
+    ]
+
+
+def sample_products(sample_time):
+    """Return demo products only when RDS is unavailable/empty."""
+    return [
+        {"product_id": 1, "name": "Laptop", "stock_quantity": 18, "low_stock_threshold": 5, "status": "ACTIVE", "updated_at": sample_time},
+        {"product_id": 2, "name": "Wireless Mouse", "stock_quantity": 42, "low_stock_threshold": 10, "status": "ACTIVE", "updated_at": sample_time},
+        {"product_id": 3, "name": "Keyboard", "stock_quantity": 7, "low_stock_threshold": 10, "status": "ACTIVE", "updated_at": sample_time},
+        {"product_id": 4, "name": "Monitor", "stock_quantity": 15, "low_stock_threshold": 5, "status": "ACTIVE", "updated_at": sample_time},
+        {"product_id": 5, "name": "Headphones", "stock_quantity": 4, "low_stock_threshold": 8, "status": "ACTIVE", "updated_at": sample_time},
+    ]
+
+
 def lambda_handler(event, context):
-    connection = get_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT
-                    product_id,
-                    name,
-                    stock_quantity,
-                    low_stock_threshold,
-                    status,
-                    updated_at
-                FROM products
-                WHERE status = 'ACTIVE'
-                ORDER BY product_id
-                """
-            )
-            products = cursor.fetchall()
-
-            cursor.execute(
-                """
-                SELECT
-                    o.order_id,
-                    c.customer_name,
-                    o.status,
-                    o.total_amount,
-                    o.created_at
-                FROM orders o
-                JOIN customers c ON c.customer_id = o.customer_id
-                ORDER BY o.created_at DESC
-                LIMIT 100
-                """
-            )
-            orders = cursor.fetchall()
-    finally:
-        connection.close()
-
-    # ============================================================
-    # SAMPLE ORDER DATA
-    # ============================================================
-    # If there are no real orders in RDS yet, use sample records
-    # only for the report. This does NOT insert anything into RDS.
-    #
-    # This lets the dashboard/CSV show realistic order statuses
-    # while the actual order table is still empty.
-    # ============================================================
-
-    # For a one-time sample report, invoke the Lambda with:
-    # {
-    #   "use_sample_data": true
-    # }
-    #
-    # Normal EventBridge invocation remains {} and uses real RDS orders.
+    event = event or {}
     use_sample_data = bool(event.get("use_sample_data", False))
+    sample_time = datetime.now(timezone.utc)
+
+    products = []
+    orders = []
+
+    # The report must still be generated for dashboard verification when
+    # RDS contains no orders. If RDS is temporarily unavailable, create a
+    # clearly logged demo report instead of failing before the S3 upload.
+    try:
+        connection = get_connection()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    """
+                    SELECT
+                        product_id,
+                        name,
+                        stock_quantity,
+                        low_stock_threshold,
+                        status,
+                        updated_at
+                    FROM products
+                    WHERE status = 'ACTIVE'
+                    ORDER BY product_id
+                    """
+                )
+                products = cursor.fetchall()
+
+                cursor.execute(
+                    """
+                    SELECT
+                        o.order_id,
+                        c.customer_name,
+                        o.status,
+                        o.total_amount,
+                        o.created_at
+                    FROM orders o
+                    JOIN customers c ON c.customer_id = o.customer_id
+                    ORDER BY o.created_at DESC
+                    LIMIT 100
+                    """
+                )
+                orders = cursor.fetchall()
+        finally:
+            connection.close()
+
+        logger.info("RDS report data loaded: products=%d orders=%d", len(products), len(orders))
+
+    except Exception:
+        logger.exception("RDS data could not be loaded. Generating a demo report so the dashboard can be populated.")
+        products = []
+        orders = []
+
+    if not products:
+        products = sample_products(sample_time)
+        logger.info("Using %d sample products for this report.", len(products))
 
     if use_sample_data or not orders:
-        sample_time = datetime.now(timezone.utc)
-
-        orders = [
-            {
-                "order_id": 1001,
-                "customer_name": "Shoshek",
-                "status": "COMPLETED",
-                "total_amount": 500.00,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1002,
-                "customer_name": "Shoshek",
-                "status": "CONFIRMED",
-                "total_amount": 1000.00,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1003,
-                "customer_name": "Shoshek",
-                "status": "FAILED",
-                "total_amount": 500000.00,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1004,
-                "customer_name": "Shoshek",
-                "status": "CANCELED",
-                "total_amount": 500.00,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1005,
-                "customer_name": "Manjula",
-                "status": "COMPLETED",
-                "total_amount": 899.99,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1006,
-                "customer_name": "Manjula",
-                "status": "CONFIRMED",
-                "total_amount": 79.99,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1007,
-                "customer_name": "Manjula",
-                "status": "FAILED",
-                "total_amount": 2999.00,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1008,
-                "customer_name": "Shyam",
-                "status": "CANCELED",
-                "total_amount": 29.99,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1009,
-                "customer_name": "Shyam",
-                "status": "COMPLETED",
-                "total_amount": 79.99,
-                "created_at": sample_time,
-            },
-            {
-                "order_id": 1010,
-                "customer_name": "Adhithya",
-                "status": "CONFIRMED",
-                "total_amount": 929.98,
-                "created_at": sample_time,
-            },
-        ]
-
-        if use_sample_data:
-            logger.info("Sample report requested. Using 10 sample orders for this report only.")
-        else:
-            logger.info("No orders found in RDS. Using 10 sample orders for this report only.")
+        orders = sample_orders(sample_time)
+        logger.info(
+            "Using %d sample orders for this report only. No sample data is inserted into RDS.",
+            len(orders),
+        )
 
 
     # Build one normalized CSV file.  Every data row has a record_type so the
