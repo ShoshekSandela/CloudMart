@@ -1804,15 +1804,15 @@ jobs:
             echo "No legacy direct-alarm monitoring topic found."
           fi
 
-          MONITORING_ALARM_NAMES=( \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \\
+          MONITORING_ALARM_NAMES=(
+            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}"
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}"
           )
 
           echo "Verifying CloudWatch alarms have the monitoring SNS alarm action..."
