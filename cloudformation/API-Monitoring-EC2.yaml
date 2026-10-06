@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, eight alarms, and direct SES email notifications.
+  CloudWatch dashboard, eight alarms, and SNS/EventBridge monitoring notifications.
 
 Parameters:
   Environment:
@@ -338,6 +338,392 @@ Resources:
 
 
   # ------------------------------------------------------------
+  # ------------------------------------------------------------
+  # Monitoring SNS topics
+  # ------------------------------------------------------------
+  # MonitoringTopic is the direct CloudWatch Alarm notification action.
+  # MonitoringEmailTopic is the EventBridge target that delivers formatted
+  # alarm messages to the configured email address.
+  MonitoringTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring${MonitoringResourceSuffix}"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringEmailTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring-email${MonitoringResourceSuffix}"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref MonitoringEmailTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  MonitoringTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref MonitoringTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudWatchAlarmsToPublish
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref MonitoringTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  MonitoringEmailTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref MonitoringEmailTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowEventBridgeToPublish
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref MonitoringEmailTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
+
+  # ------------------------------------------------------------
+  # EventBridge formatted monitoring email rules
+  # ------------------------------------------------------------
+  RdsCpuNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-rds-cpu-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-rds-cpu-80${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-rds-cpu-80${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  OrdersFailedNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-orders-failed-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-orders-failed${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-orders-failed${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  LowStockNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-low-stock-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-low-stock${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-low-stock${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  Api5xxNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-api-5xx-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-api-5xx${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-api-5xx${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  OrderLambdaErrorsNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-order-lambda-errors-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-order-lambda-errors${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-order-lambda-errors${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  ProductLambdaErrorsNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-product-lambda-errors-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-product-lambda-errors${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-product-lambda-errors${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  ReportGenerationFailureNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-report-generation-failure-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-report-generation-failure${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-report-generation-failure${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
+  Api4xxNotification:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "${ProjectName}-${Environment}-api-4xx-notification${MonitoringResourceSuffix}"
+      Description: !Sub "Sends a formatted email when ${ProjectName}-${Environment}-api-4xx${MonitoringResourceSuffix} enters ALARM."
+      EventBusName: default
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.cloudwatch
+        detail-type:
+          - CloudWatch Alarm State Change
+        detail:
+          alarmName:
+            - !Sub "${ProjectName}-${Environment}-api-4xx${MonitoringResourceSuffix}"
+          state:
+            value:
+              - ALARM
+      Targets:
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
+          InputTransformer:
+            InputPathsMap:
+              alarmName: $.detail.alarmName
+              state: $.detail.state.value
+              reason: $.detail.state.reason
+              eventTime: $.time
+              region: $.region
+            InputTemplate: |
+              "CLOUDMART MONITORING ALERT
+
+              Alert   : <alarmName>
+              Status  : <state>
+              Reason  : <reason>
+              Time    : <eventTime>
+              Region  : <region>
+
+              Action  : Check the CloudWatch alarm and related service logs."
+
   # CloudWatch alarms
   # ------------------------------------------------------------
   RDSCPUAlarm:
@@ -359,7 +745,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
@@ -380,7 +766,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   LowStockAlarm:
@@ -401,7 +787,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API5XXAlarm:
@@ -424,7 +810,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
@@ -448,7 +834,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
@@ -469,7 +855,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
@@ -490,7 +876,7 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API4XXAlarm:
@@ -513,137 +899,9 @@ Resources:
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
       AlarmActions:
-        - !GetAtt AlarmNotificationFunction.Arn
+        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
-
-  # ------------------------------------------------------------
-  # Direct alarm email notification Lambda
-  # ------------------------------------------------------------
-  # CloudWatch alarms invoke this function directly.
-  # The function sends email through Amazon SES, so there is no SNS email
-  # subscription and no PendingConfirmation state.
-  AlarmNotificationFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-alarm-notification${MonitoringResourceSuffix}"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      Timeout: 30
-      MemorySize: 128
-      InlineCode: |
-        import json
-        import logging
-        import os
-        from datetime import datetime, timezone
-
-        import boto3
-
-        logger = logging.getLogger()
-        logger.setLevel(logging.INFO)
-
-        ses = boto3.client("ses")
-        admin_email = os.environ["ADMIN_EMAIL"]
-
-        def _alarm_name(detail):
-            return detail.get("alarmName", "CloudWatch Alarm")
-
-        def _service(alarm_name):
-            name = alarm_name.lower()
-            if "api-4xx" in name:
-                return "API Gateway"
-            if "api-5xx" in name:
-                return "API Gateway"
-            if "rds-cpu" in name:
-                return "RDS"
-            if "low-stock" in name:
-                return "Inventory"
-            if "orders-failed" in name:
-                return "Order Processing"
-            if "order-lambda" in name:
-                return "Order Lambda"
-            if "product-lambda" in name:
-                return "Product Lambda"
-            if "report-generation" in name:
-                return "Daily Report Lambda"
-            return "CloudMart Monitoring"
-
-        def _description(alarm_name):
-            name = alarm_name.lower()
-            if "api-4xx" in name:
-                return "An API Gateway 4XX error was detected."
-            if "api-5xx" in name:
-                return "An API Gateway 5XX error was detected."
-            if "rds-cpu" in name:
-                return "RDS CPU utilization reached the configured threshold."
-            if "low-stock" in name:
-                return "A product inventory level reached the low-stock threshold."
-            if "orders-failed" in name:
-                return "A failed order was detected."
-            if "order-lambda" in name:
-                return "The Order Lambda reported an execution error."
-            if "product-lambda" in name:
-                return "The Product Lambda reported an execution error."
-            if "report-generation" in name:
-                return "The Daily Report Lambda reported an execution error."
-            return "A CloudWatch alarm changed state."
-
-        def lambda_handler(event, context):
-            detail = event.get("detail", {})
-            state = detail.get("state", {}).get("value", "UNKNOWN")
-            alarm_name = _alarm_name(detail)
-            service = _service(alarm_name)
-            description = _description(alarm_name)
-
-            event_time = event.get("time")
-            if event_time:
-                try:
-                    dt = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
-                    event_time = dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
-                except ValueError:
-                    pass
-
-            message = (
-                "CLOUDMART MONITORING ALERT\n\n"
-                f"Alert   : {service}\n"
-                f"Status  : {state}\n"
-                f"Alarm   : {alarm_name}\n\n"
-                f"{description}\n\n"
-                "Action  : Check the CloudWatch alarm and related service logs.\n\n"
-                f"Time    : {event_time or 'Not available'}"
-            )
-
-            ses.send_email(
-                Source=admin_email,
-                Destination={"ToAddresses": [admin_email]},
-                Message={
-                    "Subject": {"Data": f"[CloudMart] {service} - {state}"},
-                    "Body": {"Text": {"Data": message}},
-                },
-            )
-
-            logger.info("Alarm email sent through SES for %s", alarm_name)
-            return {"statusCode": 200, "body": json.dumps({"message": "Notification sent"})}
-
-      Environment:
-        Variables:
-          ADMIN_EMAIL: !Ref NotificationEmail
-      Policies:
-        - Statement:
-            - Effect: Allow
-              Action:
-                - ses:SendEmail
-              Resource: "*"
-
-  # CloudWatch service permission for direct alarm -> Lambda invocation.
-  # One permission covers all CloudMart alarms in this AWS account.
-  CloudWatchAlarmInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref AlarmNotificationFunction
-      Principal: lambda.alarms.cloudwatch.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard
@@ -892,6 +1150,14 @@ Outputs:
     Description: Existing CloudMart report bucket used by the dashboard and report Lambda.
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
+
+  MonitoringTopicArn:
+    Description: SNS topic used as the direct CloudWatch Alarm notification action.
+    Value: !Ref MonitoringTopic
+
+  MonitoringEmailTopicArn:
+    Description: SNS topic targeted by EventBridge for formatted monitoring emails.
+    Value: !Ref MonitoringEmailTopic
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
