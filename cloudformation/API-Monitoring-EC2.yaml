@@ -378,8 +378,131 @@ Resources:
                 AWS:SourceAccount: !Ref AWS::AccountId
 
   # ------------------------------------------------------------
-  # EventBridge formatted monitoring email rules
+  # Monitoring notification formatter Lambda
   # ------------------------------------------------------------
+  # EventBridge cannot reliably produce a plain-text multiline SNS email
+  # without exposing template quotes or literal escape sequences.
+  # This Lambda receives the alarm event, builds the email with real
+  # newline characters, and publishes it to the existing SNS topic.
+  MonitoringNotificationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${ProjectName}-${Environment}-monitoring-notification${MonitoringResourceSuffix}"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 15
+      MemorySize: 128
+      InlineCode: |
+        import os
+        import boto3
+
+        sns = boto3.client("sns")
+
+        TOPIC_ARN = os.environ["MONITORING_TOPIC_ARN"]
+
+        SERVICE_INFO = {
+            "rds-cpu": (
+                "RDS / Database",
+                "RDS CPU utilization has reached or exceeded the configured 80% threshold.",
+                "Check RDS CPU utilization, active queries, connections, and database workload."
+            ),
+            "orders-failed": (
+                "Order Processing",
+                "One or more order failures were recorded in the last five minutes.",
+                "Check the Order Lambda logs, order status, database errors, and EventBridge order events."
+            ),
+            "low-stock": (
+                "Inventory",
+                "One or more low-stock events were recorded in the last five minutes.",
+                "Check inventory levels, low-stock thresholds, and the Product Lambda logs."
+            ),
+            "api-5xx": (
+                "API Gateway",
+                "API Gateway has recorded one or more 5XX responses in the last five minutes.",
+                "Check the API integration, Lambda errors, API Gateway execution logs, and recent deployments."
+            ),
+            "order-lambda-errors": (
+                "Order Lambda",
+                "The Order Lambda has recorded one or more execution errors in the last five minutes.",
+                "Check the Order Lambda CloudWatch logs and the related database/EventBridge operations."
+            ),
+            "product-lambda-errors": (
+                "Product Lambda",
+                "The Product Lambda has recorded one or more execution errors in the last five minutes.",
+                "Check the Product Lambda CloudWatch logs, RDS connectivity, and database operations."
+            ),
+            "report-generation-failure": (
+                "Daily Report",
+                "The Daily Report Lambda has recorded one or more execution errors in the last five minutes.",
+                "Check the Daily Report Lambda logs, RDS connectivity, S3 report bucket access, and report generation code."
+            ),
+            "api-4xx": (
+                "API Gateway",
+                "API Gateway has recorded one or more 4XX responses in the last five minutes.",
+                "Check the API request, authentication/authorization, request parameters, and API Gateway logs."
+            ),
+        }
+
+        def lambda_handler(event, context):
+            detail = event.get("detail", {})
+            alarm_name = detail.get("alarmName", "CloudMart Monitoring Alarm")
+            state = detail.get("state", {}).get("value", "ALARM")
+            event_time = event.get("time", "")
+            environment = os.environ["ENVIRONMENT"]
+
+            key = next(
+                (name for name in SERVICE_INFO if name in alarm_name),
+                None
+            )
+
+            if key:
+                service, problem, action = SERVICE_INFO[key]
+            else:
+                service = "CloudMart"
+                problem = "A monitoring alarm has entered the ALARM state."
+                action = "Check the relevant CloudWatch alarm and service logs."
+
+            message = (
+                "CloudMart Monitoring Alert\n\n"
+                f"Environment: {environment}\n"
+                f"Service: {service}\n"
+                f"Alarm: {alarm_name}\n"
+                f"Status: {state}\n"
+                f"Time: {event_time}\n\n"
+                f"{problem}\n\n"
+                "Action:\n"
+                f"{action}\n\n"
+                "CloudMart"
+            )
+
+            subject = f"CloudMart Alert - {service}"
+
+            sns.publish(
+                TopicArn=TOPIC_ARN,
+                Subject=subject[:100],
+                Message=message
+            )
+
+            return {"statusCode": 200}
+
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          MONITORING_TOPIC_ARN: !Ref MonitoringEmailTopic
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sns:Publish
+              Resource: !Ref MonitoringEmailTopic
+
+  # ------------------------------------------------------------
+  # EventBridge monitoring email rules
+  # ------------------------------------------------------------
+  # EventBridge sends the complete alarm event to the formatter Lambda.
+  # The Lambda creates a real multiline plain-text message and publishes
+  # it to the SNS email topic. This avoids literal \n and quote characters
+  # in the email body.
   RdsCpuNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -399,15 +522,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: RDS / Database | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | RDS CPU utilization has reached or exceeded the configured 80% threshold. | Action: Check RDS CPU utilization, active queries, connections, and database workload. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   OrdersFailedNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -427,15 +544,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: Order Processing | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | One or more order failures were recorded in the last five minutes. | Action: Check the Order Lambda logs, order status, database errors, and EventBridge order events. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   LowStockNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -455,15 +566,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: Inventory | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | One or more low-stock events were recorded in the last five minutes. | Action: Check inventory levels, low-stock thresholds, and the Product Lambda logs. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   Api5xxNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -483,15 +588,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: API Gateway | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | API Gateway has recorded one or more 5XX responses in the last five minutes. | Action: Check the API integration, Lambda errors, API Gateway execution logs, and recent deployments. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   OrderLambdaErrorsNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -511,15 +610,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: Order Lambda | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | The Order Lambda has recorded one or more execution errors in the last five minutes. | Action: Check the Order Lambda CloudWatch logs and the related database/EventBridge operations. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   ProductLambdaErrorsNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -539,15 +632,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: Product Lambda | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | The Product Lambda has recorded one or more execution errors in the last five minutes. | Action: Check the Product Lambda CloudWatch logs, RDS connectivity, and database operations. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   ReportGenerationFailureNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -567,15 +654,9 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: Daily Report | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | The Daily Report Lambda has recorded one or more execution errors in the last five minutes. | Action: Check the Daily Report Lambda logs, RDS connectivity, S3 report bucket access, and report generation code. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
   Api4xxNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -595,15 +676,18 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              eventTime: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert | Environment: ${Environment} | Service: API Gateway | Alarm: <alarmName> | Status: <state> | Time: <eventTime> | API Gateway has recorded one or more 4XX responses in the last five minutes. | Action: Check the API request, authentication/authorization, request parameters, and API Gateway logs. | CloudMart"'
+        - Id: MonitoringNotificationLambda
+          Arn: !GetAtt MonitoringNotificationFunction.Arn
+
+  # Lambda permissions for EventBridge alarm notification rules.
+  MonitoringNotificationLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref MonitoringNotificationFunction
+      Principal: events.amazonaws.com
+      SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/${ProjectName}-${Environment}-*-notification${MonitoringResourceSuffix}"
+
   # CloudWatch alarms
   # ------------------------------------------------------------
   RDSCPUAlarm:
