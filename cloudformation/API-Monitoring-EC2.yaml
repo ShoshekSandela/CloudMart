@@ -450,20 +450,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CloudMart Monitoring Alert"
-              ""
-              "Environment: ${Environment}"
-              "Service: Order Processing"
-              "Alarm: <alarmName>"
-              "Status: <state>"
-              "Time: <eventTime>"
-              ""
-              "One or more order failures were recorded in the last five minutes."
-              ""
-              "Action:"
-              "Check the Order Lambda logs, order status, database errors, and EventBridge order events."
-              ""
-              "CloudMart"
+              CloudMart Monitoring Alert
+              
+              Environment: ${Environment}
+              Service: Order Processing
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+              
+              One or more order failures were recorded in the last five minutes.
+              
+              Action:
+              Check the Order Lambda logs, order status, database errors, and EventBridge order events.
+            
+              CloudMart
   LowStockNotification:
     Type: AWS::Events::Rule
     Properties:
