@@ -4,7 +4,7 @@ Transform: AWS::Serverless-2016-10-31
 Description: >
   CloudMart Milestone 5 monitoring stack.
   Creates the reporting Lambda, daily schedule, operations EC2 dashboard,
-  CloudWatch dashboard, eight alarms, and SNS notifications.
+  CloudWatch dashboard, eight alarms, and direct SES email notifications.
 
 Parameters:
   Environment:
@@ -254,6 +254,7 @@ Resources:
             Environment="AUTH_TOKEN_PARAMETER_NAME=/cloudmart/${ENVIRONMENT}/auth/token"
             Environment="REPORT_BUCKET_NAME=${REPORT_BUCKET}"
             Environment="REPORT_PREFIX=reports"
+            Environment="DAILY_REPORT_FUNCTION_NAME=${PROJECT_NAME}-${ENVIRONMENT}-daily-report${MONITORING_RESOURCE_SUFFIX}"
             Environment="PORT=80"
 
             ExecStart=/opt/cloudmart/dashboard/venv/bin/gunicorn \
@@ -330,84 +331,11 @@ Resources:
               Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
             SOURCE_PREFIX: !Ref DashboardSourcePrefix
             ENVIRONMENT: !Ref Environment
+            PROJECT_NAME: !Ref ProjectName
+            MONITORING_RESOURCE_SUFFIX: !Ref MonitoringResourceSuffix
             AWS_REGION: !Ref "AWS::Region"
             BOOTSTRAP_VERSION: !Ref DashboardBootstrapVersion
 
-
-  # ------------------------------------------------------------
-  # SNS topics for alarm actions and formatted monitoring email
-  # ------------------------------------------------------------
-  # CloudWatch alarms point to MonitoringTopic. This makes the
-  # notification action visible on every CloudWatch alarm.
-  # EventBridge separately formats the alarm event and sends it to
-  # MonitoringEmailTopic for the professional email notification.
-  MonitoringTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-monitoring${MonitoringResourceSuffix}"
-      DisplayName: !Sub "CloudMart ${Environment} Alarm Actions"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  MonitoringEmailTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-monitoring-email${MonitoringResourceSuffix}"
-      DisplayName: !Sub "CloudMart ${Environment} Monitoring Email"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
-  MonitoringEmailSubscription:
-    Type: AWS::SNS::Subscription
-    Properties:
-      TopicArn: !Ref MonitoringEmailTopic
-      Protocol: email
-      Endpoint: !Ref NotificationEmail
-
-  # EventBridge needs permission to publish the formatted message.
-  # SourceAccount avoids a CloudFormation dependency cycle between
-  # the SNS topic policy, EventBridge rules, and CloudWatch alarms.
-  MonitoringEmailTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      Topics:
-        - !Ref MonitoringEmailTopic
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowEventBridgeFromThisAccount
-            Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref MonitoringEmailTopic
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
-
-  MonitoringTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      Topics:
-        - !Ref MonitoringTopic
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowCloudWatchAlarmActions
-            Effect: Allow
-            Principal:
-              Service: cloudwatch.amazonaws.com
-            Action: sns:Publish
-            Resource: !Ref MonitoringTopic
-            Condition:
-              StringEquals:
-                aws:SourceAccount: !Ref AWS::AccountId
 
   # ------------------------------------------------------------
   # CloudWatch alarms
@@ -429,10 +357,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -450,10 +378,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   LowStockAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -471,10 +399,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   API5XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -494,10 +422,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
   # Additional application and API alarms
@@ -518,10 +446,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -539,10 +467,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -560,10 +488,10 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
   API4XXAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -583,243 +511,139 @@ Resources:
       DatapointsToAlarm: 1
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
-      AlarmActions: 
-        - !Ref MonitoringTopic
-      OKActions: []
-      InsufficientDataActions: []
+      ActionsEnabled: true
+      AlarmActions:
+        - !GetAtt AlarmNotificationFunction.Arn
+      TreatMissingData: notBreaching
 
 
-  RDSCPUAlarmNotificationRule:
-    Type: AWS::Events::Rule
+  # ------------------------------------------------------------
+  # Direct alarm email notification Lambda
+  # ------------------------------------------------------------
+  # CloudWatch alarms invoke this function directly.
+  # The function sends email through Amazon SES, so there is no SNS email
+  # subscription and no PendingConfirmation state.
+  AlarmNotificationFunction:
+    Type: AWS::Serverless::Function
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-rds-cpu-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref RDSCPUAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nRDS CPU utilization has reached 80% or higher.\\n\\nRecommended Action\\nCheck the RDS instance and CloudWatch dashboard.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+      FunctionName: !Sub "${ProjectName}-${Environment}-alarm-notification${MonitoringResourceSuffix}"
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Timeout: 30
+      MemorySize: 128
+      InlineCode: |
+        import json
+        import logging
+        import os
+        from datetime import datetime, timezone
 
-  OrdersFailedAlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-orders-failed-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref OrdersFailedAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nOne or more orders have failed.\\n\\nRecommended Action\\nCheck the Order Lambda and order processing logs.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+        import boto3
 
-  LowStockAlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-low-stock-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref LowStockAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nA product has reached the configured low-stock threshold.\\n\\nRecommended Action\\nCheck inventory levels and the CloudMart dashboard.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+        logger = logging.getLogger()
+        logger.setLevel(logging.INFO)
 
-  API5XXAlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-api-5xx-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref API5XXAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nAPI Gateway has received one or more 5XX errors.\\n\\nRecommended Action\\nCheck API Gateway and the related Lambda logs.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+        ses = boto3.client("ses")
+        admin_email = os.environ["ADMIN_EMAIL"]
 
-  OrderLambdaErrorsAlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-order-lambda-errors-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref OrderLambdaErrorsAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nThe Order Lambda has encountered an execution error.\\n\\nRecommended Action\\nCheck the Order Lambda logs and recent order requests.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+        def _alarm_name(detail):
+            return detail.get("alarmName", "CloudWatch Alarm")
 
-  ProductLambdaErrorsAlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-product-lambda-errors-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref ProductLambdaErrorsAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nThe Product Lambda has encountered an execution error.\\n\\nRecommended Action\\nCheck the Product Lambda logs and recent API requests.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+        def _service(alarm_name):
+            name = alarm_name.lower()
+            if "api-4xx" in name:
+                return "API Gateway"
+            if "api-5xx" in name:
+                return "API Gateway"
+            if "rds-cpu" in name:
+                return "RDS"
+            if "low-stock" in name:
+                return "Inventory"
+            if "orders-failed" in name:
+                return "Order Processing"
+            if "order-lambda" in name:
+                return "Order Lambda"
+            if "product-lambda" in name:
+                return "Product Lambda"
+            if "report-generation" in name:
+                return "Daily Report Lambda"
+            return "CloudMart Monitoring"
 
-  ReportGenerationFailureAlarmNotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "${ProjectName}-${Environment}-report-generation-failure-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref ReportGenerationFailureAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nThe daily report could not be generated successfully.\\n\\nRecommended Action\\nCheck the Daily Report Lambda logs and report process.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+        def _description(alarm_name):
+            name = alarm_name.lower()
+            if "api-4xx" in name:
+                return "An API Gateway 4XX error was detected."
+            if "api-5xx" in name:
+                return "An API Gateway 5XX error was detected."
+            if "rds-cpu" in name:
+                return "RDS CPU utilization reached the configured threshold."
+            if "low-stock" in name:
+                return "A product inventory level reached the low-stock threshold."
+            if "orders-failed" in name:
+                return "A failed order was detected."
+            if "order-lambda" in name:
+                return "The Order Lambda reported an execution error."
+            if "product-lambda" in name:
+                return "The Product Lambda reported an execution error."
+            if "report-generation" in name:
+                return "The Daily Report Lambda reported an execution error."
+            return "A CloudWatch alarm changed state."
 
-  API4XXAlarmNotificationRule:
-    Type: AWS::Events::Rule
+        def lambda_handler(event, context):
+            detail = event.get("detail", {})
+            state = detail.get("state", {}).get("value", "UNKNOWN")
+            alarm_name = _alarm_name(detail)
+            service = _service(alarm_name)
+            description = _description(alarm_name)
+
+            event_time = event.get("time")
+            if event_time:
+                try:
+                    dt = datetime.fromisoformat(event_time.replace("Z", "+00:00"))
+                    event_time = dt.astimezone(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+                except ValueError:
+                    pass
+
+            message = (
+                "CLOUDMART MONITORING ALERT\n\n"
+                f"Alert   : {service}\n"
+                f"Status  : {state}\n"
+                f"Alarm   : {alarm_name}\n\n"
+                f"{description}\n\n"
+                "Action  : Check the CloudWatch alarm and related service logs.\n\n"
+                f"Time    : {event_time or 'Not available'}"
+            )
+
+            ses.send_email(
+                Source=admin_email,
+                Destination={"ToAddresses": [admin_email]},
+                Message={
+                    "Subject": {"Data": f"[CloudMart] {service} - {state}"},
+                    "Body": {"Text": {"Data": message}},
+                },
+            )
+
+            logger.info("Alarm email sent through SES for %s", alarm_name)
+            return {"statusCode": 200, "body": json.dumps({"message": "Notification sent"})}
+
+      Environment:
+        Variables:
+          ADMIN_EMAIL: !Ref NotificationEmail
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+              Resource: "*"
+
+  # CloudWatch service permission for direct alarm -> Lambda invocation.
+  # One permission covers all CloudMart alarms in this AWS account.
+  CloudWatchAlarmInvokePermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      Name: !Sub "${ProjectName}-${Environment}-api-4xx-notification${MonitoringResourceSuffix}"
-      Description: !Sub "Formats ${ProjectName}-${Environment} alarm notifications for email."
-      EventBusName: default
-      State: ENABLED
-      EventPattern:
-        source:
-          - aws.cloudwatch
-        detail-type:
-          - CloudWatch Alarm State Change
-        detail:
-          alarmName:
-            - !Ref API4XXAlarm
-          state:
-            value:
-              - ALARM
-      Targets:
-        - Id: MonitoringEmailTopic
-          Arn: !Ref MonitoringEmailTopic
-          InputTransformer:
-            InputPathsMap:
-              alarmName: $.detail.alarmName
-              state: $.detail.state.value
-              time: $.time
-              region: $.region
-            InputTemplate: !Sub '"CloudMart Monitoring Alert\\n\\n----------------------------------------\\nAlarm       : <alarmName>\\nStatus      : <state>\\nEnvironment : ${Environment}\\nRegion      : <region>\\nDetected At : <time>\\n\\nIssue\\nAPI Gateway has received one or more 4XX errors.\\n\\nRecommended Action\\nCheck the API request and API Gateway logs.\\n\\n----------------------------------------\\nCloudMart Monitoring"'
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AlarmNotificationFunction
+      Principal: lambda.alarms.cloudwatch.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
 
   # ------------------------------------------------------------
   # CloudWatch operations dashboard
@@ -1068,22 +892,6 @@ Outputs:
     Description: Existing CloudMart report bucket used by the dashboard and report Lambda.
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
-
-  MonitoringTopicArn:
-    Description: CloudFormation-managed SNS topic used by all monitoring alarms.
-    Value: !Ref MonitoringTopic
-
-  MonitoringTopicName:
-    Description: SNS topic name used by CloudWatch alarms for monitoring actions.
-    Value: !GetAtt MonitoringTopic.TopicName
-
-  MonitoringEmailTopicArn:
-    Description: SNS topic ARN used by EventBridge for formatted monitoring email notifications.
-    Value: !Ref MonitoringEmailTopic
-
-  MonitoringEmailTopicName:
-    Description: SNS topic name used by EventBridge for formatted monitoring email notifications.
-    Value: !GetAtt MonitoringEmailTopic.TopicName
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.

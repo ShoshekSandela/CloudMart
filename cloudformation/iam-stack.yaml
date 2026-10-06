@@ -94,13 +94,6 @@ Resources:
               - ssm:DescribeInstanceInformation
             Resource: "*"
 
-          - Sid: ReadCloudFormationEvents
-            Effect: Allow
-            Action:
-              - cloudformation:DescribeStackEvents
-              - cloudformation:DescribeChangeSet
-            Resource: "*"
-
           - Sid: ReadCloudFormationExecutionRole
             Effect: Allow
             Action:
@@ -516,6 +509,16 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
+        - PolicyName: CloudMartECDashboardReportInvoke
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: InvokeDailyReportLambda
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function/cloudmart-${Environment}-daily-report*
+
         - PolicyName: CloudMartECDashboardS3Read
           PolicyDocument:
             Version: "2012-10-17"

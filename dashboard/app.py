@@ -28,6 +28,7 @@ _boto3_kwargs = {"region_name": AWS_REGION} if AWS_REGION else {}
 
 ssm = boto3.client("ssm", **_boto3_kwargs)
 s3 = boto3.client("s3", **_boto3_kwargs)
+lambda_client = boto3.client("lambda", **_boto3_kwargs)
 
 PAGE_SIZE = 10
 REPORT_KEY_PATTERN = re.compile(r"(?:^|/)daily-report-(\d{8})-(\d{6})\.csv$")
@@ -579,6 +580,7 @@ def reports_page():
     selected_date = None
     date_error = None
     view_error = None
+    generation_error = None
 
     if requested:
         try:
@@ -591,6 +593,39 @@ def reports_page():
     # Default to the newest available report only when no date was selected.
     if selected_date is None and reports:
         selected_date = reports[0]["date"]
+
+    # ---------------------------------------------------------
+    # GENERATE TODAY'S REPORT AUTOMATICALLY WHEN NONE EXISTS
+    # ---------------------------------------------------------
+    # The Operations EC2 instance invokes the existing Daily Report Lambda.
+    # No additional Lambda is created and no sample data is inserted into RDS.
+    today = date.today()
+
+    if requested and selected_date == today and not selected_report(reports, selected_date):
+        try:
+            function_name = os.environ["DAILY_REPORT_FUNCTION_NAME"]
+
+            response = lambda_client.invoke(
+                FunctionName=function_name,
+                InvocationType="RequestResponse",
+                Payload=json.dumps({}).encode("utf-8"),
+            )
+
+            if response.get("FunctionError"):
+                payload = response.get("Payload")
+                details = payload.read().decode("utf-8") if payload else ""
+                app.logger.error("Daily report Lambda failed: %s", details)
+                generation_error = "The report could not be generated. Check the Daily Report Lambda logs."
+            else:
+                # Refresh S3 after the synchronous Lambda invocation.
+                reports = list_report_objects()
+
+        except KeyError:
+            app.logger.exception("DAILY_REPORT_FUNCTION_NAME is not configured.")
+            generation_error = "Daily report generation is not configured on the dashboard."
+        except Exception:
+            app.logger.exception("Unable to generate today's report from the dashboard.")
+            generation_error = "The report could not be generated. Check the dashboard logs."
 
     # Find the report belonging to the selected date.
     chosen = selected_report(reports, selected_date)
@@ -733,6 +768,8 @@ def reports_page():
         reports=reports_page_rows,
         chosen_report=chosen,
         selected_date=selected_date.isoformat() if selected_date else "",
+        today_date=today.isoformat(),
+        generation_error=generation_error,
         date_error=date_error,
         pager=pager,
         view_report=view_report,
