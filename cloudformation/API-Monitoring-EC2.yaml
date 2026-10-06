@@ -17,7 +17,6 @@ Parameters:
   NotificationEmail:
     Type: String
     AllowedPattern: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-    Description: Destination email address for CloudMart monitoring alerts.
 
   EC2InstanceType:
     Type: String
@@ -339,138 +338,44 @@ Resources:
 
 
   # ------------------------------------------------------------
-  # Monitoring email delivery
   # ------------------------------------------------------------
-  # EventBridge invokes this Lambda directly. The Lambda sends the
-  # formatted email through Amazon SES, so the SNS email unsubscribe
-  # footer is not appended to the message.
-  MonitoringEmailFunctionRole:
-    Type: AWS::IAM::Role
+  # Monitoring SNS topics
+  # ------------------------------------------------------------
+  MonitoringEmailTopic:
+    Type: AWS::SNS::Topic
     Properties:
-      RoleName: !Sub "${ProjectName}-${Environment}-monitoring-email-role${MonitoringResourceSuffix}"
-      AssumeRolePolicyDocument:
+      TopicName: !Sub "${ProjectName}-${Environment}-monitoring-email${MonitoringResourceSuffix}"
+      Tags:
+        - Key: Project
+          Value: CloudMart
+        - Key: Environment
+          Value: !Ref Environment
+
+  MonitoringEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref MonitoringEmailTopic
+      Protocol: email
+      Endpoint: !Ref NotificationEmail
+
+  MonitoringEmailTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref MonitoringEmailTopic
+      PolicyDocument:
         Version: "2012-10-17"
         Statement:
-          - Effect: Allow
+          - Sid: AllowEventBridgeToPublish
+            Effect: Allow
             Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
-      Policies:
-        - PolicyName: AllowSesSendEmail
-          PolicyDocument:
-            Version: "2012-10-17"
-            Statement:
-              - Effect: Allow
-                Action:
-                  - ses:SendEmail
-                  - ses:SendRawEmail
-                Resource: "*"
-
-  MonitoringEmailFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      FunctionName: !Sub "${ProjectName}-${Environment}-monitoring-email${MonitoringResourceSuffix}"
-      Runtime: python3.12
-      Handler: index.lambda_handler
-      Role: !GetAtt MonitoringEmailFunctionRole.Arn
-      Timeout: 30
-      MemorySize: 128
-      Environment:
-        Variables:
-          NOTIFICATION_EMAIL: !Ref NotificationEmail
-          NOTIFICATION_FROM_EMAIL: !Ref NotificationEmail
-          ENVIRONMENT: !Ref Environment
-
-      InlineCode: |
-        import json
-        import logging
-        import os
-        import boto3
-
-        logger = logging.getLogger()
-        logger.setLevel(logging.INFO)
-
-        ses = boto3.client("ses")
-
-        def lambda_handler(event, context):
-            logger.info("Monitoring notification event: %s", json.dumps(event))
-
-            alarm_name = event.get("alarmName", "CloudMart Alarm")
-            status = event.get("state", "ALARM")
-            event_time = event.get("eventTime", "")
-            region = event.get("region", "")
-            environment = os.environ.get("ENVIRONMENT", "dev")
-            service = event.get("service", "CloudMart Monitoring")
-            problem = event.get("problem", "A monitored CloudMart condition requires attention.")
-            action = event.get("action", "Check the CloudMart dashboard and relevant AWS logs.")
-
-            subject = f"CloudMart Monitoring Alert - {service} - {status}"
-
-            text_body = f"""CLOUDMART MONITORING ALERT
-
-        Environment : {environment}
-        Service     : {service}
-        Alarm       : {alarm_name}
-        Status      : {status}
-        Region      : {region}
-        Time        : {event_time}
-
-        PROBLEM
-        {problem}
-
-        ACTION REQUIRED
-        {action}
-
-        CloudMart Monitoring
-        """
-
-            html_body = f"""<!DOCTYPE html>
-        <html>
-        <body style="font-family:Arial,Helvetica,sans-serif;background:#f4f6f8;padding:24px;color:#1f2937;">
-          <div style="max-width:680px;margin:auto;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;padding:28px;">
-            <h2 style="margin-top:0;">CLOUDMART MONITORING ALERT</h2>
-            <table style="width:100%;border-collapse:collapse;margin:20px 0;">
-              <tr><td style="padding:7px 0;font-weight:bold;">Environment</td><td>{environment}</td></tr>
-              <tr><td style="padding:7px 0;font-weight:bold;">Service</td><td>{service}</td></tr>
-              <tr><td style="padding:7px 0;font-weight:bold;">Alarm</td><td>{alarm_name}</td></tr>
-              <tr><td style="padding:7px 0;font-weight:bold;">Status</td><td>{status}</td></tr>
-              <tr><td style="padding:7px 0;font-weight:bold;">Region</td><td>{region}</td></tr>
-              <tr><td style="padding:7px 0;font-weight:bold;">Time</td><td>{event_time}</td></tr>
-            </table>
-            <h3>PROBLEM</h3>
-            <p>{problem}</p>
-            <h3>ACTION REQUIRED</h3>
-            <p>{action}</p>
-            <hr style="border:0;border-top:1px solid #e5e7eb;margin:24px 0;">
-            <p style="color:#6b7280;font-size:13px;">CloudMart Monitoring</p>
-          </div>
-        </body>
-        </html>"""
-
-            response = ses.send_email(
-                Source=os.environ["NOTIFICATION_FROM_EMAIL"],
-                Destination={"ToAddresses": [os.environ["NOTIFICATION_EMAIL"]]},
-                Message={
-                    "Subject": {"Data": subject, "Charset": "UTF-8"},
-                    "Body": {
-                        "Text": {"Data": text_body, "Charset": "UTF-8"},
-                        "Html": {"Data": html_body, "Charset": "UTF-8"},
-                    },
-                },
-            )
-
-            logger.info("Monitoring email sent. MessageId=%s", response["MessageId"])
-            return {"statusCode": 200, "messageId": response["MessageId"]}
-
-  MonitoringEmailInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      Action: lambda:InvokeFunction
-      FunctionName: !Ref MonitoringEmailFunction
-      Principal: events.amazonaws.com
-      SourceAccount: !Ref AWS::AccountId
+              Service: events.amazonaws.com
+            Action:
+              - sns:Publish
+            Resource: !Ref MonitoringEmailTopic
+            Condition:
+              StringEquals:
+                AWS:SourceAccount: !Ref AWS::AccountId
 
   # ------------------------------------------------------------
   # EventBridge formatted monitoring email rules
@@ -494,8 +399,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -503,16 +408,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "RDS / Database",
-                "problem": "RDS CPU utilization has reached or exceeded the configured 80% threshold.",
-                "action": "Check RDS CPU utilization, active queries, connections, and database workload."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : RDS / Database\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nRDS CPU utilization has reached or exceeded the configured 80% threshold.\n\nACTION REQUIRED\nCheck RDS CPU utilization, active queries, connections, and database workload.\n\nCloudMart Monitoring"
   OrdersFailedNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -532,8 +428,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -541,16 +437,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "Order Processing",
-                "problem": "One or more order failures were recorded in the last five minutes.",
-                "action": "Check the Order Lambda logs, order status, database errors, and EventBridge order events."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Order Processing\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nOne or more order failures were recorded in the last five minutes.\n\nACTION REQUIRED\nCheck the Order Lambda logs, order status, database errors, and EventBridge order events.\n\nCloudMart Monitoring"
   LowStockNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -570,8 +457,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -579,16 +466,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "Inventory",
-                "problem": "One or more low-stock events were recorded in the last five minutes.",
-                "action": "Check inventory levels, low-stock thresholds, and the Product Lambda logs."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Inventory\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nOne or more low-stock events were recorded in the last five minutes.\n\nACTION REQUIRED\nCheck inventory levels, low-stock thresholds, and the Product Lambda logs.\n\nCloudMart Monitoring"
   Api5xxNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -608,8 +486,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -617,16 +495,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "API Gateway",
-                "problem": "API Gateway has recorded one or more 5XX responses in the last five minutes.",
-                "action": "Check the API integration, Lambda errors, API Gateway execution logs, and recent deployments."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : API Gateway\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nAPI Gateway has recorded one or more 5XX responses in the last five minutes.\n\nACTION REQUIRED\nCheck the API integration, Lambda errors, API Gateway execution logs, and recent deployments.\n\nCloudMart Monitoring"
   OrderLambdaErrorsNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -646,8 +515,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -655,16 +524,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "Order Lambda",
-                "problem": "The Order Lambda has recorded one or more execution errors in the last five minutes.",
-                "action": "Check the Order Lambda CloudWatch logs and the related database/EventBridge operations."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Order Lambda\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nThe Order Lambda has recorded one or more execution errors in the last five minutes.\n\nACTION REQUIRED\nCheck the Order Lambda CloudWatch logs and the related database/EventBridge operations.\n\nCloudMart Monitoring"
   ProductLambdaErrorsNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -684,8 +544,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -693,16 +553,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "Product Lambda",
-                "problem": "The Product Lambda has recorded one or more execution errors in the last five minutes.",
-                "action": "Check the Product Lambda CloudWatch logs, RDS connectivity, and database operations."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Product Lambda\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nThe Product Lambda has recorded one or more execution errors in the last five minutes.\n\nACTION REQUIRED\nCheck the Product Lambda CloudWatch logs, RDS connectivity, and database operations.\n\nCloudMart Monitoring"
   ReportGenerationFailureNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -722,8 +573,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -731,16 +582,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "Daily Report",
-                "problem": "The Daily Report Lambda has recorded one or more execution errors in the last five minutes.",
-                "action": "Check the Daily Report Lambda logs, RDS connectivity, S3 report bucket access, and report generation code."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Daily Report\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nThe Daily Report Lambda has recorded one or more execution errors in the last five minutes.\n\nACTION REQUIRED\nCheck the Daily Report Lambda logs, RDS connectivity, S3 report bucket access, and report generation code.\n\nCloudMart Monitoring"
   Api4xxNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -760,8 +602,8 @@ Resources:
             value:
               - ALARM
       Targets:
-        - Id: MonitoringEmailFunction
-          Arn: !GetAtt MonitoringEmailFunction.Arn
+        - Id: MonitoringEmailTopic
+          Arn: !Ref MonitoringEmailTopic
           InputTransformer:
             InputPathsMap:
               alarmName: $.detail.alarmName
@@ -769,16 +611,8 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              {
-                "alarmName": "<alarmName>",
-                "state": "<state>",
-                "eventTime": "<eventTime>",
-                "region": "<region>",
-                "environment": "${Environment}",
-                "service": "API Gateway",
-                "problem": "API Gateway has recorded one or more 4XX responses in the last five minutes.",
-                "action": "Check the API request, authentication/authorization, request parameters, and API Gateway logs."
-              }
+              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : API Gateway\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nAPI Gateway has recorded one or more 4XX responses in the last five minutes.\n\nACTION REQUIRED\nCheck the API request, authentication/authorization, request parameters, and API Gateway logs.\n\nCloudMart Monitoring"
+  # CloudWatch alarms
   # ------------------------------------------------------------
   RDSCPUAlarm:
     Type: AWS::CloudWatch::Alarm
@@ -1189,9 +1023,9 @@ Outputs:
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
 
-  MonitoringEmailFunctionArn:
-    Description: Lambda used by EventBridge to send formatted monitoring emails through Amazon SES.
-    Value: !GetAtt MonitoringEmailFunction.Arn
+  MonitoringEmailTopicArn:
+    Description: SNS topic targeted by EventBridge for formatted monitoring emails.
+    Value: !Ref MonitoringEmailTopic
 
   OperationsDashboardName:
     Description: CloudWatch operations dashboard name.
