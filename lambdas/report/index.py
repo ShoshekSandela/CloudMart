@@ -65,76 +65,81 @@ def sample_products(sample_time):
 def lambda_handler(event, context):
     event = event or {}
     use_sample_data = bool(event.get("use_sample_data", False))
-    sample_time = datetime.now(timezone.utc)
+
+    # Sample data uses the current UTC calendar date only.
+    # It never contains a fixed clock time.
+    sample_date = datetime.now(timezone.utc).date().isoformat()
 
     products = []
     orders = []
 
-    # The report must still be generated for dashboard verification when
-    # RDS contains no orders. If RDS is temporarily unavailable, create a
-    # clearly logged demo report instead of failing before the S3 upload.
-    try:
-        connection = get_connection()
+    if use_sample_data:
+        logger.info("Sample-data mode requested; skipping RDS access.")
+        products = sample_products(sample_date)
+        orders = sample_orders(sample_date)
+    else:
+        # If RDS is unavailable or contains no orders, the Lambda falls back
+        # to the built-in sample data so report generation can still succeed.
         try:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT
-                        product_id,
-                        name,
-                        stock_quantity,
-                        low_stock_threshold,
-                        status,
-                        updated_at
-                    FROM products
-                    WHERE status = 'ACTIVE'
-                    ORDER BY product_id
-                    """
-                )
-                products = cursor.fetchall()
+            connection = get_connection()
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        """
+                        SELECT
+                            product_id,
+                            name,
+                            stock_quantity,
+                            low_stock_threshold,
+                            status,
+                            updated_at
+                        FROM products
+                        WHERE status = 'ACTIVE'
+                        ORDER BY product_id
+                        """
+                    )
+                    products = cursor.fetchall()
 
-                cursor.execute(
-                    """
-                    SELECT
-                        o.order_id,
-                        c.customer_name,
-                        o.status,
-                        o.total_amount,
-                        o.created_at
-                    FROM orders o
-                    JOIN customers c ON c.customer_id = o.customer_id
-                    ORDER BY o.created_at DESC
-                    LIMIT 100
-                    """
-                )
-                orders = cursor.fetchall()
-        finally:
-            connection.close()
+                    cursor.execute(
+                        """
+                        SELECT
+                            o.order_id,
+                            c.customer_name,
+                            o.status,
+                            o.total_amount,
+                            o.created_at
+                        FROM orders o
+                        JOIN customers c ON c.customer_id = o.customer_id
+                        ORDER BY o.created_at DESC
+                        LIMIT 100
+                        """
+                    )
+                    orders = cursor.fetchall()
+            finally:
+                connection.close()
 
-        logger.info("RDS report data loaded: products=%d orders=%d", len(products), len(orders))
+            logger.info("RDS report data loaded: products=%d orders=%d", len(products), len(orders))
 
-    except Exception:
-        logger.exception("RDS data could not be loaded. Generating a demo report so the dashboard can be populated.")
-        products = []
-        orders = []
+        except Exception:
+            logger.exception(
+                "RDS data could not be loaded. Generating a built-in sample report instead."
+            )
+            products = []
+            orders = []
 
-    if not products:
-        products = sample_products(sample_time)
-        logger.info("Using %d sample products for this report.", len(products))
+        if not products:
+            products = sample_products(sample_date)
+            logger.info("Using %d sample products for this report.", len(products))
 
-    if use_sample_data or not orders:
-        orders = sample_orders(sample_time)
-        logger.info(
-            "Using %d sample orders for this report only. No sample data is inserted into RDS.",
-            len(orders),
-        )
+        if not orders:
+            orders = sample_orders(sample_date)
+            logger.info(
+                "Using %d sample orders for this report only. No sample data is inserted into RDS.",
+                len(orders),
+            )
 
-
-    # Build one normalized CSV file.  Every data row has a record_type so the
+    # Build one normalized CSV file. Every data row has a record_type so the
     # dashboard can reliably separate products and orders.
-    #
-    # This also avoids the old section-header format ("PRODUCT REPORT" /
-    # "ORDER REPORT"), which csv.DictReader cannot interpret as normal rows.
     output = io.StringIO()
     writer = csv.writer(output)
 
@@ -176,8 +181,11 @@ def lambda_handler(event, context):
             order["created_at"],
         ])
 
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    key = f"{os.environ.get('REPORT_PREFIX', 'reports')}/daily-report-{timestamp}.csv"
+    # One report per UTC calendar day. A manual dashboard generation and the
+    # EventBridge run on the same day update the same CSV instead of creating
+    # multiple files with different clock times.
+    report_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    key = f"{os.environ.get('REPORT_PREFIX', 'reports')}/daily-report-{report_date}.csv"
 
     csv_body = output.getvalue().encode("utf-8")
 
@@ -207,6 +215,8 @@ def lambda_handler(event, context):
         "statusCode": 200,
         "report_bucket": os.environ["REPORT_BUCKET_NAME"],
         "report_key": key,
+        "report_date": report_date,
         "products": len(products),
         "orders": len(orders),
+        "used_sample_data": use_sample_data or not products or not orders,
     }

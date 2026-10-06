@@ -31,7 +31,7 @@ s3 = boto3.client("s3", **_boto3_kwargs)
 lambda_client = boto3.client("lambda", **_boto3_kwargs)
 
 PAGE_SIZE = 10
-REPORT_KEY_PATTERN = re.compile(r"(?:^|/)daily-report-(\d{8})-(\d{6})\.csv$")
+REPORT_KEY_PATTERN = re.compile(r"(?:^|/)daily-report-(\d{4})-?(\d{2})-?(\d{2})(?:-(\d{6}))?\.csv$")
 
 
 def get_parameter(name, decrypt=True):
@@ -425,9 +425,17 @@ def list_report_objects():
             match = REPORT_KEY_PATTERN.search(key)
             if match:
                 try:
-                    report_date = datetime.strptime(match.group(1), "%Y%m%d").date()
-                    report_time = datetime.strptime(match.group(2), "%H%M%S").time()
-                    generated_at = datetime.combine(report_date, report_time, tzinfo=timezone.utc)
+                    year, month, day, report_time_text = match.groups()
+                    report_date = datetime.strptime(
+                        f"{year}-{month}-{day}", "%Y-%m-%d"
+                    ).date()
+                    if report_time_text:
+                        report_time = datetime.strptime(report_time_text, "%H%M%S").time()
+                        generated_at = datetime.combine(
+                            report_date, report_time, tzinfo=timezone.utc
+                        )
+                    else:
+                        generated_at = item["LastModified"]
                 except ValueError:
                     report_date = item["LastModified"].date()
                     generated_at = item["LastModified"]

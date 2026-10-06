@@ -509,7 +509,7 @@ Resources:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/username
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/database/password
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cloudmart/${Environment}/auth/token
-        - PolicyName: CloudMartECDashboardReportInvoke
+        - PolicyName: CloudMartDailyReportInvoke
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
@@ -517,7 +517,7 @@ Resources:
                 Effect: Allow
                 Action:
                   - lambda:InvokeFunction
-                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function/cloudmart-${Environment}-daily-report*
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:cloudmart-${Environment}-daily-report*
 
         - PolicyName: CloudMartECDashboardS3Read
           PolicyDocument:
@@ -528,15 +528,15 @@ Resources:
                 Action:
                   - s3:ListBucket
                 Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-data-${Environment}-*
 
               - Sid: ReadDashboardAndReportObjects
                 Effect: Allow
                 Action:
                   - s3:GetObject
                 Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports/dashboard-source/*
-                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-${Environment}-reports/reports/*
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-data-${Environment}-*/dashboard-source/*
+                  - !Sub arn:${AWS::Partition}:s3:::cloudmart-data-${Environment}-*/reports/*
       Tags:
         - Key: Project
           Value: CloudMart
