@@ -138,12 +138,9 @@ def lambda_handler(event, context):
                 len(orders),
             )
 
-    # Build ONE CSV file with two separate sections:
-    # PRODUCTS first, then ORDERS. Each section has its own header.
     output = io.StringIO()
     writer = csv.writer(output)
 
-    # ---------------- PRODUCTS ----------------
     writer.writerow(["PRODUCTS"])
     writer.writerow([
         "product_id",
@@ -164,10 +161,8 @@ def lambda_handler(event, context):
             product["updated_at"],
         ])
 
-    # Blank row separating the two sections.
     writer.writerow([])
 
-    # ---------------- ORDERS ----------------
     writer.writerow(["ORDERS"])
     writer.writerow([
         "order_id",
