@@ -441,15 +441,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   OrdersFailedNotification:
     Type: AWS::Events::Rule
@@ -480,15 +472,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   LowStockNotification:
     Type: AWS::Events::Rule
@@ -519,15 +503,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   Api5xxNotification:
     Type: AWS::Events::Rule
@@ -558,15 +534,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   OrderLambdaErrorsNotification:
     Type: AWS::Events::Rule
@@ -597,15 +565,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   ProductLambdaErrorsNotification:
     Type: AWS::Events::Rule
@@ -636,15 +596,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   ReportGenerationFailureNotification:
     Type: AWS::Events::Rule
@@ -675,15 +627,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   Api4xxNotification:
     Type: AWS::Events::Rule
@@ -714,15 +658,7 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: |
-              "CLOUDMART MONITORING ALERT
-
-              Alert   : <alarmName>
-              Status  : <state>
-              Reason  : <reason>
-              Time    : <eventTime>
-              Region  : <region>
-
-              Action  : Check the CloudWatch alarm and related service logs."
+              "CLOUDMART MONITORING ALERT\nAlert : <alarmName>\nStatus : <state>\nReason : <reason>\nTime : <eventTime>\nRegion : <region>\nAction : Check the CloudWatch alarm and related service logs."
 
   # CloudWatch alarms
   # ------------------------------------------------------------
