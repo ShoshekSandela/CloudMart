@@ -138,45 +138,50 @@ def lambda_handler(event, context):
                 len(orders),
             )
 
-    # Build one normalized CSV file. Every data row has a record_type so the
-    # dashboard can reliably separate products and orders.
+    # Build ONE CSV file with two separate sections:
+    # PRODUCTS first, then ORDERS. Each section has its own header.
     output = io.StringIO()
     writer = csv.writer(output)
 
+    # ---------------- PRODUCTS ----------------
+    writer.writerow(["PRODUCTS"])
     writer.writerow([
-        "record_type",
-        "id",
+        "product_id",
         "name",
-        "customer",
         "status",
         "stock_quantity",
         "low_stock_threshold",
-        "total_amount",
-        "created_or_updated_at",
+        "updated_at",
     ])
 
     for product in products:
         writer.writerow([
-            "PRODUCT",
             product["product_id"],
             product["name"],
-            "",
             product["status"],
             product["stock_quantity"],
             product["low_stock_threshold"],
-            "",
             product["updated_at"],
         ])
 
+    # Blank row separating the two sections.
+    writer.writerow([])
+
+    # ---------------- ORDERS ----------------
+    writer.writerow(["ORDERS"])
+    writer.writerow([
+        "order_id",
+        "customer",
+        "status",
+        "total_amount",
+        "created_at",
+    ])
+
     for order in orders:
         writer.writerow([
-            "ORDER",
             order["order_id"],
-            "",
             order["customer_name"],
             order["status"],
-            "",
-            "",
             order["total_amount"],
             order["created_at"],
         ])

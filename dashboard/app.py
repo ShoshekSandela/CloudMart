@@ -682,19 +682,21 @@ def reports_page():
                         elif record_type == "ORDER":
                             order_report_rows.append(row)
                 else:
-                    # Legacy format:
-                    # PRODUCT REPORT
-                    # <blank>
-                    # id,name,status,...
+                    # Current section-based CSV format:
+                    # PRODUCTS
+                    # product_id,name,status,stock_quantity,low_stock_threshold,updated_at
                     # ...
-                    # ORDER REPORT
                     # <blank>
-                    # id,customer,status,...
+                    # ORDERS
+                    # order_id,customer,status,total_amount,created_at
+                    # ...
                     #
-                    # Re-parse with csv.reader because DictReader cannot
-                    # represent the two different header sections correctly.
+                    # Also accept the older PRODUCT REPORT / ORDER REPORT
+                    # section labels so existing reports remain viewable.
                     rows = list(csv.reader(io.StringIO(csv_content)))
                     section = None
+                    product_header_seen = False
+                    order_header_seen = False
 
                     for raw_row in rows:
                         cells = [cell.strip() for cell in raw_row]
@@ -702,42 +704,54 @@ def reports_page():
                             continue
 
                         first = cells[0].upper()
-                        if first == "PRODUCT REPORT":
+                        if first in ("PRODUCTS", "PRODUCT REPORT"):
                             section = "PRODUCT"
+                            product_header_seen = False
                             continue
-                        if first == "ORDER REPORT":
+                        if first in ("ORDERS", "ORDER REPORT"):
                             section = "ORDER"
+                            order_header_seen = False
                             continue
 
-                        if section == "PRODUCT" and cells[0].lower() == "id":
-                            continue
-                        if section == "ORDER" and cells[0].lower() == "id":
-                            continue
+                        if section == "PRODUCT":
+                            if cells[0].lower() in ("product_id", "id"):
+                                product_header_seen = True
+                                continue
+                            if product_header_seen and len(cells) >= 6:
+                                product_report_rows.append({
+                                    "record_type": "PRODUCT",
+                                    "id": cells[0],
+                                    "name": cells[1],
+                                    "customer": "",
+                                    "status": cells[2],
+                                    "stock_quantity": cells[3],
+                                    "low_stock_threshold": cells[4],
+                                    "total_amount": "",
+                                    "created_or_updated_at": cells[5],
+                                })
+                                continue
 
-                        if section == "PRODUCT" and len(cells) >= 6:
-                            product_report_rows.append({
-                                "record_type": "PRODUCT",
-                                "id": cells[0],
-                                "name": cells[1],
-                                "customer": "",
-                                "status": cells[2],
-                                "stock_quantity": cells[3],
-                                "low_stock_threshold": cells[4],
-                                "total_amount": "",
-                                "created_or_updated_at": cells[5],
-                            })
-                        elif section == "ORDER" and len(cells) >= 5:
-                            order_report_rows.append({
-                                "record_type": "ORDER",
-                                "id": cells[0],
-                                "name": "",
-                                "customer": cells[1],
-                                "status": cells[2],
-                                "stock_quantity": "",
-                                "low_stock_threshold": "",
-                                "total_amount": cells[3],
-                                "created_or_updated_at": cells[4],
-                            })
+                        if section == "ORDER":
+                            if cells[0].lower() in ("order_id", "id"):
+                                order_header_seen = True
+                                continue
+                            if order_header_seen and len(cells) >= 5:
+                                order_report_rows.append({
+                                    "record_type": "ORDER",
+                                    "id": cells[0],
+                                    "name": "",
+                                    "customer": cells[1],
+                                    "status": cells[2],
+                                    "stock_quantity": "",
+                                    "low_stock_threshold": "",
+                                    "total_amount": cells[3],
+                                    "created_or_updated_at": cells[4],
+                                })
+
+                    # The section-based format is rendered as two separate
+                    # tables in the dashboard, not as one mixed table.
+                    view_rows = []
+                    view_columns = []
 
                 view_report = dict(matched_report)
                 view_report["url"] = report_download(view_report)
