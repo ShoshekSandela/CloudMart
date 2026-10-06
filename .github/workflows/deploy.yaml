@@ -1917,9 +1917,27 @@ jobs:
               echo "The recipient must click the SNS confirmation link before alarm emails can be delivered."
               ;;
             DELETED)
-              echo "ERROR: Monitoring SNS email subscription is Deleted."
-              echo "Check the CloudFormation subscription and recipient email address."
-              exit 1
+              echo "WARNING: Monitoring SNS email subscription is Deleted."
+              echo "Recreating the subscription so SNS sends a fresh confirmation email."
+
+              # A deleted SNS subscription cannot be reused. Create a fresh
+              # subscription on the CloudFormation-managed monitoring email topic.
+              # This does not modify the alarm-action topic or EventBridge rules.
+              aws sns subscribe                 --topic-arn "$MONITORING_EMAIL_TOPIC_ARN"                 --protocol email                 --notification-endpoint "$ADMIN_EMAIL"                 --region "$AWS_REGION" >/tmp/monitoring-subscribe.json
+
+              NEW_SUBSCRIPTION_ARN=$(jq -r '.SubscriptionArn // empty' /tmp/monitoring-subscribe.json)
+
+              if [ -z "$NEW_SUBSCRIPTION_ARN" ] || [ "$NEW_SUBSCRIPTION_ARN" = "null" ]; then
+                echo "ERROR: Failed to recreate the monitoring SNS email subscription."
+                cat /tmp/monitoring-subscribe.json
+                exit 1
+              fi
+
+              echo "New monitoring SNS email subscription created."
+              echo "SubscriptionArn: $NEW_SUBSCRIPTION_ARN"
+              echo "A fresh SNS confirmation email has been sent to: $ADMIN_EMAIL"
+              echo "The recipient must click the confirmation link before monitoring emails are delivered."
+              rm -f /tmp/monitoring-subscribe.json
               ;;
             *)
               echo "ERROR: Monitoring SNS email subscription for $ADMIN_EMAIL was not found."
