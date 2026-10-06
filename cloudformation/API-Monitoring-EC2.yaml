@@ -341,19 +341,6 @@ Resources:
   # ------------------------------------------------------------
   # Monitoring SNS topics
   # ------------------------------------------------------------
-  # MonitoringTopic is the direct CloudWatch Alarm notification action.
-  # MonitoringEmailTopic is the EventBridge target that delivers formatted
-  # alarm messages to the configured email address.
-  MonitoringTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub "${ProjectName}-${Environment}-monitoring${MonitoringResourceSuffix}"
-      Tags:
-        - Key: Project
-          Value: CloudMart
-        - Key: Environment
-          Value: !Ref Environment
-
   MonitoringEmailTopic:
     Type: AWS::SNS::Topic
     Properties:
@@ -370,25 +357,6 @@ Resources:
       TopicArn: !Ref MonitoringEmailTopic
       Protocol: email
       Endpoint: !Ref NotificationEmail
-
-  MonitoringTopicPolicy:
-    Type: AWS::SNS::TopicPolicy
-    Properties:
-      Topics:
-        - !Ref MonitoringTopic
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: AllowCloudWatchAlarmsToPublish
-            Effect: Allow
-            Principal:
-              Service: cloudwatch.amazonaws.com
-            Action:
-              - sns:Publish
-            Resource: !Ref MonitoringTopic
-            Condition:
-              StringEquals:
-                AWS:SourceAccount: !Ref AWS::AccountId
 
   MonitoringEmailTopicPolicy:
     Type: AWS::SNS::TopicPolicy
@@ -664,8 +632,6 @@ Resources:
       Threshold: 80
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   OrdersFailedAlarm:
@@ -685,8 +651,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   LowStockAlarm:
@@ -706,8 +670,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API5XXAlarm:
@@ -729,8 +691,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   # ------------------------------------------------------------
@@ -753,8 +713,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ProductLambdaErrorsAlarm:
@@ -774,8 +732,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   ReportGenerationFailureAlarm:
@@ -795,8 +751,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
   API4XXAlarm:
@@ -818,8 +772,6 @@ Resources:
       Threshold: 1
       ComparisonOperator: GreaterThanOrEqualToThreshold
       ActionsEnabled: true
-      AlarmActions:
-        - !Ref MonitoringTopic
       TreatMissingData: notBreaching
 
 
@@ -1070,10 +1022,6 @@ Outputs:
     Description: Existing CloudMart report bucket used by the dashboard and report Lambda.
     Value:
       Fn::ImportValue: !Sub "CloudMart-${Environment}-ReportBucketName"
-
-  MonitoringTopicArn:
-    Description: SNS topic used as the direct CloudWatch Alarm notification action.
-    Value: !Ref MonitoringTopic
 
   MonitoringEmailTopicArn:
     Description: SNS topic targeted by EventBridge for formatted monitoring emails.

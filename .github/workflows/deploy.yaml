@@ -1769,118 +1769,77 @@ jobs:
               ;;
           esac
 
-          # Alarm notifications use two SNS paths: 
-          #   1. CloudWatch Alarm -> Monitoring SNS topic (console Notification action).
-          #      This topic intentionally has no email subscription.
-          #   2. CloudWatch Alarm state change -> EventBridge -> Monitoring Email SNS topic -> Email.
-          #      EventBridge formats the alarm-specific message.
-          # No alarm-notification Lambda and no SES path is used.
-          MONITORING_ALARM_ACTION_TOPIC_ARN=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs[?OutputKey==`MonitoringTopicArn`].OutputValue' \
-            --output text)
-
+          # Monitoring email path:
+          #   CloudWatch Alarm state change -> EventBridge -> MonitoringEmailTopic -> Email.
+          # EventBridge formats the alarm-specific message before SNS sends it.
+          # There is intentionally NO direct CloudWatch Alarm -> SNS email action,
+          # which prevents AWS's native "Threshold Crossed" email format.
           MONITORING_EMAIL_TOPIC_ARN=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].Outputs[?OutputKey==`MonitoringEmailTopicArn`].OutputValue' \
             --output text)
 
-          test -n "$MONITORING_ALARM_ACTION_TOPIC_ARN" && test "$MONITORING_ALARM_ACTION_TOPIC_ARN" != "None" || {
-            echo "ERROR: Monitoring alarm-action SNS topic ARN was not returned by CloudFormation."
-            exit 1
-          }
-
           test -n "$MONITORING_EMAIL_TOPIC_ARN" && test "$MONITORING_EMAIL_TOPIC_ARN" != "None" || {
-            echo "ERROR: Monitoring email SNS topic ARN was not returned by CloudFormation."
+            echo "ERROR: Monitoring email topic ARN was not returned by CloudFormation."
             exit 1
           }
-
-          echo "CloudWatch alarm-action SNS topic: $MONITORING_ALARM_ACTION_TOPIC_ARN"
-          if [ "$MONITORING_ALARM_ACTION_TOPIC_ARN" = "$MONITORING_EMAIL_TOPIC_ARN" ]; then
-            echo "ERROR: Alarm-action topic and email topic must be separate SNS topics."
-            exit 1
-          fi
 
           echo "Formatted monitoring email SNS topic: $MONITORING_EMAIL_TOPIC_ARN"
 
-          echo "Checking direct CloudWatch alarm-action SNS topic for stale email subscriptions..."
-          MONITORING_ALARM_TOPIC_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$MONITORING_ALARM_ACTION_TOPIC_ARN" \
-            --region "$AWS_REGION" \
-            --output json)
+          # Remove any legacy/orphaned CloudMart monitoring SNS topics that were
+          # previously used as direct CloudWatch alarm actions. They are no longer
+          # part of the stack and must not be able to deliver native alarm emails.
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          LEGACY_MONITORING_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-monitoring${MONITORING_RESOURCE_SUFFIX}"
 
-          export AWS_REGION
-          export MONITORING_ALARM_ACTION_TOPIC_ARN
-          export MONITORING_ALARM_TOPIC_SUBSCRIPTIONS
-
-          python3 - <<'PY'
-          import json
-          import os
-          import subprocess
-
-          region = os.environ["AWS_REGION"]
-          data = json.loads(os.environ["MONITORING_ALARM_TOPIC_SUBSCRIPTIONS"])
-
-          for subscription in data.get("Subscriptions", []):
-              if subscription.get("Protocol") != "email":
-                  continue
-
-              subscription_arn = subscription.get("SubscriptionArn", "")
-              endpoint = subscription.get("Endpoint", "")
-
-              # Only confirmed subscriptions can currently deliver alarm emails.
-              # Leave PendingConfirmation entries untouched.
-              if not subscription_arn.startswith("arn:"):
-                  print(
-                      f"Found non-confirmed email subscription on the alarm-action topic "
-                      f"for {endpoint}; leaving it unchanged."
-                  )
-                  continue
-
-              print(
-                  f"Removing stale confirmed email subscription from alarm-action topic: "
-                  f"{endpoint}"
-              )
-              subprocess.run(
-                  [
-                      "aws", "sns", "unsubscribe",
-                      "--subscription-arn", subscription_arn,
-                      "--region", region,
-                  ],
-                  check=True,
-              )
-          PY
-
-          STALE_MONITORING_EMAIL_COUNT=$(aws sns list-subscriptions-by-topic \
-            --topic-arn "$MONITORING_ALARM_ACTION_TOPIC_ARN" \
-            --region "$AWS_REGION" \
-            --query 'length(Subscriptions[?Protocol==`email` && SubscriptionArn!=`PendingConfirmation` && SubscriptionArn!=`Deleted`])' \
-            --output text)
-
-          if [ "$STALE_MONITORING_EMAIL_COUNT" != "0" ]; then
-            echo "ERROR: Confirmed email subscription still exists on the direct alarm-action topic."
-            echo "Topic: $MONITORING_ALARM_ACTION_TOPIC_ARN"
-            exit 1
+          if aws sns get-topic-attributes \
+            --topic-arn "$LEGACY_MONITORING_TOPIC_ARN" \
+            --region "$AWS_REGION" >/dev/null 2>&1; then
+            echo "Found legacy direct-alarm monitoring topic: $LEGACY_MONITORING_TOPIC_ARN"
+            echo "Removing legacy topic so it cannot deliver native CloudWatch alarm emails."
+            aws sns delete-topic \
+              --topic-arn "$LEGACY_MONITORING_TOPIC_ARN" \
+              --region "$AWS_REGION"
+          else
+            echo "No legacy direct-alarm monitoring topic found."
           fi
 
-          echo "OK: Direct CloudWatch alarm-action topic has no confirmed email subscription."
-          echo "Only EventBridge -> MonitoringEmailTopic -> Email is used for formatted monitoring emails."
-
-
-          MONITORING_ALARM_NAMES=( \
-            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \
+          MONITORING_ALARM_NAMES=( \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \\
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \\
           )
 
-          echo "Verifying EventBridge -> SNS formatted alarm notification path..."
+          echo "Verifying CloudWatch alarms do not have direct SNS alarm actions..."
+          for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
+            ALARM_ACTION_COUNT=$(aws cloudwatch describe-alarms \\
+              --alarm-names "$ALARM_NAME" \\
+              --region "$AWS_REGION" \\
+              --query 'length(MetricAlarms[0].AlarmActions)' \\
+              --output text 2>/dev/null || echo 0)
+
+            if [ "$ALARM_ACTION_COUNT" != "0" ] && [ "$ALARM_ACTION_COUNT" != "None" ]; then
+              echo "ERROR: Alarm '$ALARM_NAME' still has direct AlarmActions configured."
+              aws cloudwatch describe-alarms \\
+                --alarm-names "$ALARM_NAME" \\
+                --region "$AWS_REGION" \\
+                --query 'MetricAlarms[0].AlarmActions' \\
+                --output json
+              exit 1
+            fi
+
+            echo "OK: $ALARM_NAME -> no direct SNS alarm action"
+          done
+
+          echo "The only monitoring email route is EventBridge -> MonitoringEmailTopic -> Email."
+
+                    echo "Verifying EventBridge -> SNS formatted alarm notification path..."
 
           MONITORING_RULES=( \
             "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-notification${MONITORING_RESOURCE_SUFFIX}" \
@@ -1933,24 +1892,6 @@ jobs:
             fi
 
             echo "OK: $MONITORING_RULE_NAME -> $MONITORING_EMAIL_TOPIC_ARN"
-          done
-
-          echo "Verifying CloudWatch alarms have the direct SNS Notification action..."
-          for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
-            ALARM_ACTION=$(aws cloudwatch describe-alarms \
-              --alarm-names "$ALARM_NAME" \
-              --region "$AWS_REGION" \
-              --query 'MetricAlarms[0].AlarmActions[0]' \
-              --output text 2>/dev/null || true)
-
-            if [ "$ALARM_ACTION" != "$MONITORING_ALARM_ACTION_TOPIC_ARN" ]; then
-              echo "ERROR: Alarm '$ALARM_NAME' is not configured with the monitoring SNS Notification action."
-              echo "Expected: $MONITORING_ALARM_ACTION_TOPIC_ARN"
-              echo "Actual:   ${ALARM_ACTION:-<none>}"
-              exit 1
-            fi
-
-            echo "OK: $ALARM_NAME -> CloudWatch Notification action -> $MONITORING_ALARM_ACTION_TOPIC_ARN"
           done
 
           echo "Checking monitoring SNS email subscription..."
