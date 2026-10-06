@@ -408,7 +408,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : RDS / Database\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nRDS CPU utilization has reached or exceeded the configured 80% threshold.\n\nACTION REQUIRED\nCheck RDS CPU utilization, active queries, connections, and database workload.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: RDS / Database
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              RDS CPU utilization has reached or exceeded the configured 80% threshold.
+            
+              Action:
+              Check RDS CPU utilization, active queries, connections, and database workload.
+            
+              CloudMart
   OrdersFailedNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -437,7 +450,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Order Processing\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nOne or more order failures were recorded in the last five minutes.\n\nACTION REQUIRED\nCheck the Order Lambda logs, order status, database errors, and EventBridge order events.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: Order Processing
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              One or more order failures were recorded in the last five minutes.
+            
+              Action:
+              Check the Order Lambda logs, order status, database errors, and EventBridge order events.
+            
+              CloudMart
   LowStockNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -466,7 +492,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Inventory\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nOne or more low-stock events were recorded in the last five minutes.\n\nACTION REQUIRED\nCheck inventory levels, low-stock thresholds, and the Product Lambda logs.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: Inventory
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              One or more low-stock events were recorded in the last five minutes.
+            
+              Action:
+              Check inventory levels, low-stock thresholds, and the Product Lambda logs.
+            
+              CloudMart
   Api5xxNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -495,7 +534,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : API Gateway\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nAPI Gateway has recorded one or more 5XX responses in the last five minutes.\n\nACTION REQUIRED\nCheck the API integration, Lambda errors, API Gateway execution logs, and recent deployments.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: API Gateway
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              API Gateway has recorded one or more 5XX responses in the last five minutes.
+            
+              Action:
+              Check the API integration, Lambda errors, API Gateway execution logs, and recent deployments.
+            
+              CloudMart
   OrderLambdaErrorsNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -524,7 +576,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Order Lambda\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nThe Order Lambda has recorded one or more execution errors in the last five minutes.\n\nACTION REQUIRED\nCheck the Order Lambda CloudWatch logs and the related database/EventBridge operations.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: Order Lambda
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              The Order Lambda has recorded one or more execution errors in the last five minutes.
+            
+              Action:
+              Check the Order Lambda CloudWatch logs and the related database/EventBridge operations.
+            
+              CloudMart
   ProductLambdaErrorsNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -553,7 +618,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Product Lambda\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nThe Product Lambda has recorded one or more execution errors in the last five minutes.\n\nACTION REQUIRED\nCheck the Product Lambda CloudWatch logs, RDS connectivity, and database operations.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: Product Lambda
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              The Product Lambda has recorded one or more execution errors in the last five minutes.
+            
+              Action:
+              Check the Product Lambda CloudWatch logs, RDS connectivity, and database operations.
+            
+              CloudMart
   ReportGenerationFailureNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -582,7 +660,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : Daily Report\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nThe Daily Report Lambda has recorded one or more execution errors in the last five minutes.\n\nACTION REQUIRED\nCheck the Daily Report Lambda logs, RDS connectivity, S3 report bucket access, and report generation code.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: Daily Report
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              The Daily Report Lambda has recorded one or more execution errors in the last five minutes.
+            
+              Action:
+              Check the Daily Report Lambda logs, RDS connectivity, S3 report bucket access, and report generation code.
+            
+              CloudMart
   Api4xxNotification:
     Type: AWS::Events::Rule
     Properties:
@@ -611,7 +702,20 @@ Resources:
               eventTime: $.time
               region: $.region
             InputTemplate: !Sub |
-              "CLOUDMART MONITORING ALERT\n\nEnvironment : ${Environment}\nService     : API Gateway\nAlarm       : <alarmName>\nStatus      : <state>\nRegion      : <region>\nTime        : <eventTime>\n\nPROBLEM\nAPI Gateway has recorded one or more 4XX responses in the last five minutes.\n\nACTION REQUIRED\nCheck the API request, authentication/authorization, request parameters, and API Gateway logs.\n\nCloudMart Monitoring"
+              CloudMart Monitoring Alert
+            
+              Environment: ${Environment}
+              Service: API Gateway
+              Alarm: <alarmName>
+              Status: <state>
+              Time: <eventTime>
+            
+              API Gateway has recorded one or more 4XX responses in the last five minutes.
+            
+              Action:
+              Check the API request, authentication/authorization, request parameters, and API Gateway logs.
+            
+              CloudMart
   # CloudWatch alarms
   # ------------------------------------------------------------
   RDSCPUAlarm:
