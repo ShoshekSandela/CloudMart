@@ -469,6 +469,73 @@ def report_download(report):
     )
 
 
+def report_has_expected_section_format(report):
+    """Return True when the stored CSV uses the current Excel-friendly layout."""
+    try:
+        response = s3.get_object(
+            Bucket=os.environ["REPORT_BUCKET_NAME"],
+            Key=report["key"],
+            Range="bytes=0-8191",
+        )
+        content = response["Body"].read().decode("utf-8-sig")
+        rows = list(csv.reader(io.StringIO(content)))
+
+        # Ignore leading blank rows and inspect the section labels.
+        non_empty = [row for row in rows if any(cell.strip() for cell in row)]
+        if len(non_empty) < 3:
+            return False
+
+        first = non_empty[0][0].strip().upper() if non_empty[0] else ""
+        second = non_empty[1][0].strip().lower() if non_empty[1] else ""
+
+        # The current format is:
+        # PRODUCTS
+        # product_id,name,status,stock_quantity,low_stock_threshold,updated_at
+        # ...
+        # ORDERS
+        # order_id,customer,status,total_amount,created_at
+        # ...
+        if first != "PRODUCTS":
+            return False
+
+        expected_product_columns = {
+            "product_id",
+            "name",
+            "status",
+            "stock_quantity",
+            "low_stock_threshold",
+            "updated_at",
+        }
+        if set(cell.strip().lower() for cell in non_empty[1]) != expected_product_columns:
+            return False
+
+        return any(
+            row and row[0].strip().upper() == "ORDERS"
+            for row in non_empty[2:]
+        )
+    except Exception:
+        app.logger.exception("Unable to validate report format: %s", report.get("key"))
+        return False
+
+
+def generate_report_from_lambda():
+    """Synchronously regenerate today's report using the existing Lambda."""
+    function_name = os.environ["DAILY_REPORT_FUNCTION_NAME"]
+    response = lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="RequestResponse",
+        Payload=json.dumps({}).encode("utf-8"),
+    )
+
+    if response.get("FunctionError"):
+        payload = response.get("Payload")
+        details = payload.read().decode("utf-8") if payload else ""
+        app.logger.error("Daily report Lambda failed: %s", details)
+        raise RuntimeError("Daily report Lambda returned an error.")
+
+    return list_report_objects()
+
+
 def selected_report(reports, selected_date):
     if not selected_date:
         return reports[0] if reports else None
@@ -609,31 +676,30 @@ def reports_page():
     # No additional Lambda is created and no sample data is inserted into RDS.
     today = date.today()
 
-    if requested and selected_date == today and not selected_report(reports, selected_date):
-        try:
-            function_name = os.environ["DAILY_REPORT_FUNCTION_NAME"]
+    if requested and selected_date == today:
+        existing_today = selected_report(reports, selected_date)
 
-            response = lambda_client.invoke(
-                FunctionName=function_name,
-                InvocationType="RequestResponse",
-                Payload=json.dumps({}).encode("utf-8"),
-            )
+        # A report may already exist from an older deployment. In that case the
+        # old CSV would otherwise be downloaded forever because the dashboard
+        # only generated a report when no file existed. Regenerate today's file
+        # when its structure is not the current PRODUCTS -> ORDERS format.
+        needs_generation = (
+            existing_today is None
+            or not report_has_expected_section_format(existing_today)
+        )
 
-            if response.get("FunctionError"):
-                payload = response.get("Payload")
-                details = payload.read().decode("utf-8") if payload else ""
-                app.logger.error("Daily report Lambda failed: %s", details)
-                generation_error = "The report could not be generated. Check the Daily Report Lambda logs."
-            else:
-                # Refresh S3 after the synchronous Lambda invocation.
-                reports = list_report_objects()
-
-        except KeyError:
-            app.logger.exception("DAILY_REPORT_FUNCTION_NAME is not configured.")
-            generation_error = "Daily report generation is not configured on the dashboard."
-        except Exception:
-            app.logger.exception("Unable to generate today's report from the dashboard.")
-            generation_error = "The report could not be generated. Check the dashboard logs."
+        if needs_generation:
+            try:
+                app.logger.info(
+                    "Generating today's report because no current-format report exists."
+                )
+                reports = generate_report_from_lambda()
+            except KeyError:
+                app.logger.exception("DAILY_REPORT_FUNCTION_NAME is not configured.")
+                generation_error = "Daily report generation is not configured on the dashboard."
+            except Exception:
+                app.logger.exception("Unable to generate today's report from the dashboard.")
+                generation_error = "The report could not be generated. Check the dashboard logs."
 
     # Find the report belonging to the selected date.
     chosen = selected_report(reports, selected_date)
