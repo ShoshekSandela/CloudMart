@@ -767,7 +767,12 @@ jobs:
           CONFLICT_FOUND="false"
           EVENT_RULE_CONFLICT_FOUND="false"
           NON_EVENT_CONFLICT_FOUND="false"
-          UNMANAGED_EVENT_RULES=()
+          # Keep unmanaged EventBridge rule names as a plain newline-delimited
+          # string. Do not use a Bash array here because the value is later
+          # passed into Python and GitHub Actions can otherwise lose array
+          # contents between the preflight and import sections.
+          UNMANAGED_EVENT_RULES=""
+          IMPORT_DEPLOYED="false"
 
           resource_is_owned() {
             local resource_id="$1"
@@ -778,20 +783,15 @@ jobs:
             return 1
           }
 
-          # Compare the actual CloudFormation physical resource ID.
-          # For AWS::Events::Rule, CloudFormation uses:
-          #   <event-bus-name>|<rule-name>
-          # while events:describe-rule returns only <rule-name>.
           check_existing_resource() {
             local label="$1"
             local resource_id="$2"
-            local ownership_id="${3:-$2}"
 
             if [ -z "$resource_id" ] || [ "$resource_id" = "None" ]; then
               return 0
             fi
 
-            if resource_is_owned "$ownership_id"; then
+            if resource_is_owned "$resource_id"; then
               echo "OK: $label is already owned by $STACK_NAME: $resource_id"
             else
               echo "ERROR: Existing unmanaged $label found: $resource_id"
@@ -799,7 +799,7 @@ jobs:
 
               if [ "$label" = "EventBridge rule" ]; then
                 EVENT_RULE_CONFLICT_FOUND="true"
-                UNMANAGED_EVENT_RULES+=("$resource_id")
+                UNMANAGED_EVENT_RULES="${UNMANAGED_EVENT_RULES}${resource_id}"$'\n'
               else
                 NON_EVENT_CONFLICT_FOUND="true"
               fi
@@ -817,7 +817,7 @@ jobs:
             if [ "$label" = "EventBridge rule" ]; then
               echo "Existing external EventBridge rule found: $resource_id"
               EVENT_RULE_CONFLICT_FOUND="true"
-              UNMANAGED_EVENT_RULES+=("$resource_id")
+              UNMANAGED_EVENT_RULES="${UNMANAGED_EVENT_RULES}${resource_id}"$'\n'
             else
               echo "ERROR: Existing unmanaged $label found: $resource_id"
               CONFLICT_FOUND="true"
@@ -885,12 +885,7 @@ jobs:
                 --region "$AWS_REGION" \
                 --query 'Name' \
                 --output text 2>/dev/null || true)
-              if [ -n "$EXISTING_RULE" ] && [ "$EXISTING_RULE" != "None" ]; then
-                EVENT_RULE_PHYSICAL_ID="${EVENT_BUS_NAME}|${EXISTING_RULE}"
-              else
-                EVENT_RULE_PHYSICAL_ID=""
-              fi
-              check_existing_resource "EventBridge rule" "$EXISTING_RULE" "$EVENT_RULE_PHYSICAL_ID"
+              check_existing_resource "EventBridge rule" "$EXISTING_RULE"
             done
 
             for LOG_GROUP in \
@@ -981,83 +976,154 @@ jobs:
             exit 1
           fi
 
-          # EventBridge rules are application resources owned by the Application stack.
-          # The current stack can legitimately encounter these seven rules after a
-          # previous deployment that used Retain, because the rules survive stack
-          # deletion while the new stack no longer owns them.
-          #
-          # Safety rule:
-          #   - Only the seven exact CloudMart rule names checked above may be cleaned.
-          #   - For an existing Application stack, the API and all six application
-          #     Lambdas/log groups must already be owned by this stack. Any other
-          #     unmanaged application resource causes a hard failure above.
-          #   - We never delete the shared EventBridge bus or SNS topics.
-          #
-          # Under those conditions the unmanaged rules are stale copies of the same
-          # CloudMart application rules. Remove their targets/rules, then let the
-          # normal SAM deployment recreate them under CloudFormation ownership.
+          # Import any pre-existing EventBridge rules. If the Application stack
+          # does not exist, use a CREATE change set with resources-to-import so
+          # the old rules are adopted while the rest of the application is created.
           if [ "$EVENT_RULE_CONFLICT_FOUND" = "true" ]; then
-            echo "============================================================"
-            echo "Found unmanaged CloudMart EventBridge rules."
-            echo "Application stack: ${STACK_NAME}"
-            echo "Status: ${STACK_STATUS:-NOT_FOUND}"
-            echo "Only the known CloudMart application rules will be cleaned."
-            echo "============================================================"
+            IMPORT_FILE="/tmp/cloudmart-event-rule-import.json"
+            IMPORT_RULE_NAMES="$(printf '%s' "$UNMANAGED_EVENT_RULES" | sed '/^$/d' | sort -u)"
+            export IMPORT_RULE_NAMES
+            echo "EventBridge rules selected for import:"
+            printf '%s\n' "$IMPORT_RULE_NAMES"
 
-            for RULE_NAME in $(printf '%s\n' "${UNMANAGED_EVENT_RULES[@]}" | sort -u); do
-              case "$RULE_NAME" in
-                "${PROJECT_NAME}-${ENVIRONMENT}-low-stock"|\
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-notification"|\
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-confirmed-notification"|\
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-canceled-notification"|\
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-failed-notification"|\
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-completed-notification"|\
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-placed-processing")
+            python3 - <<'PY'
+          import json
+          import os
+
+          project = os.environ["PROJECT_NAME"]
+          environment = os.environ["ENVIRONMENT"]
+          suffix_to_logical_id = {
+              "low-stock": "LowStockEventRule",
+              "order-placed-notification": "OrderPlacedNotificationRule",
+              "order-confirmed-notification": "OrderConfirmedNotificationRule",
+              "order-canceled-notification": "OrderCanceledNotificationRule",
+              "order-failed-notification": "OrderFailedNotificationRule",
+              "order-completed-notification": "OrderCompletedNotificationRule",
+              "order-placed-processing": "OrderPlacedProcessingEventRule",
+          }
+
+          rules = []
+          prefix = f"{project}-{environment}-"
+          for rule_name in os.environ.get("IMPORT_RULE_NAMES", "").splitlines():
+              rule_name = rule_name.strip()
+              if not rule_name:
+                  continue
+              if not rule_name.startswith(prefix):
+                  raise SystemExit(f"Unsupported EventBridge rule name: {rule_name}")
+              suffix = rule_name[len(prefix):]
+              logical_id = suffix_to_logical_id.get(suffix)
+              if not logical_id:
+                  raise SystemExit(f"No CloudFormation logical ID mapping exists for EventBridge rule: {rule_name}")
+              rules.append({
+                  "ResourceType": "AWS::Events::Rule",
+                  "LogicalResourceId": logical_id,
+                  "ResourceIdentifier": {"Name": rule_name},
+              })
+
+          if not rules:
+              raise SystemExit("No supported unmanaged EventBridge rules were found to import.")
+
+          with open("/tmp/cloudmart-event-rule-import.json", "w", encoding="utf-8") as f:
+              json.dump(rules, f)
+          PY
+
+            cat "$IMPORT_FILE"
+            IMPORT_CHANGE_SET="cloudmart-application-${ENVIRONMENT}-event-import-$(date +%s)"
+
+            if [ -n "$STACK_STATUS" ] && [ "$STACK_STATUS" != "None" ]; then
+              IMPORT_TYPE="IMPORT"
+            else
+              IMPORT_TYPE="CREATE"
+            fi
+
+            echo "Creating EventBridge import change set: type=$IMPORT_TYPE"
+            aws cloudformation create-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$IMPORT_CHANGE_SET" \
+              --change-set-type "$IMPORT_TYPE" \
+              --template-body file://.aws-sam/build/template.yaml \
+              --resources-to-import "file://$IMPORT_FILE" \
+              --capabilities CAPABILITY_NAMED_IAM \
+              --parameters \
+                ParameterKey=Environment,ParameterValue="$ENVIRONMENT" \
+                ParameterKey=ProjectName,ParameterValue="$PROJECT_NAME" \
+                ParameterKey=AuthorizerCacheTTL,ParameterValue="$AUTHORIZER_CACHE_TTL" \
+                ParameterKey=NotificationEmail,ParameterValue="$ADMIN_EMAIL" \
+                ParameterKey=ExistingOrderNotificationTopicArn,ParameterValue="$ORDER_TOPIC_ARN" \
+                ParameterKey=ExistingLowStockTopicArn,ParameterValue="$LOW_STOCK_TOPIC_ARN" \
+                ParameterKey=ExistingEventBusName,ParameterValue="$EVENT_BUS_NAME" \
+                ParameterKey=ApiDeploymentVersion,ParameterValue="${GITHUB_RUN_NUMBER}" \
+              --region "$AWS_REGION"
+
+            if ! aws cloudformation wait change-set-create-complete \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$IMPORT_CHANGE_SET" \
+              --region "$AWS_REGION"; then
+              echo "ERROR: EventBridge import change set failed."
+              aws cloudformation describe-change-set \
+                --stack-name "$STACK_NAME" \
+                --change-set-name "$IMPORT_CHANGE_SET" \
+                --region "$AWS_REGION" \
+                --output json || true
+              exit 1
+            fi
+
+            aws cloudformation execute-change-set \
+              --stack-name "$STACK_NAME" \
+              --change-set-name "$IMPORT_CHANGE_SET" \
+              --region "$AWS_REGION"
+
+            echo "Waiting for EventBridge resources and Application stack..."
+            IMPORT_FINISHED="false"
+            for attempt in $(seq 1 60); do
+              IMPORT_STATUS=$(aws cloudformation describe-stacks \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --query 'Stacks[0].StackStatus' \
+                --output text 2>/dev/null || true)
+
+              echo "Application stack import status ${attempt}/60: ${IMPORT_STATUS:-UNKNOWN}"
+
+              case "$IMPORT_STATUS" in
+                IMPORT_COMPLETE|CREATE_COMPLETE|UPDATE_COMPLETE)
+                  IMPORT_FINISHED="true"
+                  break
                   ;;
-                *)
-                  echo "ERROR: Refusing to clean unexpected EventBridge rule: $RULE_NAME"
+                IMPORT_ROLLBACK_IN_PROGRESS|IMPORT_ROLLBACK_FAILED|ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_IN_PROGRESS|UPDATE_ROLLBACK_FAILED|CREATE_FAILED|UPDATE_FAILED)
+                  echo "ERROR: EventBridge resource import failed. Stack status: $IMPORT_STATUS"
+                  aws cloudformation describe-stack-events \
+                    --stack-name "$STACK_NAME" \
+                    --region "$AWS_REGION" \
+                    --max-items 40 || true
                   exit 1
                   ;;
               esac
 
-              echo "Cleaning stale CloudMart EventBridge rule: $RULE_NAME"
-
-              TARGET_IDS=$(aws events list-targets-by-rule \
-                --rule "$RULE_NAME" \
-                --event-bus-name "$EVENT_BUS_NAME" \
-                --region "$AWS_REGION" \
-                --query 'Targets[].Id' \
-                --output text 2>/dev/null || true)
-
-              if [ -n "$TARGET_IDS" ] && [ "$TARGET_IDS" != "None" ]; then
-                read -r -a TARGET_ARRAY <<< "$TARGET_IDS"
-                echo "Removing targets from $RULE_NAME: ${TARGET_ARRAY[*]}"
-                aws events remove-targets \
-                  --rule "$RULE_NAME" \
-                  --event-bus-name "$EVENT_BUS_NAME" \
-                  --ids "${TARGET_ARRAY[@]}" \
-                  --region "$AWS_REGION"
+              if [ "$attempt" -eq 60 ]; then
+                echo "ERROR: Timed out waiting for EventBridge resource import."
+                exit 1
               fi
-
-              aws events delete-rule \
-                --name "$RULE_NAME" \
-                --event-bus-name "$EVENT_BUS_NAME" \
-                --region "$AWS_REGION"
-
-              echo "Deleted stale CloudMart EventBridge rule: $RULE_NAME"
+              sleep 5
             done
 
+            if [ "$IMPORT_FINISHED" != "true" ]; then
+              echo "ERROR: EventBridge import did not reach a successful stack state."
+              exit 1
+            fi
+
+            echo "EventBridge rules are now CloudFormation-managed."
             EVENT_RULE_CONFLICT_FOUND="false"
-            UNMANAGED_EVENT_RULES=()
             CONFLICT_FOUND="false"
-            echo "All stale CloudMart EventBridge rules were cleaned up."
+            IMPORT_DEPLOYED="true"
           fi
 
           echo "Application resource ownership preflight passed."
 
-          # With no orphaned resources, perform the normal SAM
+          # If the stack was created by the CREATE+IMPORT change set above, the
+          # template has already been deployed. Otherwise perform the normal SAM
           # update/create deployment.
-          if ! sam deploy \
+          if [ "$IMPORT_DEPLOYED" != "true" ]; then
+            if ! sam deploy \
               --template-file .aws-sam/build/template.yaml \
               --stack-name "$STACK_NAME" \
               --region "$AWS_REGION" \
@@ -1074,35 +1140,18 @@ jobs:
                 ExistingLowStockTopicArn="$LOW_STOCK_TOPIC_ARN" \
                 ExistingEventBusName="$EVENT_BUS_NAME" \
                 ApiDeploymentVersion="${GITHUB_RUN_NUMBER}" \
-              EC2InstanceType="$EC2_INSTANCE_TYPE"
-          then
-            echo "============================================================"
-            echo "ERROR: SAM/CloudFormation deployment failed."
-            echo "============================================================"
-
-            echo "STACK STATUS:"
-            aws cloudformation describe-stacks \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION" \
-              --query 'Stacks[0].[StackStatus,StackStatusReason]' \
-              --output table || true
-
-            echo "FAILED CLOUDFORMATION RESOURCES:"
-            aws cloudformation describe-stack-events \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION" \
-              --no-paginate \
-              --query "StackEvents[?ResourceStatus=='CREATE_FAILED' || ResourceStatus=='UPDATE_FAILED' || ResourceStatus=='ROLLBACK_FAILED' || ResourceStatus=='DELETE_FAILED'].[Timestamp,LogicalResourceId,ResourceType,ResourceStatus,ResourceStatusReason]" \
-              --output table || true
-
-            echo "RECENT CLOUDFORMATION EVENTS:"
-            aws cloudformation describe-stack-events \
-              --stack-name "$STACK_NAME" \
-              --region "$AWS_REGION" \
-              --max-items 100 \
-              --output table || true
-
-            exit 1
+                EC2InstanceType="$EC2_INSTANCE_TYPE"
+            then
+              echo "============================================================"
+              echo "ERROR: SAM/CloudFormation deployment failed."
+              echo "Attempting to retrieve the detailed CloudFormation events..."
+              echo "============================================================"
+              aws cloudformation describe-stack-events \
+                --stack-name "$STACK_NAME" \
+                --region "$AWS_REGION" \
+                --max-items 40 || true
+              exit 1
+            fi
           fi
 
            APP_STATUS=$(aws cloudformation describe-stacks \
@@ -1631,16 +1680,12 @@ jobs:
                 return 1
               fi
 
-              for candidate in \
-                "${PROJECT_NAME}-${ENVIRONMENT}-monitoring${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-monitoring-email${suffix}"
-              do
-                if aws sns get-topic-attributes \
-                  --topic-arn "arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):${candidate}" \
-                  --region "$AWS_REGION" >/dev/null 2>&1; then
-                  return 1
-                fi
-              done
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-monitoring${suffix}"
+              if aws sns get-topic-attributes \
+                --topic-arn "arn:aws:sns:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):${candidate}" \
+                --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
 
               for candidate in \
                 "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${suffix}" \
@@ -1661,30 +1706,18 @@ jobs:
                 fi
               done
 
-              candidate="${PROJECT_NAME}-${ENVIRONMENT}-monitoring-email${suffix}"
-              if aws sns get-topic-attributes \
-                --topic-arn "arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:$(aws sts get-caller-identity --query Account --output text):${candidate}" \
-                --region "$AWS_REGION" >/dev/null 2>&1; then
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notification${suffix}"
+              if aws lambda get-function --function-name "$candidate" --region "$AWS_REGION" >/dev/null 2>&1; then
                 return 1
               fi
 
-              for candidate in \
-                "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-low-stock-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-report-failure-alert${suffix}" \
-                "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx-alert${suffix}"
-              do
-                if aws events describe-rule \
-                  --name "$candidate" \
-                  --event-bus-name default \
-                  --region "$AWS_REGION" >/dev/null 2>&1; then
-                  return 1
-                fi
-              done
+              candidate="${PROJECT_NAME}-${ENVIRONMENT}-alarm-notifications${suffix}"
+              if aws events describe-rule \
+                --name "$candidate" \
+                --event-bus-name default \
+                --region "$AWS_REGION" >/dev/null 2>&1; then
+                return 1
+              fi
 
               candidate="${PROJECT_NAME}-${ENVIRONMENT}-operations${suffix}"
               if aws cloudwatch get-dashboard \
@@ -1769,11 +1802,10 @@ jobs:
               ;;
           esac
 
-          # Monitoring email path:
-          #   CloudWatch Alarm state change -> EventBridge -> MonitoringEmailTopic -> Email.
-          # EventBridge formats the alarm-specific message before SNS sends it.
-          # There is intentionally NO direct CloudWatch Alarm -> SNS email action,
-          # which prevents AWS's native "Threshold Crossed" email format.
+          # Read-only verification of the monitoring SNS destination.
+          # This workflow intentionally does NOT call sns:Subscribe,
+          # sns:ConfirmSubscription, or sns:Unsubscribe. The subscription is
+          # retained by CloudFormation and remains active after confirmation.
           MONITORING_EMAIL_TOPIC_ARN=$(aws cloudformation describe-stacks \
             --stack-name "$STACK_NAME" \
             --region "$AWS_REGION" \
@@ -1781,124 +1813,27 @@ jobs:
             --output text)
 
           test -n "$MONITORING_EMAIL_TOPIC_ARN" && test "$MONITORING_EMAIL_TOPIC_ARN" != "None" || {
-            echo "ERROR: Monitoring email topic ARN was not returned by CloudFormation."
+            echo "ERROR: Monitoring SNS topic ARN was not returned by CloudFormation."
             exit 1
           }
 
-          echo "Formatted monitoring email SNS topic: $MONITORING_EMAIL_TOPIC_ARN"
+          echo "Monitoring SNS email topic: $MONITORING_EMAIL_TOPIC_ARN"
 
-          # Remove any legacy/orphaned CloudMart monitoring SNS topics that were
-          # previously used as direct CloudWatch alarm actions. They are no longer
-          # part of the stack and must not be able to deliver native alarm emails.
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          LEGACY_MONITORING_TOPIC_ARN="arn:${AWS_PARTITION:-aws}:sns:${AWS_REGION}:${ACCOUNT_ID}:${PROJECT_NAME}-${ENVIRONMENT}-monitoring${MONITORING_RESOURCE_SUFFIX}"
+          # Read-only verification only.
+          # The monitoring SNS topic and email subscription are CloudFormation-managed.
+          # GitHub Actions must never create, subscribe, confirm, unsubscribe, or delete
+          # monitoring SNS resources.
 
-          if aws sns get-topic-attributes \
-            --topic-arn "$LEGACY_MONITORING_TOPIC_ARN" \
-            --region "$AWS_REGION" >/dev/null 2>&1; then
-            echo "Found legacy direct-alarm monitoring topic: $LEGACY_MONITORING_TOPIC_ARN"
-            echo "Removing legacy topic so it cannot deliver native CloudWatch alarm emails."
-            aws sns delete-topic \
-              --topic-arn "$LEGACY_MONITORING_TOPIC_ARN" \
-              --region "$AWS_REGION"
-          else
-            echo "No legacy direct-alarm monitoring topic found."
-          fi
-
-          MONITORING_ALARM_NAMES=( \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \\
-          )
-
-          echo "Verifying CloudWatch alarms do not have direct SNS alarm actions..."
-          for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
-            ALARM_ACTION_COUNT=$(aws cloudwatch describe-alarms \\
-              --alarm-names "$ALARM_NAME" \\
-              --region "$AWS_REGION" \\
-              --query 'length(MetricAlarms[0].AlarmActions)' \\
-              --output text 2>/dev/null || echo 0)
-
-            if [ "$ALARM_ACTION_COUNT" != "0" ] && [ "$ALARM_ACTION_COUNT" != "None" ]; then
-              echo "ERROR: Alarm '$ALARM_NAME' still has direct AlarmActions configured."
-              aws cloudwatch describe-alarms \\
-                --alarm-names "$ALARM_NAME" \\
-                --region "$AWS_REGION" \\
-                --query 'MetricAlarms[0].AlarmActions' \\
-                --output json
-              exit 1
-            fi
-
-            echo "OK: $ALARM_NAME -> no direct SNS alarm action"
-          done
-
-          echo "The only monitoring email route is EventBridge -> MonitoringEmailTopic -> Email."
-
-                    echo "Verifying EventBridge -> SNS formatted alarm notification path..."
-
-          MONITORING_RULES=( \
-            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure-notification${MONITORING_RESOURCE_SUFFIX}" \
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx-notification${MONITORING_RESOURCE_SUFFIX}" \
-          )
-
-          for MONITORING_RULE_NAME in "${MONITORING_RULES[@]}"; do
-            MONITORING_RULE_JSON=$(aws events describe-rule \
-              --name "$MONITORING_RULE_NAME" \
-              --event-bus-name default \
-              --region "$AWS_REGION" \
-              --output json)
-
-            MONITORING_RULE_STATE=$(echo "$MONITORING_RULE_JSON" | jq -r '.State')
-            MONITORING_RULE_ARN=$(echo "$MONITORING_RULE_JSON" | jq -r '.Arn')
-
-            if [ "$MONITORING_RULE_STATE" != "ENABLED" ]; then
-              echo "ERROR: Monitoring EventBridge rule '$MONITORING_RULE_NAME' is not enabled."
-              echo "$MONITORING_RULE_JSON"
-              exit 1
-            fi
-
-            test -n "$MONITORING_RULE_ARN" && test "$MONITORING_RULE_ARN" != "null" || {
-              echo "ERROR: Monitoring EventBridge rule ARN was not returned for '$MONITORING_RULE_NAME'."
-              exit 1
-            }
-
-            MONITORING_TARGET_JSON=$(aws events list-targets-by-rule \
-              --rule "$MONITORING_RULE_NAME" \
-              --event-bus-name default \
-              --region "$AWS_REGION" \
-              --output json)
-
-            MONITORING_TARGET_ARN=$(echo "$MONITORING_TARGET_JSON" | jq -r '
-              .Targets[]?
-              | select(.Id == "MonitoringEmailTopic")
-              | .Arn' | head -n 1)
-
-            if [ "$MONITORING_TARGET_ARN" != "$MONITORING_EMAIL_TOPIC_ARN" ]; then
-              echo "ERROR: Monitoring rule '$MONITORING_RULE_NAME' is not targeting the monitoring SNS topic."
-              echo "Expected: $MONITORING_EMAIL_TOPIC_ARN"
-              echo "Actual:   ${MONITORING_TARGET_ARN:-<none>}"
-              exit 1
-            fi
-
-            echo "OK: $MONITORING_RULE_NAME -> $MONITORING_EMAIL_TOPIC_ARN"
-          done
-
-          echo "Checking monitoring SNS email subscription..."
           MONITORING_SUBSCRIPTIONS=$(aws sns list-subscriptions-by-topic \
             --topic-arn "$MONITORING_EMAIL_TOPIC_ARN" \
             --region "$AWS_REGION" \
-            --output json)
+            --output json 2>/tmp/monitoring-sns-error.log || true)
+
+          if [ -z "$MONITORING_SUBSCRIPTIONS" ] || grep -q 'An error occurred' /tmp/monitoring-sns-error.log; then
+            echo "ERROR: Unable to query the CloudFormation-managed monitoring SNS topic."
+            cat /tmp/monitoring-sns-error.log || true
+            exit 1
+          fi
 
           MONITORING_SUB_STATUS=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
             .Subscriptions[]?
@@ -1910,47 +1845,31 @@ jobs:
 
           case "$MONITORING_SUB_STATUS" in
             CONFIRMED)
-              MONITORING_SUB_ARN=$(echo "$MONITORING_SUBSCRIPTIONS" | jq -r --arg endpoint "$ADMIN_EMAIL" '
-                .Subscriptions[]?
-                | select((.Endpoint // "" | ascii_downcase) == ($endpoint | ascii_downcase))
-                | .SubscriptionArn
-                | select(startswith("arn:"))' | head -n 1)
-              echo "Confirmed monitoring SNS email subscription: $MONITORING_SUB_ARN"
+              echo "Monitoring SNS email subscription is CONFIRMED."
               ;;
             PENDING)
               echo "WARNING: Monitoring SNS email subscription is PendingConfirmation."
-              echo "The recipient must click the SNS confirmation link before alarm emails can be delivered."
+              echo "The recipient must confirm the AWS SNS email before alarm notifications can be delivered."
               ;;
-            DELETED|UNKNOWN|"")
-              echo "WARNING: Monitoring SNS email subscription is missing or deleted."
-              echo "Creating a fresh subscription so SNS sends a new confirmation email."
-
-              aws sns subscribe \
-                --topic-arn "$MONITORING_EMAIL_TOPIC_ARN" \
-                --protocol email \
-                --notification-endpoint "$ADMIN_EMAIL" \
-                --region "$AWS_REGION" \
-                >/tmp/monitoring-subscribe.json
-
-              NEW_SUBSCRIPTION_ARN=$(jq -r '.SubscriptionArn // empty' /tmp/monitoring-subscribe.json)
-
-              if [ -z "$NEW_SUBSCRIPTION_ARN" ] || [ "$NEW_SUBSCRIPTION_ARN" = "null" ]; then
-                echo "ERROR: Failed to create the monitoring SNS email subscription."
-                cat /tmp/monitoring-subscribe.json
-                exit 1
-              fi
-
-              echo "New monitoring SNS email subscription created."
-              echo "SubscriptionArn: $NEW_SUBSCRIPTION_ARN"
-              echo "A fresh SNS confirmation email has been sent to: $ADMIN_EMAIL"
-              echo "The recipient must click the confirmation link before monitoring emails are delivered."
-              rm -f /tmp/monitoring-subscribe.json
+            DELETED)
+              echo "ERROR: CloudFormation-managed monitoring SNS subscription is Deleted."
+              echo "Do not recreate it with AWS CLI. Recover the CloudFormation-managed resource instead."
+              exit 1
+              ;;
+            "")
+              echo "ERROR: CloudFormation-managed monitoring SNS email subscription was not found."
+              echo "Do not create it manually with AWS CLI."
+              exit 1
+              ;;
+            *)
+              echo "WARNING: Monitoring SNS subscription status could not be determined."
               ;;
           esac
 
-          echo "Monitoring email path: CloudWatch Alarm state change -> EventBridge -> Monitoring Email SNS -> Email -> $ADMIN_EMAIL"
-          echo "CloudWatch console action path: CloudWatch Alarm -> Monitoring SNS Notification action."
-          echo "No alarm-notification Lambda or SES path is used."
+          rm -f /tmp/monitoring-sns-error.log
+          echo "Monitoring SNS subscription read-only verification completed."
+          echo "No SNS resource is created, deleted, subscribed, confirmed, or unsubscribed by this workflow."
+          echo "Confirmed subscriptions are never deleted, unsubscribed, or recreated by this workflow."
 
           echo "Verifying deployed daily report EventBridge rule..."
 
@@ -2028,9 +1947,6 @@ jobs:
             exit 1
           }
 
-          DAILY_REPORT_FUNCTION_NAME="${PROJECT_NAME}-${ENVIRONMENT}-daily-report${MONITORING_RESOURCE_SUFFIX}"
-          echo "Dashboard Daily Report Lambda: $DAILY_REPORT_FUNCTION_NAME"
-
           echo "Refreshing the dashboard source and service on the existing EC2 instance..."
           REMOTE_COMMANDS=$(cat <<'REMOTE_SCRIPT'
           set -Eeuo pipefail
@@ -2039,7 +1955,6 @@ jobs:
           SOURCE_PREFIX='dashboard-source/__GITHUB_SHA__'
           ENVIRONMENT='__ENVIRONMENT__'
           AWS_REGION_VALUE='__AWS_REGION__'
-          DAILY_REPORT_FUNCTION_NAME='__DAILY_REPORT_FUNCTION_NAME__'
           
           export AWS_DEFAULT_REGION="$AWS_REGION_VALUE"
           export AWS_REGION="$AWS_REGION_VALUE"
@@ -2137,7 +2052,6 @@ jobs:
           Environment=AUTH_TOKEN_PARAMETER_NAME=/cloudmart/$ENVIRONMENT/auth/token
           Environment=REPORT_BUCKET_NAME=$REPORT_BUCKET
           Environment=REPORT_PREFIX=reports
-          Environment=DAILY_REPORT_FUNCTION_NAME=$DAILY_REPORT_FUNCTION_NAME
           Environment=PORT=80
           
           ExecStart=/opt/cloudmart/dashboard/venv/bin/gunicorn \\
@@ -2191,7 +2105,6 @@ jobs:
           REMOTE_COMMANDS="${REMOTE_COMMANDS//__GITHUB_SHA__/$GITHUB_SHA}"
           REMOTE_COMMANDS="${REMOTE_COMMANDS//__ENVIRONMENT__/$ENVIRONMENT}"
           REMOTE_COMMANDS="${REMOTE_COMMANDS//__AWS_REGION__/$AWS_REGION}"
-          REMOTE_COMMANDS="${REMOTE_COMMANDS//__DAILY_REPORT_FUNCTION_NAME__/$DAILY_REPORT_FUNCTION_NAME}"
           
           # Build the SSM request as JSON instead of passing the multiline
           # shell script directly through --parameters. This prevents AWS CLI
