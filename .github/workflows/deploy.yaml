@@ -1805,41 +1805,32 @@ jobs:
             echo "No legacy direct-alarm monitoring topic found."
           fi
 
-          MONITORING_ALARM_NAMES=( \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \\
-            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \\
+          MONITORING_ALARM_NAMES=( \
+            "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-80${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-orders-failed${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-low-stock${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-5xx${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-order-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-product-lambda-errors${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-report-generation-failure${MONITORING_RESOURCE_SUFFIX}" \
+            "${PROJECT_NAME}-${ENVIRONMENT}-api-4xx${MONITORING_RESOURCE_SUFFIX}" \
           )
 
           echo "Verifying CloudWatch alarms do not have direct SNS alarm actions..."
           for ALARM_NAME in "${MONITORING_ALARM_NAMES[@]}"; do
-            ALARM_ACTION_COUNT=$(aws cloudwatch describe-alarms \\
-              --alarm-names "$ALARM_NAME" \\
-              --region "$AWS_REGION" \\
-              --query 'length(MetricAlarms[0].AlarmActions)' \\
-              --output text 2>/dev/null || echo 0)
-
+            ALARM_ACTION_COUNT=$(aws cloudwatch describe-alarms --alarm-names "$ALARM_NAME" --region "$AWS_REGION" --query 'length(MetricAlarms[0].AlarmActions)' --output text 2>/dev/null || echo 0)
             if [ "$ALARM_ACTION_COUNT" != "0" ] && [ "$ALARM_ACTION_COUNT" != "None" ]; then
               echo "ERROR: Alarm '$ALARM_NAME' still has direct AlarmActions configured."
-              aws cloudwatch describe-alarms \\
-                --alarm-names "$ALARM_NAME" \\
-                --region "$AWS_REGION" \\
-                --query 'MetricAlarms[0].AlarmActions' \\
-                --output json
+              aws cloudwatch describe-alarms --alarm-names "$ALARM_NAME" --region "$AWS_REGION" --query 'MetricAlarms[0].AlarmActions' --output json
               exit 1
             fi
-
             echo "OK: $ALARM_NAME -> no direct SNS alarm action"
           done
 
-          echo "The only monitoring email route is EventBridge -> MonitoringEmailTopic -> Email."
-
-                    echo "Verifying EventBridge -> SNS formatted alarm notification path..."
+          echo "Verifying EventBridge -> Monitoring Notification Lambda -> SNS path..."
+          MONITORING_LAMBDA_NAME="${PROJECT_NAME}-${ENVIRONMENT}-monitoring-notification${MONITORING_RESOURCE_SUFFIX}"
+          MONITORING_LAMBDA_ARN=$(aws lambda get-function --function-name "$MONITORING_LAMBDA_NAME" --region "$AWS_REGION" --query 'Configuration.FunctionArn' --output text)
+          test -n "$MONITORING_LAMBDA_ARN" && test "$MONITORING_LAMBDA_ARN" != "None" || { echo "ERROR: Monitoring notification Lambda ARN was not returned."; exit 1; }
 
           MONITORING_RULES=( \
             "${PROJECT_NAME}-${ENVIRONMENT}-rds-cpu-notification${MONITORING_RESOURCE_SUFFIX}" \
@@ -1853,45 +1844,18 @@ jobs:
           )
 
           for MONITORING_RULE_NAME in "${MONITORING_RULES[@]}"; do
-            MONITORING_RULE_JSON=$(aws events describe-rule \
-              --name "$MONITORING_RULE_NAME" \
-              --event-bus-name default \
-              --region "$AWS_REGION" \
-              --output json)
-
+            MONITORING_RULE_JSON=$(aws events describe-rule --name "$MONITORING_RULE_NAME" --event-bus-name default --region "$AWS_REGION" --output json)
             MONITORING_RULE_STATE=$(echo "$MONITORING_RULE_JSON" | jq -r '.State')
-            MONITORING_RULE_ARN=$(echo "$MONITORING_RULE_JSON" | jq -r '.Arn')
-
-            if [ "$MONITORING_RULE_STATE" != "ENABLED" ]; then
-              echo "ERROR: Monitoring EventBridge rule '$MONITORING_RULE_NAME' is not enabled."
-              echo "$MONITORING_RULE_JSON"
+            if [ "$MONITORING_RULE_STATE" != "ENABLED" ]; then echo "ERROR: Monitoring EventBridge rule '$MONITORING_RULE_NAME' is not enabled."; exit 1; fi
+            MONITORING_TARGET_JSON=$(aws events list-targets-by-rule --rule "$MONITORING_RULE_NAME" --event-bus-name default --region "$AWS_REGION" --output json)
+            MONITORING_TARGET_ARN=$(echo "$MONITORING_TARGET_JSON" | jq -r '.Targets[]? | select(.Id == "MonitoringNotificationLambda") | .Arn' | head -n 1)
+            if [ "$MONITORING_TARGET_ARN" != "$MONITORING_LAMBDA_ARN" ]; then
+              echo "ERROR: Monitoring rule '$MONITORING_RULE_NAME' is not targeting the monitoring notification Lambda."
+              echo "Expected: $MONITORING_LAMBDA_ARN"
+              echo "Actual: ${MONITORING_TARGET_ARN:-<none>}"
               exit 1
             fi
-
-            test -n "$MONITORING_RULE_ARN" && test "$MONITORING_RULE_ARN" != "null" || {
-              echo "ERROR: Monitoring EventBridge rule ARN was not returned for '$MONITORING_RULE_NAME'."
-              exit 1
-            }
-
-            MONITORING_TARGET_JSON=$(aws events list-targets-by-rule \
-              --rule "$MONITORING_RULE_NAME" \
-              --event-bus-name default \
-              --region "$AWS_REGION" \
-              --output json)
-
-            MONITORING_TARGET_ARN=$(echo "$MONITORING_TARGET_JSON" | jq -r '
-              .Targets[]?
-              | select(.Id == "MonitoringEmailTopic")
-              | .Arn' | head -n 1)
-
-            if [ "$MONITORING_TARGET_ARN" != "$MONITORING_EMAIL_TOPIC_ARN" ]; then
-              echo "ERROR: Monitoring rule '$MONITORING_RULE_NAME' is not targeting the monitoring SNS topic."
-              echo "Expected: $MONITORING_EMAIL_TOPIC_ARN"
-              echo "Actual:   ${MONITORING_TARGET_ARN:-<none>}"
-              exit 1
-            fi
-
-            echo "OK: $MONITORING_RULE_NAME -> $MONITORING_EMAIL_TOPIC_ARN"
+            echo "OK: $MONITORING_RULE_NAME -> MonitoringNotificationLambda"
           done
 
           echo "Checking monitoring SNS email subscription..."
